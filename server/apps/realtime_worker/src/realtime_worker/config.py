@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from typing import Literal
+from urllib.parse import urlsplit
 
 from pydantic import AliasChoices, Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -152,6 +153,11 @@ class Settings(BaseSettings):
             raise ValueError("VOICE_HEARTBEAT_ENABLED must be true when VOICE_DIRECTOR_URL is configured")
         if self.environment == "production" and not self.director_url:
             raise ValueError("production requires VOICE_DIRECTOR_URL")
+        public_ws_scheme = urlsplit(self.worker_public_ws_url).scheme
+        if public_ws_scheme not in {"ws", "wss"}:
+            raise ValueError("VOICE_WORKER_PUBLIC_WS_URL must use ws:// or wss://")
+        if self.environment == "production" and public_ws_scheme != "wss":
+            raise ValueError("production requires VOICE_WORKER_PUBLIC_WS_URL to use wss://")
         if self.xiaozhi_udp_enabled and not self.xiaozhi_udp_advertise_host:
             raise ValueError("VOICE_XIAOZHI_UDP_ADVERTISE_HOST is required when UDP is enabled")
         if self.xiaozhi_transport_policy == "force_udp_for_test" and not self.xiaozhi_udp_enabled:

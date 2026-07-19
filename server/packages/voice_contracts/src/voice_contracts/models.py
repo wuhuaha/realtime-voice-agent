@@ -124,7 +124,7 @@ class BootstrapResponse(ContractModel):
 
 
 class DrainRequest(ContractModel):
-    draining: bool = True
+    draining: Literal[True] = True
 
 
 class GrantConsumeRequest(ContractModel):

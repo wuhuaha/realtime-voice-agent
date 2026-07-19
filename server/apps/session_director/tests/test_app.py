@@ -111,3 +111,14 @@ def test_device_specific_bootstrap_credential_is_bound_to_tenant_and_device() ->
 def test_production_director_rejects_shared_or_missing_device_credentials() -> None:
     with pytest.raises(ValueError, match="COORDINATION_BACKEND"):
         settings().model_copy(update={"environment": "production"}).validate_runtime()
+
+
+def test_drain_contract_is_one_way() -> None:
+    app = create_app(settings(), store=InMemoryCoordinationStore())
+    with TestClient(app) as client:
+        response = client.post(
+            "/internal/v1/workers/worker-a/drain",
+            headers={"X-Internal-Token": "validator-internal-token"},
+            json={"draining": False},
+        )
+        assert response.status_code == 422

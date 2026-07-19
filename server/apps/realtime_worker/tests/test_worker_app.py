@@ -42,6 +42,7 @@ def test_worker_exposes_xiaozhi_and_health_without_direct_routes() -> None:
         assert ready.json()["max_sessions"] == 5
         assert ready.json()["provider_network_checked"] is True
         assert ready.json()["provider_network_ready"] is True
+        assert ready.json()["coordination_ready"] is True
 
 
 def test_worker_drain_rejects_readiness_and_requires_internal_credential() -> None:
@@ -205,3 +206,14 @@ def test_live_provider_worker_is_not_ready_when_network_probe_fails(
         assert ready.status_code == 503
         assert ready.json()["provider_network_checked"] is True
         assert ready.json()["provider_network_ready"] is False
+
+
+def test_worker_is_not_ready_until_director_heartbeat_succeeds() -> None:
+    worker_settings = settings(director_url="http://director.test", heartbeat_enabled=True)
+    app = create_app(worker_settings)
+    with TestClient(app) as client:
+        heartbeat = app.state.worker_heartbeat
+        heartbeat.last_success = False
+        assert client.get("/health/ready").status_code == 503
+        heartbeat.last_success = True
+        assert client.get("/health/ready").status_code == 200

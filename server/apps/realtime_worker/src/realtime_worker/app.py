@@ -269,7 +269,10 @@ def create_app(
     async def ready() -> JSONResponse:
         udp_ready = udp_gateway is None or udp_gateway.is_ready
         required_udp_ready = settings.xiaozhi_transport_policy != "force_udp_for_test" or udp_ready
-        ready_value = not admission.draining and required_udp_ready and provider_readiness.healthy
+        coordination_ready = not settings.director_url or heartbeat.last_success
+        ready_value = (
+            not admission.draining and required_udp_ready and provider_readiness.healthy and coordination_ready
+        )
         return JSONResponse(
             status_code=status.HTTP_200_OK if ready_value else status.HTTP_503_SERVICE_UNAVAILABLE,
             content={
@@ -281,6 +284,7 @@ def create_app(
                 "runner": settings.runner,
                 "provider_network_checked": provider_readiness.checked,
                 "provider_network_ready": provider_readiness.healthy,
+                "coordination_ready": coordination_ready,
                 "xiaozhi_udp_enabled": settings.xiaozhi_udp_enabled,
                 "xiaozhi_udp_ready": udp_ready,
                 "xiaozhi_transport_policy": settings.xiaozhi_transport_policy,

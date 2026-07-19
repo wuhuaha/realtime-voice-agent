@@ -80,6 +80,15 @@ def test_production_and_director_lifecycle_settings_fail_closed() -> None:
         worker_settings().model_copy(
             update={"director_url": "http://director.test", "heartbeat_enabled": False}
         ).validate_runtime()
+    with pytest.raises(ValueError, match="wss://"):
+        worker_settings().model_copy(
+            update={
+                "environment": "production",
+                "allow_lab_auth": False,
+                "director_url": "https://director.test",
+                "worker_public_ws_url": "ws://worker.test/v1/xiaozhi",
+            }
+        ).validate_runtime()
 
 
 @pytest.mark.asyncio

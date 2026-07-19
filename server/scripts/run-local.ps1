@@ -25,27 +25,52 @@ function Stop-RecordedProcesses {
     if (-not (Test-Path -LiteralPath $PidFile)) {
         return
     }
-    $manifest = Get-Content -Raw -LiteralPath $PidFile | ConvertFrom-Json
+    $manifest = Get-Content -Raw -LiteralPath $PidFile | ConvertFrom-Json -DateKind String
+    $unmatched = [System.Collections.Generic.List[object]]::new()
     foreach ($entry in @($manifest.processes)) {
         $process = Get-Process -Id ([int]$entry.pid) -ErrorAction SilentlyContinue
         if ($null -eq $process) {
             continue
         }
         try {
-            $startTime = $process.StartTime.ToUniversalTime().ToString('O')
             $executable = $process.Path
         }
         catch {
             Write-Warning "Cannot verify process identity for PID $($entry.pid); leaving it running."
+            $unmatched.Add($entry)
             continue
         }
-        if ($startTime -ne [string]$entry.start_time_utc -or $executable -ne [string]$entry.executable) {
+        try {
+            $recordedStart = [DateTimeOffset]::Parse(
+                [string]$entry.start_time_utc,
+                [Globalization.CultureInfo]::InvariantCulture,
+                [Globalization.DateTimeStyles]::AssumeUniversal
+            ).UtcDateTime
+            $startMatches = [Math]::Abs(($process.StartTime.ToUniversalTime() - $recordedStart).TotalSeconds) -lt 1
+            $executableMatches = [string]::Equals(
+                [System.IO.Path]::GetFullPath($executable),
+                [System.IO.Path]::GetFullPath([string]$entry.executable),
+                [StringComparison]::OrdinalIgnoreCase
+            )
+        }
+        catch {
+            $startMatches = $false
+            $executableMatches = $false
+        }
+        if (-not $startMatches -or -not $executableMatches) {
             Write-Warning "PID $($entry.pid) no longer matches the recorded process; leaving it running."
+            $unmatched.Add($entry)
             continue
         }
         Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
     }
-    Remove-Item -LiteralPath $PidFile -Force -ErrorAction SilentlyContinue
+    if ($unmatched.Count -eq 0) {
+        Remove-Item -LiteralPath $PidFile -Force -ErrorAction SilentlyContinue
+    }
+    else {
+        $manifest.processes = @($unmatched)
+        $manifest | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $PidFile -Encoding utf8NoBOM
+    }
 }
 
 if ($Stop) {
@@ -177,7 +202,7 @@ function Start-LocalProcess {
         name = $Name
         pid = $process.Id
         start_time_utc = $process.StartTime.ToUniversalTime().ToString('O')
-        executable = $process.Path
+        executable = [System.IO.Path]::GetFullPath($Python)
         stdout = $stdout
         stderr = $stderr
         environment = $Overrides
