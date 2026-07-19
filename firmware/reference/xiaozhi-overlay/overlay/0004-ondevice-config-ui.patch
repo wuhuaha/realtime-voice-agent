@@ -1,0 +1,556 @@
+diff --git a/main/boards/lichuang-dev/lichuang_dev_board.cc b/main/boards/lichuang-dev/lichuang_dev_board.cc
+index 90ca875..c7dd377 100644
+--- a/main/boards/lichuang-dev/lichuang_dev_board.cc
++++ b/main/boards/lichuang-dev/lichuang_dev_board.cc
+@@ -10,25 +10,72 @@
+ #include "esp32_camera.h"
+ #include "mcp_server.h"
+ #include "assets/lang_config.h"
++#include "settings.h"
+ 
+ #include <esp_log.h>
++#include <esp_wifi.h>
+ #include <esp_lcd_panel_vendor.h>
+ #include <driver/i2c_master.h>
+ #include <driver/spi_common.h>
+ #include <esp_lcd_touch_ft5x06.h>
+ #include <esp_lvgl_port.h>
++#include <ssid_manager.h>
+ #include <font_awesome.h>
+ #include <lvgl.h>
++#include <algorithm>
++#include <atomic>
++#include <cstdint>
+ #include <cstring>
++#include <memory>
++#include <string>
++#include <vector>
+ 
+ #define TAG "LichuangDevBoard"
+ 
+ class VoiceAgentDisplay : public SpiLcdDisplay {
+ private:
++    struct WifiScanResult {
++        std::string ssid;
++        int8_t rssi;
++        bool open;
++    };
++
+     lv_obj_t* user_text_ = nullptr;
+     lv_obj_t* assistant_text_ = nullptr;
+     lv_obj_t* action_button_ = nullptr;
+     lv_obj_t* action_icon_ = nullptr;
++    lv_obj_t* page_overlay_ = nullptr;
++    lv_obj_t* endpoint_textarea_ = nullptr;
++    lv_obj_t* wifi_password_textarea_ = nullptr;
++    lv_obj_t* ascii_keyboard_ = nullptr;
++    lv_obj_t* keyboard_target_ = nullptr;
++    lv_obj_t* page_feedback_ = nullptr;
++    std::vector<WifiScanResult> wifi_results_;
++    std::string selected_ssid_;
++    bool selected_wifi_open_ = false;
++    std::atomic<uint32_t> page_generation_{0};
++    std::atomic<bool> scan_running_{false};
++
++    static constexpr const char* kKeyboardLowerMap[] = {
++        "1", "2", "3", "4", "5", "6", "7", "8", "9", "0", "\n",
++        "q", "w", "e", "r", "t", "y", "u", "i", "o", "p", "\n",
++        "a", "s", "d", "f", "g", "h", "j", "k", "l", "\n",
++        "ABC", "z", "x", "c", "v", "b", "n", "m", "#+=", "\n",
++        "取消", ":", "/", ".", "空格", "退格", "确定", ""
++    };
++    static constexpr const char* kKeyboardUpperMap[] = {
++        "1", "2", "3", "4", "5", "6", "7", "8", "9", "0", "\n",
++        "Q", "W", "E", "R", "T", "Y", "U", "I", "O", "P", "\n",
++        "A", "S", "D", "F", "G", "H", "J", "K", "L", "\n",
++        "abc", "Z", "X", "C", "V", "B", "N", "M", "#+=", "\n",
++        "取消", ":", "/", ".", "空格", "退格", "确定", ""
++    };
++    static constexpr const char* kKeyboardSymbolMap[] = {
++        "!", "@", "#", "$", "%", "^", "&", "*", "(", ")", "\n",
++        "-", "_", "+", "=", "[", "]", "{", "}", "\\", "|", "\n",
++        ";", ":", "'", "\"", ",", ".", "<", ">", "?", "\n",
++        "abc", "~", "`", "/", "空格", "退格", "确定", ""
++    };
+ 
+     static lv_color_t ColorBackground() { return lv_color_hex(0x101516); }
+     static lv_color_t ColorSurface() { return lv_color_hex(0x1B2324); }
+@@ -38,6 +85,7 @@ private:
+     static lv_color_t ColorListening() { return lv_color_hex(0x38D6A0); }
+     static lv_color_t ColorSpeaking() { return lv_color_hex(0xFFB84D); }
+     static lv_color_t ColorConnecting() { return lv_color_hex(0x4FB7D8); }
++    static lv_color_t ColorDanger() { return lv_color_hex(0xFF6B6B); }
+ 
+     void SetActionColor(lv_color_t color) {
+         if (action_button_ != nullptr) {
+@@ -46,6 +94,430 @@ private:
+         }
+     }
+ 
++    lv_obj_t* CreatePage(const char* title) {
++        if (page_overlay_ != nullptr) {
++            lv_obj_delete(page_overlay_);
++        }
++        endpoint_textarea_ = nullptr;
++        wifi_password_textarea_ = nullptr;
++        ascii_keyboard_ = nullptr;
++        keyboard_target_ = nullptr;
++        page_feedback_ = nullptr;
++
++        page_overlay_ = lv_obj_create(lv_screen_active());
++        lv_obj_set_size(page_overlay_, width_, height_);
++        lv_obj_set_style_bg_color(page_overlay_, ColorBackground(), 0);
++        lv_obj_set_style_border_width(page_overlay_, 0, 0);
++        lv_obj_set_style_radius(page_overlay_, 0, 0);
++        lv_obj_set_style_pad_all(page_overlay_, 0, 0);
++        lv_obj_clear_flag(page_overlay_, LV_OBJ_FLAG_SCROLLABLE);
++
++        auto title_label = lv_label_create(page_overlay_);
++        lv_label_set_text(title_label, title);
++        lv_obj_set_style_text_color(title_label, ColorText(), 0);
++        lv_obj_align(title_label, LV_ALIGN_TOP_LEFT, 44, 12);
++
++        auto back = lv_button_create(page_overlay_);
++        lv_obj_set_size(back, 34, 30);
++        lv_obj_align(back, LV_ALIGN_TOP_LEFT, 6, 5);
++        lv_obj_set_style_radius(back, 5, 0);
++        lv_obj_set_style_bg_color(back, ColorSurface(), 0);
++        lv_obj_add_event_cb(back, [](lv_event_t* event) {
++            auto self = static_cast<VoiceAgentDisplay*>(lv_event_get_user_data(event));
++            Application::GetInstance().Schedule([self]() { self->ShowHome(); });
++        }, LV_EVENT_CLICKED, this);
++        auto back_icon = lv_label_create(back);
++        auto theme = static_cast<LvglTheme*>(current_theme_);
++        lv_obj_set_style_text_font(back_icon, theme->icon_font()->font(), 0);
++        lv_label_set_text(back_icon, FONT_AWESOME_ARROW_LEFT);
++        lv_obj_center(back_icon);
++        return page_overlay_;
++    }
++
++    void ShowHome() {
++        DisplayLockGuard lock(this);
++        ++page_generation_;
++        wifi_results_.clear();
++        selected_ssid_.clear();
++        if (page_overlay_ != nullptr) {
++            lv_obj_delete(page_overlay_);
++            page_overlay_ = nullptr;
++        }
++        endpoint_textarea_ = nullptr;
++        wifi_password_textarea_ = nullptr;
++        ascii_keyboard_ = nullptr;
++        keyboard_target_ = nullptr;
++        page_feedback_ = nullptr;
++    }
++
++    void StylePrimaryButton(lv_obj_t* button) {
++        lv_obj_set_style_bg_color(button, ColorListening(), 0);
++        lv_obj_set_style_bg_color(button, lv_color_hex(0x27B486), LV_STATE_PRESSED);
++        lv_obj_set_style_text_color(button, ColorBackground(), 0);
++        lv_obj_set_style_radius(button, 5, 0);
++        lv_obj_set_style_border_width(button, 0, 0);
++    }
++
++    lv_obj_t* CreateHeaderAction(const char* text, int x) {
++        auto button = lv_button_create(page_overlay_);
++        lv_obj_set_size(button, 52, 30);
++        lv_obj_align(button, LV_ALIGN_TOP_RIGHT, x, 5);
++        StylePrimaryButton(button);
++        auto label = lv_label_create(button);
++        lv_label_set_text(label, text);
++        lv_obj_center(label);
++        return button;
++    }
++
++    void CreateAsciiKeyboard(lv_obj_t* textarea) {
++        keyboard_target_ = textarea;
++        ascii_keyboard_ = lv_buttonmatrix_create(page_overlay_);
++        lv_obj_set_size(ascii_keyboard_, width_, 112);
++        lv_obj_align(ascii_keyboard_, LV_ALIGN_BOTTOM_MID, 0, 0);
++        lv_obj_set_style_pad_all(ascii_keyboard_, 2, 0);
++        lv_obj_set_style_pad_row(ascii_keyboard_, 2, 0);
++        lv_obj_set_style_pad_column(ascii_keyboard_, 2, 0);
++        lv_buttonmatrix_set_map(ascii_keyboard_, kKeyboardLowerMap);
++        lv_obj_add_event_cb(ascii_keyboard_, [](lv_event_t* event) {
++            auto self = static_cast<VoiceAgentDisplay*>(lv_event_get_user_data(event));
++            auto selected = static_cast<const uint32_t*>(lv_event_get_param(event));
++            if (selected == nullptr) {
++                return;
++            }
++            const char* text = lv_buttonmatrix_get_button_text(lv_event_get_target_obj(event), *selected);
++            if (text == nullptr) {
++                return;
++            }
++            Application::GetInstance().Schedule(
++                [self, key = std::string(text)]() { self->HandleAsciiKeyboard(key); });
++        }, LV_EVENT_VALUE_CHANGED, this);
++    }
++
++    void HandleAsciiKeyboard(const std::string& key) {
++        DisplayLockGuard lock(this);
++        if (ascii_keyboard_ == nullptr || keyboard_target_ == nullptr) {
++            return;
++        }
++        if (key == "ABC") {
++            lv_buttonmatrix_set_map(ascii_keyboard_, kKeyboardUpperMap);
++        } else if (key == "abc") {
++            lv_buttonmatrix_set_map(ascii_keyboard_, kKeyboardLowerMap);
++        } else if (key == "#+=") {
++            lv_buttonmatrix_set_map(ascii_keyboard_, kKeyboardSymbolMap);
++        } else if (key == "空格") {
++            lv_textarea_add_char(keyboard_target_, ' ');
++        } else if (key == "退格") {
++            lv_textarea_delete_char(keyboard_target_);
++        } else if (key == "取消") {
++            ShowHomeUnlocked();
++        } else if (key == "确定") {
++            if (keyboard_target_ == endpoint_textarea_) {
++                SaveEndpointUnlocked();
++            } else if (keyboard_target_ == wifi_password_textarea_) {
++                SaveWifiPasswordUnlocked();
++            }
++        } else {
++            lv_textarea_add_text(keyboard_target_, key.c_str());
++        }
++    }
++
++    void ShowEndpointPage() {
++        DisplayLockGuard lock(this);
++        ++page_generation_;
++        CreatePage("服务地址");
++
++        auto save = CreateHeaderAction("保存", -6);
++        lv_obj_add_event_cb(save, [](lv_event_t* event) {
++            auto self = static_cast<VoiceAgentDisplay*>(lv_event_get_user_data(event));
++            Application::GetInstance().Schedule([self]() { self->SaveEndpoint(); });
++        }, LV_EVENT_CLICKED, this);
++
++        auto label = lv_label_create(page_overlay_);
++        lv_label_set_text(label, "WebSocket URL");
++        lv_obj_set_style_text_color(label, ColorMuted(), 0);
++        lv_obj_align(label, LV_ALIGN_TOP_LEFT, 10, 45);
++
++        endpoint_textarea_ = lv_textarea_create(page_overlay_);
++        lv_obj_set_size(endpoint_textarea_, width_ - 20, 43);
++        lv_obj_align(endpoint_textarea_, LV_ALIGN_TOP_MID, 0, 65);
++        lv_textarea_set_one_line(endpoint_textarea_, true);
++        lv_textarea_set_max_length(endpoint_textarea_, 255);
++        Settings settings("voice_agent", false);
++        lv_textarea_set_text(endpoint_textarea_, settings.GetString("ws_url").c_str());
++        lv_textarea_set_placeholder_text(endpoint_textarea_, "ws://192.168.1.108:8080/v1/xiaozhi");
++
++        page_feedback_ = lv_label_create(page_overlay_);
++        lv_obj_set_width(page_feedback_, width_ - 20);
++        lv_obj_set_style_text_color(page_feedback_, ColorDanger(), 0);
++        lv_label_set_text(page_feedback_, "");
++        lv_obj_align(page_feedback_, LV_ALIGN_TOP_LEFT, 10, 109);
++
++        CreateAsciiKeyboard(endpoint_textarea_);
++    }
++
++    void SaveEndpoint() {
++        DisplayLockGuard lock(this);
++        SaveEndpointUnlocked();
++    }
++
++    void SaveEndpointUnlocked() {
++        if (endpoint_textarea_ == nullptr) {
++            return;
++        }
++        std::string url = lv_textarea_get_text(endpoint_textarea_);
++        const bool valid_scheme = url.rfind("ws://", 0) == 0 || url.rfind("wss://", 0) == 0;
++        if (url.empty() || url.size() > 255 || !valid_scheme) {
++            if (page_feedback_ != nullptr) {
++                lv_label_set_text(page_feedback_, "请输入 ws:// 或 wss:// 地址");
++            }
++            return;
++        }
++        {
++            Settings settings("voice_agent", true);
++            settings.SetString("ws_url", url);
++        }
++        ESP_LOGI(TAG, "Saved WebSocket endpoint");
++        ShowHomeUnlocked();
++    }
++
++    void ShowHomeUnlocked() {
++        ++page_generation_;
++        wifi_results_.clear();
++        selected_ssid_.clear();
++        if (page_overlay_ != nullptr) {
++            lv_obj_delete(page_overlay_);
++            page_overlay_ = nullptr;
++        }
++        endpoint_textarea_ = nullptr;
++        wifi_password_textarea_ = nullptr;
++        ascii_keyboard_ = nullptr;
++        keyboard_target_ = nullptr;
++        page_feedback_ = nullptr;
++    }
++
++    void ShowWifiPage() {
++        DisplayLockGuard lock(this);
++        const uint32_t generation = ++page_generation_;
++        CreatePage("选择 Wi-Fi");
++        wifi_results_.clear();
++
++        auto retry = CreateHeaderAction("刷新", -6);
++        lv_obj_add_event_cb(retry, [](lv_event_t* event) {
++            auto self = static_cast<VoiceAgentDisplay*>(lv_event_get_user_data(event));
++            Application::GetInstance().Schedule([self]() { self->ShowWifiPage(); });
++        }, LV_EVENT_CLICKED, this);
++
++        page_feedback_ = lv_label_create(page_overlay_);
++        lv_obj_set_width(page_feedback_, width_ - 20);
++        lv_obj_set_style_text_align(page_feedback_, LV_TEXT_ALIGN_CENTER, 0);
++        lv_obj_set_style_text_color(page_feedback_, ColorMuted(), 0);
++        lv_label_set_text(page_feedback_, "正在扫描...");
++        lv_obj_align(page_feedback_, LV_ALIGN_CENTER, 0, 0);
++        StartWifiScan(generation);
++    }
++
++    void StartWifiScan(uint32_t generation) {
++        if (scan_running_.exchange(true)) {
++            lv_label_set_text(page_feedback_, "扫描正在完成，请稍后刷新");
++            return;
++        }
++        struct ScanContext {
++            VoiceAgentDisplay* self;
++            uint32_t generation;
++        };
++        auto context = new ScanContext{this, generation};
++        BaseType_t created = xTaskCreate([](void* argument) {
++            std::unique_ptr<ScanContext> context(static_cast<ScanContext*>(argument));
++            std::vector<WifiScanResult> results;
++            esp_err_t error = ESP_OK;
++            wifi_scan_config_t config = {};
++            config.show_hidden = false;
++            config.scan_type = WIFI_SCAN_TYPE_ACTIVE;
++            config.scan_time.active.min = 80;
++            config.scan_time.active.max = 160;
++            error = esp_wifi_scan_start(&config, true);
++            if (error == ESP_OK) {
++                uint16_t count = 0;
++                error = esp_wifi_scan_get_ap_num(&count);
++                count = std::min<uint16_t>(count, 32);
++                if (error == ESP_OK && count > 0) {
++                    std::vector<wifi_ap_record_t> records(count);
++                    error = esp_wifi_scan_get_ap_records(&count, records.data());
++                    if (error == ESP_OK) {
++                        for (uint16_t i = 0; i < count && results.size() < 8; ++i) {
++                            size_t length = strnlen(reinterpret_cast<const char*>(records[i].ssid),
++                                                    sizeof(records[i].ssid));
++                            std::string ssid(reinterpret_cast<const char*>(records[i].ssid), length);
++                            if (ssid.empty()) {
++                                continue;
++                            }
++                            bool duplicate = false;
++                            for (const auto& item : results) {
++                                if (item.ssid == ssid) {
++                                    duplicate = true;
++                                    break;
++                                }
++                            }
++                            if (!duplicate) {
++                                results.push_back({ssid, records[i].rssi,
++                                                   records[i].authmode == WIFI_AUTH_OPEN});
++                            }
++                        }
++                    }
++                }
++            }
++            context->self->scan_running_.store(false);
++            auto self = context->self;
++            const auto completed_generation = context->generation;
++            Application::GetInstance().Schedule(
++                [self, completed_generation, error, results = std::move(results)]() mutable {
++                    self->ShowWifiResults(completed_generation, error, std::move(results));
++                });
++            vTaskDelete(nullptr);
++        }, "wifi_ui_scan", 4096, context, 4, nullptr);
++        if (created != pdPASS) {
++            delete context;
++            scan_running_.store(false);
++            lv_label_set_text(page_feedback_, "无法启动扫描，请重试");
++        }
++    }
++
++    void ShowWifiResults(uint32_t generation, esp_err_t error,
++                         std::vector<WifiScanResult>&& results) {
++        DisplayLockGuard lock(this);
++        if (generation != page_generation_.load() || page_overlay_ == nullptr) {
++            return;
++        }
++        wifi_results_ = std::move(results);
++        if (page_feedback_ != nullptr) {
++            lv_obj_delete(page_feedback_);
++            page_feedback_ = nullptr;
++        }
++        if (error != ESP_OK || wifi_results_.empty()) {
++            page_feedback_ = lv_label_create(page_overlay_);
++            lv_obj_set_width(page_feedback_, width_ - 24);
++            lv_obj_set_style_text_align(page_feedback_, LV_TEXT_ALIGN_CENTER, 0);
++            lv_obj_set_style_text_color(page_feedback_, error == ESP_OK ? ColorMuted() : ColorDanger(), 0);
++            lv_label_set_text(page_feedback_, error == ESP_OK ? "未发现可用网络" : "扫描失败，请点击刷新");
++            lv_obj_align(page_feedback_, LV_ALIGN_CENTER, 0, 0);
++            if (error != ESP_OK) {
++                ESP_LOGW(TAG, "Wi-Fi scan failed: %s", esp_err_to_name(error));
++            }
++            return;
++        }
++
++        auto list = lv_obj_create(page_overlay_);
++        lv_obj_set_size(list, width_ - 16, height_ - 48);
++        lv_obj_align(list, LV_ALIGN_BOTTOM_MID, 0, -4);
++        lv_obj_set_style_bg_color(list, ColorBackground(), 0);
++        lv_obj_set_style_border_width(list, 0, 0);
++        lv_obj_set_style_pad_all(list, 4, 0);
++        lv_obj_set_style_pad_row(list, 4, 0);
++        lv_obj_set_flex_flow(list, LV_FLEX_FLOW_COLUMN);
++        for (size_t index = 0; index < wifi_results_.size(); ++index) {
++            const auto& result = wifi_results_[index];
++            std::string caption = result.ssid;
++            caption += result.open ? "  开放" : "  加密";
++            auto button = lv_button_create(list);
++            lv_obj_set_width(button, LV_PCT(100));
++            lv_obj_set_height(button, 40);
++            lv_obj_set_style_bg_color(button, ColorSurface(), 0);
++            lv_obj_set_style_bg_color(button, lv_color_hex(0x283432), LV_STATE_PRESSED);
++            auto icon = lv_label_create(button);
++            auto theme = static_cast<LvglTheme*>(current_theme_);
++            lv_obj_set_style_text_font(icon, theme->icon_font()->font(), 0);
++            lv_obj_set_style_text_color(icon, ColorListening(), 0);
++            lv_label_set_text(icon, result.rssi >= -65 ? FONT_AWESOME_WIFI : FONT_AWESOME_WIFI_WEAK);
++            lv_obj_align(icon, LV_ALIGN_LEFT_MID, 0, 0);
++            auto label = lv_label_create(button);
++            lv_obj_set_width(label, width_ - 82);
++            lv_label_set_long_mode(label, LV_LABEL_LONG_DOT);
++            lv_label_set_text(label, caption.c_str());
++            lv_obj_align(label, LV_ALIGN_LEFT_MID, 28, 0);
++            lv_obj_set_user_data(button, reinterpret_cast<void*>(index + 1));
++            lv_obj_add_event_cb(button, [](lv_event_t* event) {
++                auto self = static_cast<VoiceAgentDisplay*>(lv_event_get_user_data(event));
++                size_t index = reinterpret_cast<uintptr_t>(lv_obj_get_user_data(lv_event_get_target_obj(event))) - 1;
++                Application::GetInstance().Schedule([self, index]() { self->SelectWifi(index); });
++            }, LV_EVENT_CLICKED, this);
++        }
++    }
++
++    void SelectWifi(size_t index) {
++        DisplayLockGuard lock(this);
++        if (index >= wifi_results_.size()) {
++            return;
++        }
++        selected_ssid_ = wifi_results_[index].ssid;
++        selected_wifi_open_ = wifi_results_[index].open;
++        if (selected_wifi_open_) {
++            SaveWifiAndReboot("");
++            return;
++        }
++        ShowWifiPasswordPageUnlocked();
++    }
++
++    void ShowWifiPasswordPageUnlocked() {
++        ++page_generation_;
++        CreatePage("输入 Wi-Fi 密码");
++        auto connect = CreateHeaderAction("连接", -6);
++        lv_obj_add_event_cb(connect, [](lv_event_t* event) {
++            auto self = static_cast<VoiceAgentDisplay*>(lv_event_get_user_data(event));
++            Application::GetInstance().Schedule([self]() { self->SaveWifiPassword(); });
++        }, LV_EVENT_CLICKED, this);
++
++        auto ssid = lv_label_create(page_overlay_);
++        lv_obj_set_width(ssid, width_ - 20);
++        lv_label_set_long_mode(ssid, LV_LABEL_LONG_DOT);
++        lv_obj_set_style_text_color(ssid, ColorMuted(), 0);
++        lv_label_set_text(ssid, selected_ssid_.c_str());
++        lv_obj_align(ssid, LV_ALIGN_TOP_LEFT, 10, 45);
++
++        wifi_password_textarea_ = lv_textarea_create(page_overlay_);
++        lv_obj_set_size(wifi_password_textarea_, width_ - 20, 42);
++        lv_obj_align(wifi_password_textarea_, LV_ALIGN_TOP_MID, 0, 64);
++        lv_textarea_set_one_line(wifi_password_textarea_, true);
++        lv_textarea_set_max_length(wifi_password_textarea_, 64);
++        lv_textarea_set_password_mode(wifi_password_textarea_, true);
++        lv_textarea_set_placeholder_text(wifi_password_textarea_, "密码");
++
++        page_feedback_ = lv_label_create(page_overlay_);
++        lv_obj_set_style_text_color(page_feedback_, ColorDanger(), 0);
++        lv_label_set_text(page_feedback_, "");
++        lv_obj_align(page_feedback_, LV_ALIGN_TOP_LEFT, 10, 108);
++
++        CreateAsciiKeyboard(wifi_password_textarea_);
++    }
++
++    void SaveWifiPassword() {
++        DisplayLockGuard lock(this);
++        SaveWifiPasswordUnlocked();
++    }
++
++    void SaveWifiPasswordUnlocked() {
++        if (wifi_password_textarea_ == nullptr || selected_ssid_.empty()) {
++            return;
++        }
++        std::string password = lv_textarea_get_text(wifi_password_textarea_);
++        if (password.empty()) {
++            if (page_feedback_ != nullptr) {
++                lv_label_set_text(page_feedback_, "请输入密码");
++            }
++            return;
++        }
++        SaveWifiAndReboot(password);
++    }
++
++    void SaveWifiAndReboot(const std::string& password) {
++        SsidManager::GetInstance().AddSsid(selected_ssid_, password);
++        ESP_LOGI(TAG, "Saved Wi-Fi credentials for SSID: %s", selected_ssid_.c_str());
++        if (page_feedback_ != nullptr) {
++            lv_obj_set_style_text_color(page_feedback_, ColorListening(), 0);
++            lv_label_set_text(page_feedback_, "已保存，正在重启...");
++        }
++        Application::GetInstance().Schedule([]() { Application::GetInstance().Reboot(); });
++    }
++
+ public:
+     VoiceAgentDisplay(esp_lcd_panel_io_handle_t panel_io, esp_lcd_panel_handle_t panel,
+                       int width, int height, int offset_x, int offset_y,
+@@ -171,6 +643,38 @@ public:
+         lv_label_set_text(action_icon_, FONT_AWESOME_MICROPHONE);
+         lv_obj_center(action_icon_);
+ 
++        auto endpoint_button = lv_button_create(container_);
++        lv_obj_set_size(endpoint_button, 40, 34);
++        lv_obj_align(endpoint_button, LV_ALIGN_BOTTOM_RIGHT, -58, -10);
++        lv_obj_set_style_radius(endpoint_button, 5, 0);
++        lv_obj_set_style_bg_color(endpoint_button, ColorSurface(), 0);
++        lv_obj_set_style_bg_color(endpoint_button, lv_color_hex(0x2A3735), LV_STATE_PRESSED);
++        lv_obj_add_event_cb(endpoint_button, [](lv_event_t* event) {
++            auto self = static_cast<VoiceAgentDisplay*>(lv_event_get_user_data(event));
++            Application::GetInstance().Schedule([self]() { self->ShowEndpointPage(); });
++        }, LV_EVENT_CLICKED, this);
++        auto endpoint_icon = lv_label_create(endpoint_button);
++        lv_obj_set_style_text_font(endpoint_icon, icon_font, 0);
++        lv_obj_set_style_text_color(endpoint_icon, ColorConnecting(), 0);
++        lv_label_set_text(endpoint_icon, FONT_AWESOME_LINK);
++        lv_obj_center(endpoint_icon);
++
++        auto wifi_button = lv_button_create(container_);
++        lv_obj_set_size(wifi_button, 40, 34);
++        lv_obj_align(wifi_button, LV_ALIGN_BOTTOM_RIGHT, -10, -10);
++        lv_obj_set_style_radius(wifi_button, 5, 0);
++        lv_obj_set_style_bg_color(wifi_button, ColorSurface(), 0);
++        lv_obj_set_style_bg_color(wifi_button, lv_color_hex(0x2A3735), LV_STATE_PRESSED);
++        lv_obj_add_event_cb(wifi_button, [](lv_event_t* event) {
++            auto self = static_cast<VoiceAgentDisplay*>(lv_event_get_user_data(event));
++            Application::GetInstance().Schedule([self]() { self->ShowWifiPage(); });
++        }, LV_EVENT_CLICKED, this);
++        auto wifi_icon = lv_label_create(wifi_button);
++        lv_obj_set_style_text_font(wifi_icon, icon_font, 0);
++        lv_obj_set_style_text_color(wifi_icon, ColorListening(), 0);
++        lv_label_set_text(wifi_icon, FONT_AWESOME_WIFI);
++        lv_obj_center(wifi_icon);
++
+         low_battery_popup_ = lv_obj_create(container_);
+         lv_obj_add_flag(low_battery_popup_, LV_OBJ_FLAG_HIDDEN);
+         low_battery_label_ = lv_label_create(low_battery_popup_);
+

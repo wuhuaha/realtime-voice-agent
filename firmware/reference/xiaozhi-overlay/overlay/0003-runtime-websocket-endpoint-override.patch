@@ -1,0 +1,171 @@
+diff --git a/main/protocols/websocket_protocol.cc b/main/protocols/websocket_protocol.cc
+--- a/main/protocols/websocket_protocol.cc
++++ b/main/protocols/websocket_protocol.cc
+@@ -7,13 +7,112 @@
+ #include "voice_agent_local_config.h"
+ 
+ #include <cstring>
++#include <http_parser.h>
+ #include <cJSON.h>
+ #include <esp_log.h>
+ #include <arpa/inet.h>
+ #include "assets/lang_config.h"
+ 
+ #define TAG "WS"
+ 
++namespace {
++
++constexpr size_t kMaxWebsocketUrlLength = 255;
++constexpr int kLocalProtocolVersion = 1;
++// NVS keys are limited to 15 characters; this stores logical protocol_version.
++constexpr const char* kProtocolVersionKey = "protocol_ver";
++
++struct WebsocketEndpointSnapshot {
++    std::string url;
++    std::string token;
++    std::string host;
++    const char* source = "none";
++    int version = kLocalProtocolVersion;
++
++    bool IsValid() const { return !url.empty(); }
++};
++
++bool ParseWebsocketUrl(const std::string& url, std::string& host) {
++    if (url.empty() || url.size() > kMaxWebsocketUrlLength ||
++        url.find('\0') != std::string::npos) {
++        return false;
++    }
++
++    http_parser_url parsed;
++    http_parser_url_init(&parsed);
++    if (http_parser_parse_url(url.data(), url.size(), false, &parsed) != 0) {
++        return false;
++    }
++
++    constexpr uint16_t kRequiredFields = (1U << UF_SCHEMA) | (1U << UF_HOST);
++    if ((parsed.field_set & kRequiredFields) != kRequiredFields) {
++        return false;
++    }
++
++    const auto& scheme_field = parsed.field_data[UF_SCHEMA];
++    const auto& host_field = parsed.field_data[UF_HOST];
++    const std::string scheme = url.substr(scheme_field.off, scheme_field.len);
++    if ((scheme != "ws" && scheme != "wss") || host_field.len == 0) {
++        return false;
++    }
++
++    host = url.substr(host_field.off, host_field.len);
++    return true;
++}
++
++WebsocketEndpointSnapshot MakeEndpointSnapshot(const std::string& url,
++                                               const std::string& token,
++                                               int version,
++                                               const char* source) {
++    WebsocketEndpointSnapshot endpoint;
++    if (version != kLocalProtocolVersion || !ParseWebsocketUrl(url, endpoint.host)) {
++        return endpoint;
++    }
++    endpoint.url = url;
++    endpoint.token = token;
++    endpoint.source = source;
++    return endpoint;
++}
++
++WebsocketEndpointSnapshot ResolveWebsocketEndpoint() {
++    Settings voice_agent("voice_agent", false);
++    Settings websocket("websocket", false);
++    const std::string upstream_token = websocket.GetString("token");
++    std::string voice_agent_token = voice_agent.GetString("token");
++    if (voice_agent_token.empty()) {
++#if VOICE_AGENT_LOCAL_LAB
++        voice_agent_token = VOICE_AGENT_WS_TOKEN;
++#else
++        voice_agent_token = upstream_token;
++#endif
++    }
++
++    auto endpoint = MakeEndpointSnapshot(
++        voice_agent.GetString("ws_url"),
++        voice_agent_token,
++        voice_agent.GetInt(kProtocolVersionKey, kLocalProtocolVersion),
++        "voice_agent_nvs");
++    if (endpoint.IsValid()) {
++        return endpoint;
++    }
++
++#if VOICE_AGENT_LOCAL_LAB
++    endpoint = MakeEndpointSnapshot(
++        VOICE_AGENT_WS_URL, VOICE_AGENT_WS_TOKEN, kLocalProtocolVersion, "local_lab");
++    if (endpoint.IsValid()) {
++        return endpoint;
++    }
++#endif
++
++    return MakeEndpointSnapshot(
++        websocket.GetString("url"),
++        upstream_token,
++        websocket.GetInt("version", kLocalProtocolVersion),
++        "upstream_websocket_nvs");
++}
++
++}  // namespace
++
+ WebsocketProtocol::WebsocketProtocol() {
+     event_group_handle_ = xEventGroupCreate();
+ }
+@@ -84,18 +183,13 @@ void WebsocketProtocol::CloseAudioChannel(bool send_goodbye) {
+ }
+ 
+ bool WebsocketProtocol::OpenAudioChannel() {
+-    Settings settings("websocket", false);
+-    std::string url = settings.GetString("url");
+-    std::string token = settings.GetString("token");
+-    int version = settings.GetInt("version");
+-    if (version != 0) {
+-        version_ = version;
++    const WebsocketEndpointSnapshot endpoint = ResolveWebsocketEndpoint();
++    if (!endpoint.IsValid()) {
++        ESP_LOGE(TAG, "No valid WebSocket v1 endpoint configured");
++        SetError(Lang::Strings::SERVER_NOT_CONNECTED);
++        return false;
+     }
+-#if VOICE_AGENT_LOCAL_LAB
+-    url = VOICE_AGENT_WS_URL;
+-    token = VOICE_AGENT_WS_TOKEN;
+-    version_ = 1;
+-#endif
++    version_ = endpoint.version;
+ 
+     error_occurred_ = false;
+ 
+@@ -105,12 +202,13 @@ bool WebsocketProtocol::OpenAudioChannel() {
+         return false;
+     }
+ 
+-    if (!token.empty()) {
++    std::string authorization = endpoint.token;
++    if (!authorization.empty()) {
+         // If token not has a space, add "Bearer " prefix
+-        if (token.find(" ") == std::string::npos) {
+-            token = "Bearer " + token;
++        if (authorization.find(" ") == std::string::npos) {
++            authorization = "Bearer " + authorization;
+         }
+-        websocket_->SetHeader("Authorization", token.c_str());
++        websocket_->SetHeader("Authorization", authorization.c_str());
+     }
+     websocket_->SetHeader("Protocol-Version", std::to_string(version_).c_str());
+     websocket_->SetHeader("Device-Id", SystemInfo::GetMacAddress().c_str());
+@@ -179,8 +277,9 @@ bool WebsocketProtocol::OpenAudioChannel() {
+         }
+     });
+ 
+-    ESP_LOGI(TAG, "Connecting to websocket server: %s with version: %d", url.c_str(), version_);
+-    if (!websocket_->Connect(url.c_str())) {
++    ESP_LOGI(TAG, "Connecting to WebSocket source=%s host=%s version=%d",
++             endpoint.source, endpoint.host.c_str(), version_);
++    if (!websocket_->Connect(endpoint.url.c_str())) {
+         ESP_LOGE(TAG, "Failed to connect to websocket server, code=%d", websocket_->GetLastError());
+         SetError(Lang::Strings::SERVER_NOT_CONNECTED);
+         return false;

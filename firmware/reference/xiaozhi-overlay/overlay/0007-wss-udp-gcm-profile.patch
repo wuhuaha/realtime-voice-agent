@@ -1,0 +1,180 @@
+diff --git a/main/CMakeLists.txt b/main/CMakeLists.txt
+index b1be886..253aa70 100644
+--- a/main/CMakeLists.txt
++++ b/main/CMakeLists.txt
+@@ -29,6 +29,7 @@ set(SOURCES "audio/audio_codec.cc"
+             "protocols/protocol.cc"
+             "protocols/mqtt_protocol.cc"
+             "protocols/websocket_protocol.cc"
++            "protocols/voice_udp_media.cc"
+             "mcp_server.cc"
+             "system_info.cc"
+             "application.cc"
+diff --git a/main/protocols/websocket_protocol.h b/main/protocols/websocket_protocol.h
+index cb635d4..8f74c3e 100644
+--- a/main/protocols/websocket_protocol.h
++++ b/main/protocols/websocket_protocol.h
+@@ -3,12 +3,14 @@
+ 
+ 
+ #include "protocol.h"
++#include "voice_udp_media.h"
+ 
+ #include <web_socket.h>
+ #include <freertos/FreeRTOS.h>
+ #include <freertos/event_groups.h>
+ 
+ #define WEBSOCKET_PROTOCOL_SERVER_HELLO_EVENT (1 << 0)
++#define WEBSOCKET_PROTOCOL_MEDIA_READY_EVENT (1 << 1)
+ 
+ class WebsocketProtocol : public Protocol {
+ public:
+@@ -27,5 +29,8 @@ private:
+     EventGroupHandle_t event_group_handle_;
+     std::unique_ptr<WebSocket> websocket_;
++    std::unique_ptr<VoiceUdpMedia> udp_media_;
++    bool use_udp_ = false;
++    uint32_t playback_generation_ = 1;
+     int version_ = 1;
+ 
+     void ParseServerHello(const cJSON* root);
+diff --git a/main/protocols/websocket_protocol.cc b/main/protocols/websocket_protocol.cc
+index 5914ddd..48c63c8 100644
+--- a/main/protocols/websocket_protocol.cc
++++ b/main/protocols/websocket_protocol.cc
+@@ -153,6 +153,10 @@ bool WebsocketProtocol::Start() {
+ }
+ 
+ bool WebsocketProtocol::SendAudio(std::unique_ptr<AudioStreamPacket> packet) {
++    if (use_udp_) {
++        return udp_media_ != nullptr &&
++               udp_media_->SendAudio(*packet, playback_generation_);
++    }
+     if (websocket_ == nullptr || !websocket_->IsConnected()) {
+         return false;
+     }
+@@ -199,10 +203,13 @@ bool WebsocketProtocol::SendText(const std::string& text) {
+ }
+ 
+ bool WebsocketProtocol::IsAudioChannelOpened() const {
+-    return websocket_ != nullptr && websocket_->IsConnected() && !error_occurred_ && !IsTimeout();
++    return websocket_ != nullptr && websocket_->IsConnected() &&
++           (!use_udp_ || (udp_media_ != nullptr && udp_media_->IsReady())) &&
++           !error_occurred_ && !IsTimeout();
+ }
+ 
+ void WebsocketProtocol::CloseAudioChannel(bool send_goodbye) {
+     (void)send_goodbye;  // Websocket doesn't need to send goodbye message
++    udp_media_.reset();
+     websocket_.reset();
+ }
+@@ -218,6 +225,10 @@ bool WebsocketProtocol::OpenAudioChannel() {
+     }
+     version_ = endpoint.version;
+ 
++    use_udp_ = false;
++    playback_generation_ = 1;
++    xEventGroupClearBits(event_group_handle_, WEBSOCKET_PROTOCOL_SERVER_HELLO_EVENT |
++                                              WEBSOCKET_PROTOCOL_MEDIA_READY_EVENT);
+     error_occurred_ = false;
+ 
+     auto network = Board::GetInstance().GetNetwork();
+@@ -239,7 +250,7 @@ bool WebsocketProtocol::OpenAudioChannel() {
+ 
+     websocket_->OnData([this](const char* data, size_t len, bool binary) {
+         if (binary) {
+-            if (on_incoming_audio_ != nullptr) {
++            if (!use_udp_ && on_incoming_audio_ != nullptr) {
+                 if (version_ == 2) {
+                     BinaryProtocol2* bp2 = (BinaryProtocol2*)data;
+                     bp2->version = ntohs(bp2->version);
+@@ -283,7 +294,22 @@ bool WebsocketProtocol::OpenAudioChannel() {
+             if (cJSON_IsString(type)) {
+                 if (strcmp(type->valuestring, "hello") == 0) {
+                     ParseServerHello(root);
++                } else if (strcmp(type->valuestring, "media") == 0) {
++                    auto state = cJSON_GetObjectItem(root, "state");
++                    if (cJSON_IsString(state) && strcmp(state->valuestring, "ready") == 0) {
++                        xEventGroupSetBits(event_group_handle_, WEBSOCKET_PROTOCOL_MEDIA_READY_EVENT);
++                    }
+                 } else {
++                    if (use_udp_ && strcmp(type->valuestring, "tts") == 0) {
++                        auto generation = cJSON_GetObjectItem(root, "generation");
++                        if (cJSON_IsNumber(generation) && generation->valuedouble >= 1 &&
++                            generation->valuedouble <= UINT32_MAX) {
++                            playback_generation_ = static_cast<uint32_t>(generation->valuedouble);
++                            if (udp_media_ != nullptr) {
++                                udp_media_->SetGeneration(playback_generation_);
++                            }
++                        }
++                    }
+                     if (on_incoming_json_ != nullptr) {
+                         on_incoming_json_(root);
+                     }
+@@ -319,6 +347,19 @@ bool WebsocketProtocol::OpenAudioChannel() {
+         return false;
+     }
+ 
++    if (use_udp_) {
++        if (udp_media_ == nullptr || !udp_media_->Start()) {
++            ESP_LOGE(TAG, "Failed to establish authenticated UDP media");
++            return false;
++        }
++        bits = xEventGroupWaitBits(event_group_handle_, WEBSOCKET_PROTOCOL_MEDIA_READY_EVENT,
++                                   pdTRUE, pdFALSE, pdMS_TO_TICKS(10000));
++        if (!(bits & WEBSOCKET_PROTOCOL_MEDIA_READY_EVENT)) {
++            ESP_LOGE(TAG, "Failed to receive UDP media ready");
++            return false;
++        }
++    }
++
+     if (on_audio_channel_opened_ != nullptr) {
+         on_audio_channel_opened_();
+     }
+@@ -341,6 +382,11 @@ std::string WebsocketProtocol::GetHelloMessage() {
+     cJSON_AddBoolToObject(features, "mcp", true);
+     cJSON_AddItemToObject(root, "features", features);
+     cJSON_AddStringToObject(root, "transport", "websocket");
++    cJSON* profiles = cJSON_CreateArray();
++    cJSON_AddItemToArray(profiles, cJSON_CreateString("wss-opus-v1"));
++    cJSON_AddItemToArray(profiles, cJSON_CreateString("udp-opus-gcm-v1"));
++    cJSON_AddItemToObject(root, "transport_profiles", profiles);
++    cJSON_AddStringToObject(root, "transport_mode", VOICE_AGENT_TRANSPORT_MODE);
+     cJSON* audio_params = cJSON_CreateObject();
+     cJSON_AddStringToObject(audio_params, "format", "opus");
+     cJSON_AddNumberToObject(audio_params, "sample_rate", 16000);
+@@ -356,11 +403,32 @@ std::string WebsocketProtocol::GetHelloMessage() {
+ }
+ 
+ void WebsocketProtocol::ParseServerHello(const cJSON* root) {
+     auto transport = cJSON_GetObjectItem(root, "transport");
+-    if (transport == nullptr || strcmp(transport->valuestring, "websocket") != 0) {
+-        ESP_LOGE(TAG, "Unsupported transport: %s", transport->valuestring);
++    if (!cJSON_IsString(transport) ||
++        (strcmp(transport->valuestring, "websocket") != 0 &&
++         strcmp(transport->valuestring, "udp") != 0)) {
++        ESP_LOGE(TAG, "Unsupported transport in server hello");
+         return;
+     }
++    use_udp_ = strcmp(transport->valuestring, "udp") == 0;
++    if ((strcmp(VOICE_AGENT_TRANSPORT_MODE, "force_wss") == 0 && use_udp_) ||
++        (strcmp(VOICE_AGENT_TRANSPORT_MODE, "force_udp_for_test") == 0 && !use_udp_)) {
++        ESP_LOGE(TAG, "Server selection violates local transport mode");
++        return;
++    }
++    if (use_udp_) {
++        udp_media_ = std::make_unique<VoiceUdpMedia>();
++        udp_media_->OnAudio([this](std::unique_ptr<AudioStreamPacket> packet) {
++            if (on_incoming_audio_ != nullptr) {
++                on_incoming_audio_(std::move(packet));
++            }
++        });
++        if (!udp_media_->Configure(cJSON_GetObjectItem(root, "udp"))) {
++            ESP_LOGE(TAG, "Invalid authenticated UDP grant");
++            udp_media_.reset();
++            return;
++        }
++    }
+ 
+     auto session_id = cJSON_GetObjectItem(root, "session_id");
+     if (cJSON_IsString(session_id)) {

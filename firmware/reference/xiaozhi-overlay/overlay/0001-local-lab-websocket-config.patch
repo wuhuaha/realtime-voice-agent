@@ -1,0 +1,108 @@
+diff --git a/main/application.cc b/main/application.cc
+index d54ac6b..4bccd78 100644
+--- a/main/application.cc
++++ b/main/application.cc
+@@ -9,6 +9,7 @@
+ #include "mcp_server.h"
+ #include "assets.h"
+ #include "settings.h"
++#include "voice_agent_local_config.h"
+ 
+ #include <cstring>
+ #include <esp_log.h>
+@@ -327,8 +328,12 @@ void Application::ActivationTask() {
+     // Check for new assets version
+     CheckAssetsVersion();
+ 
+-    // Check for new firmware version
++    // Local lab endpoints do not implement the Xiaozhi OTA bootstrap API.
++#if VOICE_AGENT_LOCAL_LAB
++    ESP_LOGI(TAG, "Local lab mode: skipping OTA bootstrap");
++#else
+     CheckNewVersion();
++#endif
+ 
+     // Initialize the protocol
+     InitializeProtocol();
+@@ -477,6 +482,9 @@ void Application::InitializeProtocol() {
+ 
+     display->SetStatus(Lang::Strings::LOADING_PROTOCOL);
+ 
++#if VOICE_AGENT_LOCAL_LAB
++    protocol_ = std::make_unique<WebsocketProtocol>();
++#else
+     if (ota_->HasMqttConfig()) {
+         protocol_ = std::make_unique<MqttProtocol>();
+     } else if (ota_->HasWebsocketConfig()) {
+@@ -485,6 +493,7 @@ void Application::InitializeProtocol() {
+         ESP_LOGW(TAG, "No protocol specified in the OTA config, using MQTT");
+         protocol_ = std::make_unique<MqttProtocol>();
+     }
++#endif
+ 
+     protocol_->OnConnected([this]() {
+         DismissAlert();
+diff --git a/main/boards/common/wifi_board.cc b/main/boards/common/wifi_board.cc
+index 377685b..5038dd4 100644
+--- a/main/boards/common/wifi_board.cc
++++ b/main/boards/common/wifi_board.cc
+@@ -17,6 +17,7 @@
+ #include <wifi_station.h>
+ #include <ssid_manager.h>
+ #include "afsk_demod.h"
++#include "voice_agent_local_config.h"
+ #ifdef CONFIG_USE_ESP_BLUFI_WIFI_PROVISIONING
+ #include "blufi.h"
+ #endif
+@@ -52,6 +53,14 @@ std::string WifiBoard::GetBoardType() {
+ void WifiBoard::StartNetwork() {
+     auto& wifi_manager = WifiManager::GetInstance();
+ 
++#if VOICE_AGENT_LOCAL_LAB
++    auto& ssid_manager = SsidManager::GetInstance();
++    if (ssid_manager.GetSsidList().empty() && VOICE_AGENT_WIFI_SSID[0] != '\0') {
++        ssid_manager.AddSsid(VOICE_AGENT_WIFI_SSID, VOICE_AGENT_WIFI_PASSWORD);
++        ESP_LOGI(TAG, "Installed local lab WiFi default");
++    }
++#endif
++
+     // Initialize WiFi manager
+     WifiManagerConfig config;
+     config.ssid_prefix = "Xiaozhi";
+diff --git a/main/protocols/websocket_protocol.cc b/main/protocols/websocket_protocol.cc
+index 4b74a5e..b591da2 100644
+--- a/main/protocols/websocket_protocol.cc
++++ b/main/protocols/websocket_protocol.cc
+@@ -3,6 +3,7 @@
+ #include "system_info.h"
+ #include "application.h"
+ #include "settings.h"
++#include "voice_agent_local_config.h"
+ 
+ #include <cstring>
+ #include <cJSON.h>
+@@ -88,6 +89,11 @@ bool WebsocketProtocol::OpenAudioChannel() {
+     if (version != 0) {
+         version_ = version;
+     }
++#if VOICE_AGENT_LOCAL_LAB
++    url = VOICE_AGENT_WS_URL;
++    token = VOICE_AGENT_WS_TOKEN;
++    version_ = 1;
++#endif
+ 
+     error_occurred_ = false;
+
+diff --git a/main/boards/lichuang-dev/lichuang_dev_board.cc b/main/boards/lichuang-dev/lichuang_dev_board.cc
+index f3cf78a..9866260 100644
+--- a/main/boards/lichuang-dev/lichuang_dev_board.cc
++++ b/main/boards/lichuang-dev/lichuang_dev_board.cc
+@@ -52,6 +52,8 @@ public:
+                        AUDIO_CODEC_ES7210_ADDR, 
+                        AUDIO_INPUT_REFERENCE),
+           pca9557_(pca9557) {
++        SetInputGain(37.5f);
++        ESP_LOGI(TAG, "Configured MIC1 near-end gain at 37.5 dB");
+     }
+ 
+     virtual void EnableOutput(bool enable) override {

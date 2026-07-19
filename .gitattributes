@@ -9,4 +9,4 @@
 *.cc text eol=lf
 *.cpp text eol=lf
 *.ps1 text eol=crlf
-*.patch -text
+*.patch -text whitespace=-blank-at-eol,-blank-at-eof

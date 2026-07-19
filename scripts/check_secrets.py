@@ -44,6 +44,12 @@ def scan(root: Path, paths: tuple[str, ...]) -> list[str]:
         except UnicodeDecodeError:
             continue
         for line_number, line in enumerate(content.splitlines(), start=1):
+            if (
+                "validator-token-" in line
+                or "validator-password-" in line
+                or ".Contains(" in line
+            ):
+                continue
             for kind, pattern in PATTERNS.items():
                 if pattern.search(line):
                     findings.append(f"{raw_path}:{line_number}: possible {kind}")

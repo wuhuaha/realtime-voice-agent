@@ -1,0 +1,21 @@
+diff --git a/main/audio/audio_service.cc b/main/audio/audio_service.cc
+index 5c9862d..20d5b7b 100644
+--- a/main/audio/audio_service.cc
++++ b/main/audio/audio_service.cc
+@@ -386,11 +386,14 @@ void AudioService::OpusCodecTask() {
+             SetDecodeSampleRate(packet->sample_rate, packet->frame_duration);
+             if (opus_decoder_ != nullptr) {
+                 task->pcm.resize(decoder_frame_size_);
++                static uint8_t empty_payload = 0;
++                const bool recover_lost_frame = packet->payload.empty();
+                 esp_audio_dec_in_raw_t raw = {
+-                    .buffer = (uint8_t *)(packet->payload.data()),
++                    .buffer = recover_lost_frame ? &empty_payload : (uint8_t *)(packet->payload.data()),
+                     .len = (uint32_t)(packet->payload.size()),
+                     .consumed = 0,
+-                    .frame_recover = ESP_AUDIO_DEC_RECOVERY_NONE,
++                    .frame_recover = recover_lost_frame ? ESP_AUDIO_DEC_RECOVERY_PLC
++                                                       : ESP_AUDIO_DEC_RECOVERY_NONE,
+                 };
+                 esp_audio_dec_out_frame_t out_frame = {
+                     .buffer = (uint8_t *)(task->pcm.data()),

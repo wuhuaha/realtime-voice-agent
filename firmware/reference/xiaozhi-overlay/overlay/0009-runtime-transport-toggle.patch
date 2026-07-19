@@ -1,0 +1,206 @@
+diff --git a/main/boards/lichuang-dev/lichuang_dev_board.cc b/main/boards/lichuang-dev/lichuang_dev_board.cc
+index 55dd2ab..59fc89c 100644
+--- a/main/boards/lichuang-dev/lichuang_dev_board.cc
++++ b/main/boards/lichuang-dev/lichuang_dev_board.cc
+@@ -48,6 +48,8 @@ private:
+     lv_obj_t* assistant_text_ = nullptr;
+     lv_obj_t* action_button_ = nullptr;
+     lv_obj_t* action_icon_ = nullptr;
++    lv_obj_t* transport_button_ = nullptr;
++    lv_obj_t* transport_label_ = nullptr;
+     lv_obj_t* page_overlay_ = nullptr;
+     lv_obj_t* endpoint_textarea_ = nullptr;
+     lv_obj_t* wifi_password_textarea_ = nullptr;
+@@ -114,6 +116,33 @@ private:
+         }
+     }
+ 
++    void UpdateTransportControl() {
++        if (transport_button_ == nullptr || transport_label_ == nullptr) {
++            return;
++        }
++        const bool idle = Application::GetInstance().GetDeviceState() == kDeviceStateIdle;
++        const bool udp = idle ? WebsocketProtocol::IsUdpPreferred()
++                              : WebsocketProtocol::IsUdpSelected();
++        lv_label_set_text(transport_label_, udp ? "UDP" : "WSS");
++        lv_obj_set_style_text_color(transport_label_, udp ? ColorListening() : ColorConnecting(), 0);
++        lv_obj_set_style_border_color(transport_button_,
++                                      udp ? ColorListening() : ColorConnecting(), 0);
++        if (idle) {
++            lv_obj_remove_state(transport_button_, LV_STATE_DISABLED);
++        } else {
++            lv_obj_add_state(transport_button_, LV_STATE_DISABLED);
++        }
++    }
++
++    void ToggleTransportPreference() {
++        if (Application::GetInstance().GetDeviceState() != kDeviceStateIdle) {
++            return;
++        }
++        WebsocketProtocol::SetUdpPreferred(!WebsocketProtocol::IsUdpPreferred());
++        DisplayLockGuard lock(this);
++        UpdateTransportControl();
++    }
++
+     lv_obj_t* CreatePage(const char* title) {
+         if (page_overlay_ != nullptr) {
+             lv_obj_delete(page_overlay_);
+@@ -650,6 +679,25 @@ public:
+         lv_label_set_text(action_icon_, FONT_AWESOME_MICROPHONE);
+         lv_obj_center(action_icon_);
+ 
++        transport_button_ = lv_button_create(container_);
++        lv_obj_set_size(transport_button_, 76, 32);
++        lv_obj_align(transport_button_, LV_ALIGN_RIGHT_MID, -17, -58);
++        lv_obj_set_style_radius(transport_button_, 6, 0);
++        lv_obj_set_style_bg_color(transport_button_, ColorSurface(), 0);
++        lv_obj_set_style_bg_color(transport_button_, lv_color_hex(0x2A3735), LV_STATE_PRESSED);
++        lv_obj_set_style_border_width(transport_button_, 1, 0);
++        lv_obj_set_style_border_opa(transport_button_, LV_OPA_60, 0);
++        lv_obj_set_style_pad_all(transport_button_, 0, 0);
++        lv_obj_add_event_cb(transport_button_, [](lv_event_t* event) {
++            auto self = static_cast<VoiceAgentDisplay*>(lv_event_get_user_data(event));
++            Application::GetInstance().Schedule([self]() { self->ToggleTransportPreference(); });
++        }, LV_EVENT_CLICKED, this);
++
++        transport_label_ = lv_label_create(transport_button_);
++        lv_obj_set_style_text_font(transport_label_, text_font, 0);
++        lv_obj_center(transport_label_);
++        UpdateTransportControl();
++
+         auto endpoint_button = lv_button_create(container_);
+         lv_obj_set_size(endpoint_button, 40, 34);
+         lv_obj_align(endpoint_button, LV_ALIGN_BOTTOM_RIGHT, -58, -10);
+@@ -708,6 +756,7 @@ public:
+         } else {
+             SetActionColor(ColorIdle());
+         }
++        UpdateTransportControl();
+     }
+ 
+     void SetTheme(Theme* theme) override {
+@@ -727,6 +776,7 @@ public:
+             if (battery_label_ != nullptr) lv_obj_set_style_text_font(battery_label_, icon_font, 0);
+             if (mute_label_ != nullptr) lv_obj_set_style_text_font(mute_label_, icon_font, 0);
+             if (action_icon_ != nullptr) lv_obj_set_style_text_font(action_icon_, large_icon_font, 0);
++            if (transport_label_ != nullptr) lv_obj_set_style_text_font(transport_label_, text_font, 0);
+         }
+         Display::SetTheme(theme);
+     }
+diff --git a/main/protocols/websocket_protocol.cc b/main/protocols/websocket_protocol.cc
+index 8d64bdf..97e7a6f 100644
+--- a/main/protocols/websocket_protocol.cc
++++ b/main/protocols/websocket_protocol.cc
+@@ -6,6 +6,7 @@
+ #include "voice_agent_local_config.h"
+ 
+ #include <algorithm>
++#include <atomic>
+ #include <cctype>
+ #include <cstring>
+ #include <http_parser.h>
+@@ -22,6 +23,8 @@ constexpr size_t kMaxWebsocketUrlLength = 255;
+ constexpr int kLocalProtocolVersion = 1;
+ // NVS keys are limited to 15 characters; this stores logical protocol_version.
+ constexpr const char* kProtocolVersionKey = "protocol_ver";
++constexpr const char* kTransportModeKey = "transport_mode";
++std::atomic<bool> s_udp_selected{false};
+ 
+ struct WebsocketEndpointSnapshot {
+     std::string url;
+@@ -134,12 +137,38 @@ WebsocketEndpointSnapshot ResolveWebsocketEndpoint() {
+ 
+ }  // namespace
+ 
++std::string WebsocketProtocol::GetTransportMode() {
++    Settings settings("voice_agent", false);
++    const std::string saved = settings.GetString(kTransportModeKey);
++    if (saved == "force_wss" || saved == "force_udp_for_test") {
++        return saved;
++    }
++    return VOICE_AGENT_TRANSPORT_MODE;
++}
++
++bool WebsocketProtocol::IsUdpPreferred() {
++    return GetTransportMode() == "force_udp_for_test";
++}
++
++bool WebsocketProtocol::IsUdpSelected() {
++    return s_udp_selected.load(std::memory_order_acquire);
++}
++
++void WebsocketProtocol::SetUdpPreferred(bool enabled) {
++    Settings settings("voice_agent", true);
++    settings.SetString(kTransportModeKey, enabled ? "force_udp_for_test" : "force_wss");
++    s_udp_selected.store(enabled, std::memory_order_release);
++    ESP_LOGI(TAG, "Transport preference changed to %s; applies to next fresh session",
++             enabled ? "udp-opus-gcm-v1" : "wss-opus-v1");
++}
++
+ bool WebsocketProtocol::ParseEndpointOrigin(const std::string& url, std::string& origin) {
+     std::string host;
+     return ParseWebsocketUrl(url, host, origin);
+ }
+ 
+ WebsocketProtocol::WebsocketProtocol() {
++    s_udp_selected.store(IsUdpPreferred(), std::memory_order_release);
+     event_group_handle_ = xEventGroupCreate();
+ }
+ 
+@@ -224,6 +253,7 @@ bool WebsocketProtocol::OpenAudioChannel() {
+     version_ = endpoint.version;
+ 
+     use_udp_ = false;
++    s_udp_selected.store(IsUdpPreferred(), std::memory_order_release);
+     playback_generation_ = 1;
+     xEventGroupClearBits(event_group_handle_, WEBSOCKET_PROTOCOL_SERVER_HELLO_EVENT |
+                                               WEBSOCKET_PROTOCOL_MEDIA_READY_EVENT);
+@@ -384,7 +414,8 @@ std::string WebsocketProtocol::GetHelloMessage() {
+     cJSON_AddItemToArray(profiles, cJSON_CreateString("wss-opus-v1"));
+     cJSON_AddItemToArray(profiles, cJSON_CreateString("udp-opus-gcm-v1"));
+     cJSON_AddItemToObject(root, "transport_profiles", profiles);
+-    cJSON_AddStringToObject(root, "transport_mode", VOICE_AGENT_TRANSPORT_MODE);
++    const std::string transport_mode = GetTransportMode();
++    cJSON_AddStringToObject(root, "transport_mode", transport_mode.c_str());
+     cJSON* audio_params = cJSON_CreateObject();
+     cJSON_AddStringToObject(audio_params, "format", "opus");
+     cJSON_AddNumberToObject(audio_params, "sample_rate", 16000);
+@@ -407,11 +438,13 @@ void WebsocketProtocol::ParseServerHello(const cJSON* root) {
+         return;
+     }
+     use_udp_ = strcmp(transport->valuestring, "udp") == 0;
+-    if ((strcmp(VOICE_AGENT_TRANSPORT_MODE, "force_wss") == 0 && use_udp_) ||
+-        (strcmp(VOICE_AGENT_TRANSPORT_MODE, "force_udp_for_test") == 0 && !use_udp_)) {
++    const std::string requested_mode = GetTransportMode();
++    if ((requested_mode == "force_wss" && use_udp_) ||
++        (requested_mode == "force_udp_for_test" && !use_udp_)) {
+         ESP_LOGE(TAG, "Server selection violates local transport mode");
+         return;
+     }
++    s_udp_selected.store(use_udp_, std::memory_order_release);
+     if (use_udp_) {
+         udp_media_ = std::make_unique<VoiceUdpMedia>();
+         udp_media_->OnAudio([this](std::unique_ptr<AudioStreamPacket> packet) {
+diff --git a/main/protocols/websocket_protocol.h b/main/protocols/websocket_protocol.h
+index 1488224..4343577 100644
+--- a/main/protocols/websocket_protocol.h
++++ b/main/protocols/websocket_protocol.h
+@@ -23,6 +23,9 @@ public:
+     void CloseAudioChannel(bool send_goodbye = true) override;
+     bool IsAudioChannelOpened() const override;
+     static bool ParseEndpointOrigin(const std::string& url, std::string& origin);
++    static bool IsUdpPreferred();
++    static bool IsUdpSelected();
++    static void SetUdpPreferred(bool enabled);
+ 
+ private:
+     EventGroupHandle_t event_group_handle_;
+@@ -35,6 +38,7 @@ private:
+     void ParseServerHello(const cJSON* root);
+     bool SendText(const std::string& text) override;
+     std::string GetHelloMessage();
++    static std::string GetTransportMode();
+ };
+ 
+ #endif
+
