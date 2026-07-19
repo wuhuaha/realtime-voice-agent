@@ -3,6 +3,7 @@ param(
     [ValidateRange(1, 32)]
     [int]$WorkerCount = 2,
     [string]$RuntimeDirectory,
+    [string]$EnvironmentFile,
     [ValidateRange(0, 65535)]
     [int]$DirectorPort = 0,
     [ValidateRange(0, 65535)]
@@ -20,6 +21,27 @@ if ([string]::IsNullOrWhiteSpace($RuntimeDirectory)) {
 }
 $RuntimeDirectory = [System.IO.Path]::GetFullPath($RuntimeDirectory)
 $PidFile = Join-Path $RuntimeDirectory 'server-processes.json'
+if ([string]::IsNullOrWhiteSpace($EnvironmentFile)) {
+    $EnvironmentFile = Join-Path $RepoRoot '.env'
+}
+$EnvironmentFile = [System.IO.Path]::GetFullPath($EnvironmentFile)
+
+function Get-DescendantProcessIds {
+    param([int]$ParentId)
+    $descendants = [System.Collections.Generic.List[int]]::new()
+    $pending = [System.Collections.Generic.Queue[int]]::new()
+    $pending.Enqueue($ParentId)
+    while ($pending.Count -gt 0) {
+        $currentParent = $pending.Dequeue()
+        $children = Get-CimInstance Win32_Process -Filter "ParentProcessId = $currentParent" -ErrorAction SilentlyContinue
+        foreach ($child in @($children)) {
+            $childId = [int]$child.ProcessId
+            $descendants.Add($childId)
+            $pending.Enqueue($childId)
+        }
+    }
+    return @($descendants)
+}
 
 function Stop-RecordedProcesses {
     if (-not (Test-Path -LiteralPath $PidFile)) {
@@ -67,11 +89,16 @@ function Stop-RecordedProcesses {
             $unmatched.Add($entry)
             continue
         }
+        $descendantIds = @(Get-DescendantProcessIds -ParentId $process.Id)
+        $ownedProcessIds = @($descendantIds) + @($process.Id)
         try {
-            Stop-Process -Id $process.Id -Force -ErrorAction Stop
-            Wait-Process -Id $process.Id -Timeout 5 -ErrorAction SilentlyContinue
-            if ($null -ne (Get-Process -Id $process.Id -ErrorAction SilentlyContinue)) {
-                throw "process did not exit"
+            for ($index = $descendantIds.Count - 1; $index -ge 0; $index--) {
+                Stop-Process -Id $descendantIds[$index] -Force -ErrorAction SilentlyContinue
+            }
+            Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
+            Wait-Process -Id $ownedProcessIds -Timeout 5 -ErrorAction SilentlyContinue
+            if (@(Get-Process -Id $ownedProcessIds -ErrorAction SilentlyContinue).Count -gt 0) {
+                throw "process tree did not exit"
             }
         }
         catch {
@@ -93,9 +120,9 @@ if ($Stop) {
     return
 }
 
-$EnvFile = Join-Path $RepoRoot '.env'
+$EnvFile = $EnvironmentFile
 if (-not (Test-Path -LiteralPath $EnvFile)) {
-    throw 'Create ignored .env from .env.example before starting local services.'
+    throw "Environment file does not exist: $EnvFile"
 }
 New-Item -ItemType Directory -Force -Path $RuntimeDirectory | Out-Null
 
@@ -294,7 +321,15 @@ try {
 }
 catch {
     foreach ($entry in $Started) {
-        Stop-Process -Id ([int]$entry.pid) -Force -ErrorAction SilentlyContinue
+        $startedProcess = Get-Process -Id ([int]$entry.pid) -ErrorAction SilentlyContinue
+        if ($null -eq $startedProcess) {
+            continue
+        }
+        $descendantIds = @(Get-DescendantProcessIds -ParentId $startedProcess.Id)
+        for ($index = $descendantIds.Count - 1; $index -ge 0; $index--) {
+            Stop-Process -Id $descendantIds[$index] -Force -ErrorAction SilentlyContinue
+        }
+        Stop-Process -Id $startedProcess.Id -Force -ErrorAction SilentlyContinue
     }
     Remove-Item -LiteralPath $PidFile -Force -ErrorAction SilentlyContinue
     throw
