@@ -1,0 +1,6 @@
+LiveKit
+FunASR
+CosyVoice
+DeepSeek
+ESP32
+小智

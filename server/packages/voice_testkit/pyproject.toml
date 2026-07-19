@@ -1,0 +1,12 @@
+[project]
+name = "voice-testkit"
+version = "0.1.0"
+requires-python = ">=3.12,<3.13"
+dependencies = ["voice-contracts"]
+
+[build-system]
+requires = ["hatchling==1.27.0"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/voice_testkit"]

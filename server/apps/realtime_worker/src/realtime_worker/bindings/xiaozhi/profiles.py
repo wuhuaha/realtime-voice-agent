@@ -1,0 +1,3 @@
+from ..xiaozhi_runtime import XIAOZHI_UDP_PROFILE, XIAOZHI_WSS_PROFILE
+
+__all__ = ["XIAOZHI_UDP_PROFILE", "XIAOZHI_WSS_PROFILE"]

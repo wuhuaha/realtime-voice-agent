@@ -1,0 +1,49 @@
+[project]
+name = "realtime-voice-agent-server-workspace"
+version = "0.1.0"
+requires-python = ">=3.12,<3.13"
+dependencies = []
+
+[tool.uv]
+package = false
+
+[tool.uv.workspace]
+members = [
+  "apps/session_director",
+  "apps/realtime_worker",
+  "packages/voice_contracts",
+  "packages/voice_testkit",
+]
+
+[tool.uv.sources]
+voice-contracts = { workspace = true }
+voice-testkit = { workspace = true }
+session-director = { workspace = true }
+realtime-worker = { workspace = true }
+
+[dependency-groups]
+dev = [
+  "httpx==0.28.1",
+  "pytest==8.4.1",
+  "pytest-asyncio==1.0.0",
+  "pytest-timeout==2.4.0",
+  "ruff==0.12.5",
+]
+
+[tool.ruff]
+line-length = 120
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP"]
+
+[tool.pytest.ini_options]
+addopts = ["-q", "--strict-markers", "-p", "no:cacheprovider"]
+asyncio_mode = "auto"
+markers = [
+  "unit: deterministic framework-neutral behavior",
+  "contract: HTTP and wire contract behavior",
+  "integration: in-process component integration",
+  "e2e_host: independent host reference path",
+  "real_provider: requires explicit provider network access",
+]
