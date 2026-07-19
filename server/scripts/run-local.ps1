@@ -41,12 +41,17 @@ function Stop-RecordedProcesses {
             continue
         }
         try {
-            $recordedStart = [DateTimeOffset]::Parse(
-                [string]$entry.start_time_utc,
-                [Globalization.CultureInfo]::InvariantCulture,
-                [Globalization.DateTimeStyles]::AssumeUniversal
-            ).UtcDateTime
-            $startMatches = [Math]::Abs(($process.StartTime.ToUniversalTime() - $recordedStart).TotalSeconds) -lt 1
+            if ($null -ne $entry.start_time_utc_ticks) {
+                $startMatches = $process.StartTime.ToUniversalTime().Ticks -eq [long]$entry.start_time_utc_ticks
+            }
+            else {
+                $recordedStart = [DateTimeOffset]::Parse(
+                    [string]$entry.start_time_utc,
+                    [Globalization.CultureInfo]::InvariantCulture,
+                    [Globalization.DateTimeStyles]::AssumeUniversal
+                ).UtcDateTime
+                $startMatches = $process.StartTime.ToUniversalTime() -eq $recordedStart
+            }
             $executableMatches = [string]::Equals(
                 [System.IO.Path]::GetFullPath($executable),
                 [System.IO.Path]::GetFullPath([string]$entry.executable),
@@ -62,7 +67,17 @@ function Stop-RecordedProcesses {
             $unmatched.Add($entry)
             continue
         }
-        Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
+        try {
+            Stop-Process -Id $process.Id -Force -ErrorAction Stop
+            Wait-Process -Id $process.Id -Timeout 5 -ErrorAction SilentlyContinue
+            if ($null -ne (Get-Process -Id $process.Id -ErrorAction SilentlyContinue)) {
+                throw "process did not exit"
+            }
+        }
+        catch {
+            Write-Warning "Failed to stop recorded PID $($entry.pid); retaining it in the manifest."
+            $unmatched.Add($entry)
+        }
     }
     if ($unmatched.Count -eq 0) {
         Remove-Item -LiteralPath $PidFile -Force -ErrorAction SilentlyContinue
@@ -202,6 +217,7 @@ function Start-LocalProcess {
         name = $Name
         pid = $process.Id
         start_time_utc = $process.StartTime.ToUniversalTime().ToString('O')
+        start_time_utc_ticks = [string]$process.StartTime.ToUniversalTime().Ticks
         executable = [System.IO.Path]::GetFullPath($Python)
         stdout = $stdout
         stderr = $stderr

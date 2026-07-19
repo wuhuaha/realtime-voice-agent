@@ -91,6 +91,15 @@ def test_production_and_director_lifecycle_settings_fail_closed() -> None:
         ).validate_runtime()
 
 
+@pytest.mark.parametrize(
+    "public_url",
+    ["wss:not-an-authority", "https://worker.test/v1/xiaozhi", "wss://worker.test/wrong"],
+)
+def test_worker_public_url_rejects_invalid_wire_endpoint(public_url: str) -> None:
+    with pytest.raises(ValueError, match="VOICE_WORKER_PUBLIC_WS_URL"):
+        worker_settings().model_copy(update={"worker_public_ws_url": public_url}).validate_runtime()
+
+
 @pytest.mark.asyncio
 async def test_worker_local_admission_defaults_to_five_and_drain_rejects_new_sessions() -> None:
     admission = SharedSessionAdmission(5)

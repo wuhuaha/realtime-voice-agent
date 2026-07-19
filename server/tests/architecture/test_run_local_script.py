@@ -58,8 +58,10 @@ def test_run_local_assigns_unique_worker_and_udp_ports() -> None:
     assert "VOICE_WORKER_PUBLIC_WS_URL" in content
     assert "Wait-LocalHealth" in content
     assert "start_time_utc" in content
+    assert "start_time_utc_ticks" in content
     assert "OrdinalIgnoreCase" in content
     assert "$manifest.processes = @($unmatched)" in content
+    assert "Failed to stop recorded PID" in content
 
 
 def test_root_launcher_forwards_topology_and_stop() -> None:

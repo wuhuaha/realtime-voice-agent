@@ -153,10 +153,12 @@ class Settings(BaseSettings):
             raise ValueError("VOICE_HEARTBEAT_ENABLED must be true when VOICE_DIRECTOR_URL is configured")
         if self.environment == "production" and not self.director_url:
             raise ValueError("production requires VOICE_DIRECTOR_URL")
-        public_ws_scheme = urlsplit(self.worker_public_ws_url).scheme
-        if public_ws_scheme not in {"ws", "wss"}:
-            raise ValueError("VOICE_WORKER_PUBLIC_WS_URL must use ws:// or wss://")
-        if self.environment == "production" and public_ws_scheme != "wss":
+        public_ws_url = urlsplit(self.worker_public_ws_url)
+        if public_ws_url.scheme not in {"ws", "wss"} or not public_ws_url.hostname:
+            raise ValueError("VOICE_WORKER_PUBLIC_WS_URL must be an absolute ws:// or wss:// URL")
+        if public_ws_url.path != "/v1/xiaozhi" or public_ws_url.query or public_ws_url.fragment:
+            raise ValueError("VOICE_WORKER_PUBLIC_WS_URL must use the canonical /v1/xiaozhi path")
+        if self.environment == "production" and public_ws_url.scheme != "wss":
             raise ValueError("production requires VOICE_WORKER_PUBLIC_WS_URL to use wss://")
         if self.xiaozhi_udp_enabled and not self.xiaozhi_udp_advertise_host:
             raise ValueError("VOICE_XIAOZHI_UDP_ADVERTISE_HOST is required when UDP is enabled")
