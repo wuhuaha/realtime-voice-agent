@@ -1,0 +1,50 @@
+name: ci
+
+on:
+  pull_request:
+  push:
+
+permissions:
+  contents: read
+
+jobs:
+  repository:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - run: uv sync --locked --dev
+      - run: uv run ruff check scripts tests
+      - run: uv run pytest
+      - run: uv run python scripts/verify_repository.py
+      - run: uv run python scripts/check_secrets.py
+
+  server:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - run: uv sync --directory server --locked --dev
+      - run: uv run --directory server ruff check .
+      - run: uv run --directory server pytest
+
+  firmware-source-contract:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - name: Parse PowerShell scripts
+        shell: pwsh
+        run: |
+          $errors = @()
+          Get-ChildItem firmware -Recurse -Filter *.ps1 | ForEach-Object {
+            [void][Management.Automation.Language.Parser]::ParseFile($_.FullName, [ref]$null, [ref]$errors)
+          }
+          if ($errors.Count -gt 0) { $errors | Format-List; exit 1 }
+      - name: Run firmware host contracts
+        shell: pwsh
+        run: ./firmware/device/scripts/test-headless-contract.ps1
