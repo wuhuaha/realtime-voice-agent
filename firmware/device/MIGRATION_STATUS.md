@@ -25,8 +25,9 @@
 
 ## 证据边界
 
-本迁移不继承旧固件 HIL。最终 reference `0001..0010` 在研究仓只有 clean build/size 证据；
-新仓 materialize、reference clean build、flash、boot、WSS/UDP、声学、弱网和长稳必须分别记录。
+本迁移不继承旧固件 HIL。最终 reference `0001..0010` 的新仓 clean build、flash、boot 和部分
+transport HIL 已分别执行并记录；它们不等于目标 component 固件完成，也不替代 UI/触摸、真实声学闭环、
+弱网和长稳验证。
 
 ## 2026-07-20 迁移验证
 
@@ -43,4 +44,18 @@
 - ESP-IDF 5.5.2、GCC 14.2.0、`esp32s3` minimal headless build：`build_passed | image_sized`；
   app `0x27740` bytes，1 MiB headless partition 余量 `0xd88c0` bytes（85%），DIRAM
   `53,271 / 341,760` bytes（15.59%）。该数值只适用于 contract skeleton，不能与 reference app 比较；
-- reference flash、boot、真实 WSS/UDP、UI、音频、AEC、声学、弱网和长稳：`not_run`。
+- reference HIL 使用 `COM11` 上的 ESP32-S3 revision 0.2（8 MiB PSRAM）。先擦除 `0x9000` 起始的
+  16 KiB NVS，再烧录 bootloader、partition table、otadata、app 和 assets；五个写入区域的 flash
+  read-back SHA256 均与 [artifacts.sha256](../../migration/baseline/artifacts.sha256) 一致。app SHA256 为
+  `43bac4d4ed678b3298cc9f4c8e9da0c4ab7608af731406cec31939ee457350c8`：
+  `device_verified`；
+- cold boot 后连接 Wi-Fi“广告位招租”，获得 `192.168.1.105`；display、audio codec、ES7210、
+  AEC、VAD 与 wake model 初始化完成，串口观察窗口内无 panic/WDT：`boot_observed | device_verified`；
+- 唤醒成功；WSS 握手约 20 ms；UDP GCM 完成首个 authenticated probe 并进入 ready，随后观察到
+  600+ UDP Opus uplink packets；AEC 运行于 `VOIP_HIGH_PERF`：`device_verified`。这些事实证明端侧唤醒和 UDP 上行
+  transport，不证明真机 ASR/TTS/downlink playout 闭环；
+- UI 视觉/触摸：`not_run`。自动声学语句采集虽已尝试，但采集峰值过低、未触发 ASR，因此真机
+  FunASR/DeepSeek/CosyVoice 闭环、near/far/double-talk、20 轮、弱网和 30 分钟长稳仍为 `not_run`；
+- Server `259aeee` 的 host synthetic real-media E2E 已收到 FunASR final（约 480 ms）、DeepSeek
+  HTTP 200/TTFT（约 9,876 ms）、CosyVoice HTTP 200/TTFB（约 594 ms）和下行音频：
+  `host_verified`。该结果使用合成输入，不是上述缺失的真机声学闭环。

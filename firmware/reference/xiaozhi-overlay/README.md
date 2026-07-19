@@ -85,6 +85,17 @@ checkout 中以同一 build/sdkconfig 目录运行 `idf.py set-target esp32s3` �
 patch round-trip 和 ESP-IDF 5.5.2 clean build：`2215/2215`，app `0x2d2660` bytes，最小 app
 partition 余量 28%，DIRAM `170,887 / 341,760` bytes。包含本机 local config 的 ignored artifact
 SHA256 为 `43bac4d4ed678b3298cc9f4c8e9da0c4ab7608af731406cec31939ee457350c8`；该 hash 只标识
-本次 artifact，不代表 bit-reproducible，也不得公开 artifact 中的 local credentials。最终序列尚未烧录，
-UDP/WSS 实链路、屏上 Wi-Fi/endpoint 保存后的重启回读、真人近讲 20 轮、不同距离声学测试、弱网和
-30 分钟长稳均为 `not_run`，不得沿用 `0001` 至 `0005` 的旧 HIL 证据。
+本次 artifact，不代表 bit-reproducible，也不得公开 artifact 中的 local credentials。
+
+最终序列已在交付仓提交 `cf9bc69` 下烧录到 `COM11` 的 ESP32-S3 revision 0.2（8 MiB PSRAM）：先擦除
+`0x9000` 起始的 16 KiB NVS，再按 flasher manifest 写入 bootloader、partition table、otadata、app 与
+assets；五个区域 read-back SHA256 全部匹配 [artifacts.sha256](../../../migration/baseline/artifacts.sha256)。
+cold boot 后连接 Wi-Fi“广告位招租”并获得 `192.168.1.105`；display、audio codec、ES7210、AEC、VAD、
+wake model 初始化完成，观察窗口内无 panic/WDT。唤醒成功，WSS 握手约 20 ms；UDP GCM 首个
+authenticated probe 成功并进入 ready，随后观察到 600+ UDP Opus uplink packets，AEC 为 `VOIP_HIGH_PERF`。
+
+上述 HIL 只证明烧录、bring-up、唤醒和上行 transport。未验证 UI 视觉/触摸；自动声学语句采集峰值过低且
+未触发 ASR，所以不得声称真机 FunASR/DeepSeek/CosyVoice/downlink playout 闭环。Server `259aeee` 的
+host synthetic real-media E2E 独立证明 FunASR final 约 480 ms、DeepSeek HTTP 200/TTFT 约 9,876 ms、
+CosyVoice HTTP 200/TTFB 约 594 ms和下行音频，但它不是设备声学闭环。屏上 Wi-Fi/endpoint 保存后的重启
+回读、真人近讲 20 轮、不同距离/double-talk声学测试、弱网和 30 分钟长稳仍为 `not_run`。

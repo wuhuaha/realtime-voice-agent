@@ -12,22 +12,56 @@ baseline:
   - id: delivery-reference-clean-build
     behavior: 新仓独立 materialize 后应用 0001 through 0010 并完成 clean build/size
     evidence: build_passed
-    applies_to: b2f4c0f
+    applies_to: cf9bc69
     result: 2215/2215, image 0x2d2660, app remaining 28%, DIRAM 50.0%
-    note: Artifact embeds ignored local configuration and was not flashed.
-  - id: final-overlay-device
-    behavior: final WSS/UDP firmware boot and real media
+    note: Artifact embeds ignored local configuration and is not publishable.
+  - id: delivery-reference-flash-boot
+    behavior: 完整 reference artifact 烧录、cold boot、Wi-Fi 与硬件/音频算法初始化
+    evidence: device_verified
+    applies_to: cf9bc69
+    result: COM11 ESP32-S3 rev0.2 with 8 MiB PSRAM; IP 192.168.1.105; no panic/WDT observed
+    note: NVS 0x9000/16 KiB erased; bootloader, partition, otadata, app and assets read-back hashes matched.
+  - id: delivery-reference-wss-handshake
+    behavior: wake and WSS handshake
+    evidence: device_verified
+    applies_to: cf9bc69
+    result: wake succeeded; WSS handshake about 20 ms
+    note: Sustained WSS media and device acoustic ASR/TTS/downlink playout were not proven in this run.
+  - id: delivery-reference-udp-probe
+    behavior: UDP GCM authenticated probe and ready transition
+    evidence: device_verified
+    applies_to: cf9bc69
+    result: first probe authenticated; transport ready; more than 600 UDP Opus uplink packets; AEC VOIP_HIGH_PERF
+    note: Does not prove UDP uplink ASR or downlink playout.
+  - id: delivery-host-synthetic-provider-e2e
+    behavior: synthetic real-media input through FunASR, DeepSeek and CosyVoice to downlink audio
+    evidence: host_verified
+    applies_to: 259aeee
+    result: FunASR final about 480 ms; DeepSeek 200 TTFT about 9876 ms; CosyVoice 200 TTFB about 594 ms
+    note: Host synthetic evidence is not a device acoustic closed loop.
+  - id: final-overlay-ui-touch
+    behavior: final overlay UI visual and touch interaction
     evidence: not_run
-    applies_to: cf1950d
+    applies_to: cf9bc69
+  - id: final-overlay-device-acoustic-loop
+    behavior: device microphone through ASR/LLM/TTS to device playout
+    evidence: not_run
+    applies_to: cf9bc69
+    note: Automated utterance capture peak was too low and did not trigger ASR.
   - id: final-overlay-acoustic
     behavior: near/far/double-talk, 20 turns and 30 minute stability
     evidence: not_run
-    applies_to: cf1950d
+    applies_to: cf9bc69
+  - id: final-overlay-weak-network
+    behavior: WSS/UDP loss, jitter, reorder and blocked-UDP fallback
+    evidence: not_run
+    applies_to: cf9bc69
   - id: server-unit-contract
     behavior: Xiaozhi WSS/UDP lifecycle and provider fake paths
     evidence: contract_verified
     result: 136 passed in source repository
   - id: real-provider-baseline
     behavior: FunASR, DeepSeek and CosyVoice roomless AgentSession loop
-    evidence: device_verified
-    note: Proven on the prior WSS artifact; target repository must re-run E2E.
+    evidence: host_verified
+    applies_to: 259aeee
+    note: Re-run with synthetic real media and downlink audio; device acoustic E2E remains not_run.
