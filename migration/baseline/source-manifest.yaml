@@ -1,0 +1,29 @@
+schema_version: 1
+created_at: 2026-07-20
+source_repository:
+  path_hint: voice-agent-research
+  commits:
+    - 113bc3b
+    - 90da904
+    - cf1950d
+    - ab7797a
+    - 96df4c0
+    - 4e5eb59
+    - b6cc9ed
+    - 1c9f64c
+  server_tree: 66bb1f094a29b7927d8f8008f9217e9659576ac0
+  udp_protocol_tree: 492fda331ff9c6d9a264153a1d3e512ebf841623
+upstream:
+  xiaozhi_revision: 7b190b78e4f8dfef14126f6cd478c134b3cd3cd8
+  xiaozhi_dependencies_lock_sha256: 5ada8c797ad185737923533677bc7bd6b323f3fe5998eba00a840dd4000a5189
+  esp_idf_version: 5.5.2
+  esp_idf_revision: 30aaf64524299d3bde422ca9a2848090d1bc5d0f
+files:
+  - path: protocol/xiaozhi_udp_v1/README.md
+    sha256: e17aa03c4249422a54937dfed5e9ad9d67862768dccf440b8f0347897725649c
+    source_sha256: a6c5409cbfe0a58139b6a9d8635136b6a20c5f9415b9deaed7dbbc9ba00b1255
+    normalization: removed one trailing blank line
+  - path: protocol/xiaozhi_udp_v1/fixtures/positive.json
+    sha256: 38298f767c23927a3c109860429e5f6ccc6c978c8dcb30fe782a3ac388d87b20
+  - path: protocol/xiaozhi_udp_v1/fixtures/negative.json
+    sha256: d6c03e211371b56e73b59186a4b00ace549e12eeb123061b6b795b4bd140a8f5

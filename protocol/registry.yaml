@@ -1,0 +1,25 @@
+schema_version: 1
+control_protocols:
+  - id: xiaozhi-control-v1
+    transport: websocket
+    path: /v1/xiaozhi
+    version_header: Protocol-Version
+    version: "1"
+media_profiles:
+  - id: wss-opus-v1
+    control: xiaozhi-control-v1
+    carrier: websocket-binary
+    codec: opus
+    sample_rate_hz: 16000
+    channels: 1
+    frame_duration_ms: 60
+    status: baseline
+  - id: udp-opus-gcm-v1
+    control: xiaozhi-control-v1
+    carrier: udp
+    codec: opus
+    sample_rate_hz: 16000
+    channels: 1
+    frame_duration_ms: 60
+    status: challenger
+    wire: xiaozhi_udp_v1/README.md

@@ -1,0 +1,16 @@
+schema_version: 1
+sources:
+  - id: xiaozhi-esp32
+    url: https://github.com/78/xiaozhi-esp32.git
+    revision: 7b190b78e4f8dfef14126f6cd478c134b3cd3cd8
+    license: MIT
+    accessed_at: 2026-07-20
+    purpose: ESP32-S3 voice endpoint upstream application
+    dependency_lock_sha256: 5ada8c797ad185737923533677bc7bd6b323f3fe5998eba00a840dd4000a5189
+  - id: esp-idf
+    url: https://github.com/espressif/esp-idf.git
+    revision: 30aaf64524299d3bde422ca9a2848090d1bc5d0f
+    version: v5.5.2
+    license: Apache-2.0
+    accessed_at: 2026-07-20
+    purpose: ESP32-S3 firmware toolchain and SDK

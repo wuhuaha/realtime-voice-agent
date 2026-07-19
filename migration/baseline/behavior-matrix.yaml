@@ -1,0 +1,27 @@
+schema_version: 1
+baseline:
+  - id: endpoint-ui-audio-wss
+    behavior: LCD/touch/Wi-Fi/NVS/AEC/Opus/WSS/provider interaction
+    evidence: device_verified
+    applies_to: overlay-0001-through-0005
+    note: Old WSS artifact is a behavior baseline only.
+  - id: final-overlay-clean-build
+    behavior: overlay 0001 through 0010 clean build and size
+    evidence: build_passed
+    applies_to: cf1950d
+  - id: final-overlay-device
+    behavior: final WSS/UDP firmware boot and real media
+    evidence: not_run
+    applies_to: cf1950d
+  - id: final-overlay-acoustic
+    behavior: near/far/double-talk, 20 turns and 30 minute stability
+    evidence: not_run
+    applies_to: cf1950d
+  - id: server-unit-contract
+    behavior: Xiaozhi WSS/UDP lifecycle and provider fake paths
+    evidence: contract_verified
+    result: 136 passed in source repository
+  - id: real-provider-baseline
+    behavior: FunASR, DeepSeek and CosyVoice roomless AgentSession loop
+    evidence: device_verified
+    note: Proven on the prior WSS artifact; target repository must re-run E2E.

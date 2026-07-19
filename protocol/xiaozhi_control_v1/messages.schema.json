@@ -1,0 +1,137 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://realtime-voice-agent.local/protocol/xiaozhi-control-v1/messages.schema.json",
+  "title": "Xiaozhi Control Protocol v1",
+  "oneOf": [
+    { "$ref": "#/$defs/clientHello" },
+    { "$ref": "#/$defs/serverHello" },
+    { "$ref": "#/$defs/listen" },
+    { "$ref": "#/$defs/abort" },
+    { "$ref": "#/$defs/stt" },
+    { "$ref": "#/$defs/tts" }
+  ],
+  "$defs": {
+    "audioInput": {
+      "type": "object",
+      "required": ["format", "sample_rate", "channels", "frame_duration"],
+      "properties": {
+        "format": { "const": "opus" },
+        "sample_rate": { "const": 16000 },
+        "channels": { "const": 1 },
+        "frame_duration": { "const": 60 }
+      },
+      "additionalProperties": false
+    },
+    "audioOutput": {
+      "type": "object",
+      "required": ["format", "sample_rate", "channels", "frame_duration"],
+      "properties": {
+        "format": { "const": "opus" },
+        "sample_rate": { "enum": [16000, 24000] },
+        "channels": { "const": 1 },
+        "frame_duration": { "const": 60 }
+      },
+      "additionalProperties": false
+    },
+    "clientHello": {
+      "type": "object",
+      "required": ["type", "version", "transport", "audio_params"],
+      "properties": {
+        "type": { "const": "hello" },
+        "version": { "const": 1 },
+        "transport": { "const": "websocket" },
+        "audio_params": { "$ref": "#/$defs/audioInput" },
+        "transport_profiles": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 2,
+          "uniqueItems": true,
+          "items": { "enum": ["wss-opus-v1", "udp-opus-gcm-v1"] }
+        },
+        "transport_mode": { "enum": ["auto", "force_wss", "force_udp_for_test"] },
+        "features": { "type": "object" }
+      },
+      "additionalProperties": false
+    },
+    "udpGrant": {
+      "type": "object",
+      "required": ["server", "port", "media_id", "media_epoch", "uplink_key", "uplink_salt", "downlink_key", "downlink_salt", "expires_at", "probe_timeout_ms", "header_bytes", "tag_bytes", "max_datagram_bytes", "max_payload_bytes"],
+      "properties": {
+        "server": { "type": "string", "minLength": 1, "maxLength": 253 },
+        "port": { "type": "integer", "minimum": 1, "maximum": 65535 },
+        "media_id": { "type": "string", "pattern": "^[0-9a-f]{16}$" },
+        "media_epoch": { "type": "integer", "minimum": 1, "maximum": 4294967295 },
+        "uplink_key": { "type": "string", "minLength": 24, "maxLength": 24 },
+        "uplink_salt": { "type": "string", "minLength": 12, "maxLength": 12 },
+        "downlink_key": { "type": "string", "minLength": 24, "maxLength": 24 },
+        "downlink_salt": { "type": "string", "minLength": 12, "maxLength": 12 },
+        "expires_at": { "type": "integer", "minimum": 1 },
+        "probe_timeout_ms": { "type": "integer", "minimum": 1, "maximum": 30000 },
+        "header_bytes": { "const": 32 },
+        "tag_bytes": { "const": 16 },
+        "max_datagram_bytes": { "const": 1280 },
+        "max_payload_bytes": { "const": 1200 }
+      },
+      "additionalProperties": false
+    },
+    "serverHello": {
+      "type": "object",
+      "required": ["type", "version", "transport", "transport_profile", "session_id", "audio_params"],
+      "properties": {
+        "type": { "const": "hello" },
+        "version": { "const": 1 },
+        "transport": { "enum": ["websocket", "udp"] },
+        "transport_profile": { "enum": ["wss-opus-v1", "udp-opus-gcm-v1"] },
+        "session_id": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "audio_params": { "$ref": "#/$defs/audioOutput" },
+        "udp": { "$ref": "#/$defs/udpGrant" }
+      },
+      "additionalProperties": false
+    },
+    "listen": {
+      "type": "object",
+      "required": ["session_id", "type", "state"],
+      "properties": {
+        "session_id": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "type": { "const": "listen" },
+        "state": { "enum": ["start", "stop", "detect"] },
+        "mode": { "enum": ["auto", "manual", "realtime"] },
+        "text": { "type": "string", "maxLength": 4096 }
+      },
+      "additionalProperties": false
+    },
+    "abort": {
+      "type": "object",
+      "required": ["session_id", "type"],
+      "properties": {
+        "session_id": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "type": { "const": "abort" },
+        "reason": { "type": "string", "maxLength": 128 }
+      },
+      "additionalProperties": false
+    },
+    "stt": {
+      "type": "object",
+      "required": ["session_id", "type", "text", "is_final"],
+      "properties": {
+        "session_id": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "type": { "const": "stt" },
+        "text": { "type": "string", "maxLength": 16384 },
+        "is_final": { "type": "boolean" }
+      },
+      "additionalProperties": false
+    },
+    "tts": {
+      "type": "object",
+      "required": ["session_id", "type", "state"],
+      "properties": {
+        "session_id": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "type": { "const": "tts" },
+        "state": { "enum": ["start", "sentence_start", "stop"] },
+        "text": { "type": "string", "maxLength": 16384 },
+        "generation": { "type": "integer", "minimum": 0, "maximum": 4294967295 }
+      },
+      "additionalProperties": false
+    }
+  }
+}
