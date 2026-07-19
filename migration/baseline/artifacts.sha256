@@ -1,2 +1,4 @@
 # Fresh ESP-IDF 5.5.2 validator artifact; binary is intentionally not committed.
 870dfb4351281b1d403b0948566d524a5935af71a86d0ce3fdfffea0348715e3  xiaozhi.bin
+# New repository clean build with ignored local configuration; not committed or flashed.
+43bac4d4ed678b3298cc9f4c8e9da0c4ab7608af731406cec31939ee457350c8  xiaozhi-new-repo-local-config.bin

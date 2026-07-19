@@ -40,7 +40,9 @@ endpoint 优先级固定为：`voice_agent` NVS > ignored local-lab 配置 > 上
 ```
 
 脚本只从仓根 `third_party/sources.lock.yaml` 读取 URL、revision 和 dependency lock SHA256，
-不会读取研究仓路径。已有 checkout revision 不匹配且工作树非 clean 时会 fail closed。
+不会读取研究仓路径。materialize/verify 只接受无 tracked 改动的 pinned checkout；ignored
+`dependencies.lock` 可以存在，脚本不会 reset 或自动覆盖 tracked 工作树。overlay 应在 materialize
+完成后单向应用，不能再用 materializer 验证已打 patch 的工作树。
 
 在本目录从模板创建 ignored 的 `.env.local`，不要把 token 或 Wi-Fi 密码写入 tracked 文件：
 
@@ -48,13 +50,15 @@ endpoint 优先级固定为：`voice_agent` NVS > ignored local-lab 配置 > 上
 Copy-Item .env.local.example .env.local
 ```
 
-激活 ESP-IDF `>=5.5.2` 后执行：
+激活 `third_party/sources.lock.yaml` 固定的 ESP-IDF 后执行：
 
 ```powershell
 ./scripts/build.ps1 -Clean
 ```
 
 脚本会核对 revision、幂等应用 patch、生成不打印取值的外部配置头、使用独立 `sdkconfig.voice-agent`/`build-voice-agent` 构建并运行 `idf.py size`，最后确认 token 和 Wi-Fi 密码没有进入 Git tracked 文件。
+构建前还会按 source lock 拒绝 ESP-IDF version tag、Git revision 或 tracked-clean 状态不一致的工具链；
+untracked/ignored 工具缓存不参与该 dirty 判定。
 
 若只准备普通 overlay：
 
@@ -77,4 +81,10 @@ checkout 中以同一 build/sdkconfig 目录运行 `idf.py set-target esp32s3` �
 
 固定 revision 的 `0001` 至 `0005` WSS 基线已完成 clean build、app-only 烧录、cold boot、Wi-Fi、真实 provider 闭环、约 10 分钟 listening smoke、长回复越界回归和一次自动 double-talk/打断。TTS callback carry-buffer 修复与当前环境 VAD `0.60` 配置也已通过真机闭环。
 
-当前 `0001` 至 `0010` WSS/UDP 最终序列已通过 canonical contract、patch round-trip 和 ESP-IDF 5.5.2 clean build；该最终序列尚未烧录，UDP/WSS 实链路、屏上 Wi-Fi/endpoint 保存后的重启回读、真人近讲 20 轮、不同距离声学测试、弱网和 30 分钟长稳均为 `not_run`，不得沿用 `0001` 至 `0005` 的旧 HIL 证据。
+当前 `0001` 至 `0010` WSS/UDP 最终序列已在新仓 ignored checkout 独立完成 canonical contract、
+patch round-trip 和 ESP-IDF 5.5.2 clean build：`2215/2215`，app `0x2d2660` bytes，最小 app
+partition 余量 28%，DIRAM `170,887 / 341,760` bytes。包含本机 local config 的 ignored artifact
+SHA256 为 `43bac4d4ed678b3298cc9f4c8e9da0c4ab7608af731406cec31939ee457350c8`；该 hash 只标识
+本次 artifact，不代表 bit-reproducible，也不得公开 artifact 中的 local credentials。最终序列尚未烧录，
+UDP/WSS 实链路、屏上 Wi-Fi/endpoint 保存后的重启回读、真人近讲 20 轮、不同距离声学测试、弱网和
+30 分钟长稳均为 `not_run`，不得沿用 `0001` 至 `0005` 的旧 HIL 证据。

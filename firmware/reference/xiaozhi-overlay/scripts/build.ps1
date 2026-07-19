@@ -16,15 +16,17 @@ if ($Config) {
 }
 & (Join-Path $PSScriptRoot "verify-source-contract.ps1") -Checkout $Checkout
 if ($LASTEXITCODE -ne 0) { throw "Pinned Xiaozhi source contract failed" }
-if (-not $env:IDF_PATH) { throw "Activate ESP-IDF >= 5.5.2 before running this script" }
+if (-not $env:IDF_PATH) { throw "Activate the ESP-IDF pinned by third_party/sources.lock.yaml" }
+$sourceVerifier = Join-Path $repoRoot "firmware/tools/verify-source.py"
+& uv run --project $repoRoot python $sourceVerifier --source-id esp-idf --checkout $env:IDF_PATH
+if ($LASTEXITCODE -ne 0) { throw "Pinned ESP-IDF source contract failed" }
 $idf = Join-Path $env:IDF_PATH "tools/idf.py"
-$versionText = (& python $idf --version | Out-String).Trim()
-if ($LASTEXITCODE -ne 0 -or $versionText -notmatch 'v?(\d+)\.(\d+)\.(\d+)') { throw "Unable to determine ESP-IDF version" }
-$version = [version]::new([int]$Matches[1], [int]$Matches[2], [int]$Matches[3])
-if ($version -lt [version]"5.5.2") { throw "Pinned Xiaozhi manifest requires ESP-IDF >= 5.5.2; active version is $version" }
 
 & (Join-Path $PSScriptRoot "apply-overlay.ps1") -Checkout $Checkout -Config $Config
 if ($LASTEXITCODE -ne 0) { throw "Overlay preparation failed" }
+$overlayTreeVerifier = Join-Path $PSScriptRoot "verify-overlay-tree.py"
+& uv run --project $repoRoot python $overlayTreeVerifier --checkout $Checkout --integration $integration
+if ($LASTEXITCODE -ne 0) { throw "Canonical overlay tree verification failed" }
 
 $buildDir = Join-Path $Checkout "build-voice-agent"
 $sdkconfig = Join-Path $Checkout "sdkconfig.voice-agent"

@@ -22,3 +22,21 @@ def test_ignores_env_templates(tmp_path: Path) -> None:
     candidate = tmp_path / ".env.example"
     candidate.write_text("API_KEY=replace-with-provider-key\n", encoding="utf-8")
     assert CHECK.scan(tmp_path, (".env.example",)) == []
+
+
+def test_scans_env_templates_for_real_values(tmp_path: Path) -> None:
+    candidate = tmp_path / ".env.example"
+    candidate.write_text("PASSWORD=actual-" + "production-password\n", encoding="utf-8")
+    assert CHECK.scan(tmp_path, (".env.example",)) == [
+        ".env.example:1: possible assigned_secret"
+    ]
+
+
+def test_ignores_dynamic_validator_and_constant_assertion(tmp_path: Path) -> None:
+    candidate = tmp_path / "contract.ps1"
+    candidate.write_text(
+        '$token = "validator-token-" + [guid]::NewGuid()\n'
+        "$source.Contains('voice_agent_token = VOICE_AGENT_WS_TOKEN')\n",
+        encoding="utf-8",
+    )
+    assert CHECK.scan(tmp_path, ("contract.ps1",)) == []

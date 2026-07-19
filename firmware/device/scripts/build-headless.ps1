@@ -2,14 +2,12 @@ param([switch]$Clean)
 
 $ErrorActionPreference = "Stop"
 $deviceRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
-if (-not $env:IDF_PATH) { throw "Activate ESP-IDF >= 5.5.2 before running this script" }
+$repoRoot = (Resolve-Path (Join-Path $deviceRoot "../..")).Path
+if (-not $env:IDF_PATH) { throw "Activate the ESP-IDF pinned by third_party/sources.lock.yaml" }
+$sourceVerifier = Join-Path $repoRoot "firmware/tools/verify-source.py"
+& uv run --project $repoRoot python $sourceVerifier --source-id esp-idf --checkout $env:IDF_PATH
+if ($LASTEXITCODE -ne 0) { throw "Pinned ESP-IDF source contract failed" }
 $idf = Join-Path $env:IDF_PATH "tools/idf.py"
-$versionText = (& python $idf --version | Out-String).Trim()
-if ($LASTEXITCODE -ne 0 -or $versionText -notmatch 'v?(\d+)\.(\d+)\.(\d+)') {
-    throw "Unable to determine ESP-IDF version"
-}
-$version = [version]::new([int]$Matches[1], [int]$Matches[2], [int]$Matches[3])
-if ($version -lt [version]"5.5.2") { throw "Headless contract requires ESP-IDF >= 5.5.2" }
 
 $buildDir = Join-Path $deviceRoot "build-headless"
 $sdkconfig = Join-Path $deviceRoot "sdkconfig.headless"

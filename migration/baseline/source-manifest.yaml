@@ -18,6 +18,11 @@ upstream:
   xiaozhi_dependencies_lock_sha256: 5ada8c797ad185737923533677bc7bd6b323f3fe5998eba00a840dd4000a5189
   esp_idf_version: 5.5.2
   esp_idf_revision: 30aaf64524299d3bde422ca9a2848090d1bc5d0f
+delivery_snapshots:
+  firmware_commit: b2f4c0f
+  reference_overlay_tree: b74f8fee9eeb88d05362fe8849d08299bc61d0b4
+  target_contract_tree: ca90c52c06bb2a04f86b12cc6515f6b91badc319
+  dependency_lock_blob: e5538d7e54cd2792b4d385e226f59c92e33907c5
 files:
   - path: protocol/xiaozhi_udp_v1/README.md
     sha256: e17aa03c4249422a54937dfed5e9ad9d67862768dccf440b8f0347897725649c

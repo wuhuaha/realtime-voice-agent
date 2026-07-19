@@ -9,6 +9,12 @@ baseline:
     behavior: overlay 0001 through 0010 clean build and size
     evidence: build_passed
     applies_to: cf1950d
+  - id: delivery-reference-clean-build
+    behavior: 新仓独立 materialize 后应用 0001 through 0010 并完成 clean build/size
+    evidence: build_passed
+    applies_to: b2f4c0f
+    result: 2215/2215, image 0x2d2660, app remaining 28%, DIRAM 50.0%
+    note: Artifact embeds ignored local configuration and was not flashed.
   - id: final-overlay-device
     behavior: final WSS/UDP firmware boot and real media
     evidence: not_run

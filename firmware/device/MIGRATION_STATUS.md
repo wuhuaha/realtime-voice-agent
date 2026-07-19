@@ -1,6 +1,6 @@
 # Firmware migration status
 
-状态：`reference_migrated | target_contract_skeleton_only`
+状态：`reference_migrated | reference_build_passed | target_contract_skeleton_only`
 
 ## 已迁移
 
@@ -32,10 +32,15 @@
 
 - `materialize-upstream.py` 的隔离 local Git clone、固定 revision、完整 lock 和篡改拒绝：`host_verified`；
 - 新仓实际 `third_party/sources.lock.yaml` 与受控 dependency lock SHA256：`contract_verified`；
-- 固定 revision 已准备源码上的 source、endpoint、UDP lifecycle 和 canonical fixture contract：
-  `contract_verified`；新仓 `external/xiaozhi-esp32` 尚未 materialize；
+- 新仓 ignored checkout 已 materialize；固定 revision 的 source、endpoint、UDP lifecycle 和 canonical
+  fixture contract：`contract_verified`；
+- reference `0001..0010` 独立 clean build：`build_passed | image_sized`，`2215/2215`，app
+  `0x2d2660` bytes，最小 app partition 余量 28%，DIRAM `170,887 / 341,760` bytes（50.0%）；
+  local-config artifact SHA256 为
+  `43bac4d4ed678b3298cc9f4c8e9da0c4ab7608af731406cec31939ee457350c8`。该 artifact ignored、
+  可能包含 local credentials，hash 不代表 bit-reproducible；
 - `voice_contracts`、`voice_core` host C++17 边界测试：`host_verified`；
 - ESP-IDF 5.5.2、GCC 14.2.0、`esp32s3` minimal headless build：`build_passed | image_sized`；
   app `0x27740` bytes，1 MiB headless partition 余量 `0xd88c0` bytes（85%），DIRAM
   `53,271 / 341,760` bytes（15.59%）。该数值只适用于 contract skeleton，不能与 reference app 比较；
-- reference clean build、flash、boot、真实 WSS/UDP、UI、音频、AEC、声学、弱网和长稳：`not_run`。
+- reference flash、boot、真实 WSS/UDP、UI、音频、AEC、声学、弱网和长稳：`not_run`。

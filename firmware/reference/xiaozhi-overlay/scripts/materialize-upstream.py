@@ -62,12 +62,22 @@ def _normalize_remote(url: str) -> str:
     return url.strip().rstrip("/").removesuffix(".git").lower()
 
 
+def _tracked_changes(checkout: Path) -> str:
+    return _run(["git", "status", "--porcelain", "--untracked-files=no"], cwd=checkout)
+
+
+def _verify_origin(checkout: Path, expected_url: str) -> None:
+    origin = _run(["git", "remote", "get-url", "origin"], cwd=checkout)
+    if _normalize_remote(origin) != _normalize_remote(expected_url):
+        raise MaterializationError("Xiaozhi checkout origin differs from third_party/sources.lock.yaml")
+
+
 def _verify_checkout(checkout: Path, source: dict[str, str], controlled_lock: Path) -> None:
     if not (checkout / ".git").exists():
         raise MaterializationError(f"Xiaozhi checkout is not a Git worktree: {checkout}")
-    origin = _run(["git", "remote", "get-url", "origin"], cwd=checkout)
-    if _normalize_remote(origin) != _normalize_remote(source["url"]):
-        raise MaterializationError("Xiaozhi checkout origin differs from third_party/sources.lock.yaml")
+    if _tracked_changes(checkout):
+        raise MaterializationError("refusing to use a Xiaozhi checkout with tracked changes")
+    _verify_origin(checkout, source["url"])
     revision = _run(["git", "rev-parse", "HEAD"], cwd=checkout).lower()
     if revision != source["revision"]:
         raise MaterializationError(f"Xiaozhi revision mismatch: expected {source['revision']}, found {revision}")
@@ -109,14 +119,17 @@ def materialize(repo_root: Path, *, verify_only: bool, verify_inputs_only: bool 
     elif not (checkout / ".git").exists():
         raise MaterializationError(f"refusing to replace non-Git path: {checkout}")
 
+    if not created and _tracked_changes(checkout):
+        raise MaterializationError("refusing to use a Xiaozhi checkout with tracked changes")
+    if not created:
+        _verify_origin(checkout, source["url"])
+
     current_revision = _run(["git", "rev-parse", "HEAD"], cwd=checkout).lower()
     if created:
         if current_revision != source["revision"]:
             _run(["git", "fetch", "--depth=1", "origin", source["revision"]], cwd=checkout)
         _run(["git", "checkout", "--detach", source["revision"]], cwd=checkout)
     elif current_revision != source["revision"]:
-        if _run(["git", "status", "--porcelain"], cwd=checkout):
-            raise MaterializationError("refusing to change revision of a dirty Xiaozhi checkout")
         _run(["git", "fetch", "--depth=1", "origin", source["revision"]], cwd=checkout)
         _run(["git", "checkout", "--detach", source["revision"]], cwd=checkout)
 

@@ -21,5 +21,11 @@ target-version = "py312"
 select = ["E", "F", "I", "B", "UP"]
 
 [tool.pytest.ini_options]
-testpaths = ["tests/repository", "tests/contract", "tests/compatibility"]
+testpaths = [
+  "tests/repository",
+  "tests/contract",
+  "tests/compatibility",
+  "firmware/reference/xiaozhi-overlay/tests",
+  "firmware/tools/tests",
+]
 addopts = ["-q", "--strict-markers", "-p", "no:cacheprovider"]

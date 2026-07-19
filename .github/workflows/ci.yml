@@ -16,7 +16,10 @@ jobs:
         with:
           enable-cache: true
       - run: uv sync --locked --dev
-      - run: uv run ruff check scripts tests
+      - run: >-
+          uv run ruff check scripts tests firmware/tools
+          firmware/reference/xiaozhi-overlay/scripts
+          firmware/reference/xiaozhi-overlay/tests
       - run: uv run pytest
       - run: uv run python scripts/verify_repository.py
       - run: uv run python scripts/check_secrets.py
@@ -28,7 +31,7 @@ jobs:
       - uses: astral-sh/setup-uv@v6
         with:
           enable-cache: true
-      - run: uv sync --directory server --locked --dev
+      - run: uv sync --directory server --locked --all-packages --dev
       - run: uv run --directory server ruff check .
       - run: uv run --directory server pytest
 
