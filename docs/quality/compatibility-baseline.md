@@ -61,22 +61,30 @@ SHA-256 `43bac4d4ed678b3298cc9f4c8e9da0c4ab7608af731406cec31939ee457350c8` 的 f
 ## 3. 新仓当前证据边界
 
 新仓已选择性提取 canonical protocol、firmware reference overlay、source lock、Server 和 repository contract。
-当前精确实现身份为 Server commit `fca8de8` + repairs `259aeee`/`d2fa0ca`、firmware/repro commit `cf9bc69`。以下状态只
-采用新仓本轮证据：
+最后提交快照为 Server commit `fca8de8` + repairs `259aeee`/`d2fa0ca`、firmware/repro commit `cf9bc69`；当前工作树
+另含本表记录的收尾修复与公网评测配置。以下状态只采用新仓本轮证据：
 
 | 验证 | 状态 |
 | --- | --- |
-| 新仓 repository/protocol contract | 根 pytest `15 passed` |
-| 新仓 Server unit/contract/integration | Server Ruff 通过；Redis-enabled pytest `179 passed` |
+| 新仓 repository/protocol contract | 历史提交快照根 pytest `15 passed`；当前工作树根 pytest `19 passed` |
+| 新仓 Server unit/contract/integration | `d2fa0ca` 历史快照 Redis-enabled pytest `179 passed`；当前工作树 Redis-enabled full suite `189 passed`、`0 skipped`，Server Ruff 通过 |
 | Shared coordination | atomic lease/fencing、heartbeat/drain、`jti` 单次消费及 Redis 重建/跨实例 replay 拒绝已测试 |
 | 新仓真实进程 host media E2E | synthetic Chinese 经 Director grant、WSS + UDP Opus/GCM 到真实 providers 并产生 downlink audio |
+| 公网部署 smoke | Director `182.254.219.7:8079`、Worker WSS `:8082/v1/xiaozhi`、UDP `:8093` readiness/bootstrap 通过；Redis `127.0.0.1:6380`，capacity `5` |
+| 公网 host WSS real-provider E2E | ASR “你好，请用一句话介绍一下你自己。”、字幕、105 个下行包，整轮 12.701 秒；单轮值不外推为 SLO |
+| 历史 pre-0014 WSS HIL | app SHA-256 `cb5449fbf824ac5bae0041df774daf257d22e3193a3998b5fa567a04492719a4`；公网 bootstrap/WSS/ASR/字幕/TTS/playout `device_verified`，350 帧 underrun 0 |
+| 历史 initial-0014 build/HIL | SHA-256 `070cc58f210fc9abbf6d8614c1404522f77c2572e8683aa4dcc9c8fed33ad739`；旧上行 lifecycle fence 前的中间 artifact |
+| 历史 intermediate-0014 HIL | SHA-256 `9026f000a3603a5d5045a2a197cedb07e0fe23762ecfbf4c8884fcc170f3abf8`；被最终 graceful-stop 语义 supersede |
+| 当前 final-0014 source/build | scoped source contract 通过；clean build `2215/2215`、`2,970,272` bytes，SHA-256 `61542dad78a11a130263952e4148f9b7c70b1e8919e3f2ca192d21612e6716a3`，COM11 app hash verified |
+| 当前 final-0014 WSS HIL | 电脑 TTS 唤醒、public WSS/AFE AEC/ASR/字幕/TTS/playout/状态往返通过；100 帧 underrun 0，无 ERROR/panic/WDT |
+| 当前 artifact UDP HIL | `not_run`；公网 host authenticated probe 不替代真机 UDP HIL |
 | Host provider 单次观测 | FunASR final/STT 约 480 ms；DeepSeek HTTP 200/TTFT 约 9876 ms；CosyVoice HTTP 200/TTFB 约 594 ms |
-| 新仓 firmware clean build/size | `build_passed/image_sized`；2215/2215，image `0x2d2660`，余量 28%，DIRAM 50.0% |
-| 新仓 firmware artifact SHA-256 | `43bac4d4ed678b3298cc9f4c8e9da0c4ab7608af731406cec31939ee457350c8`；含 ignored local config，不发布 |
-| 最终 firmware flash/cold boot | COM11 ESP32-S3 rev0.2；完整分区 hash verified；`boot_observed` |
-| Boot/network 初始化 | 8 MB PSRAM，Wi-Fi `192.168.1.105`；display/audio/ES7210/AEC/VAD/wake model 初始化；无 panic/WDT |
-| 最终 WSS device path | “你好小智”唤醒成功；handshake 约 20 ms；持续 WSS media 与真机 ASR/TTS `not_run` |
-| 最终 UDP device path | GCM probe first-attempt ready；600+ UDP Opus uplink packets；真机 ASR/downlink/playout `not_run` |
+| 历史 `43bac...` firmware clean build/size | `build_passed/image_sized`；2215/2215，image `0x2d2660`，余量 28%，DIRAM 50.0% |
+| 历史 reference artifact SHA-256 | `43bac4d4ed678b3298cc9f4c8e9da0c4ab7608af731406cec31939ee457350c8`；含 ignored local config，不发布 |
+| 历史 reference flash/cold boot | COM11 ESP32-S3 rev0.2；完整分区 hash verified；`boot_observed` |
+| 历史 reference boot/network | 8 MB PSRAM，Wi-Fi `192.168.1.105`；display/audio/ES7210/AEC/VAD/wake model 初始化；无 panic/WDT |
+| 历史 reference WSS device path | “你好小智”唤醒成功；handshake 约 20 ms；持续 WSS media 与真机 ASR/TTS 当时 `not_run` |
+| 历史 reference UDP device path | GCM probe first-attempt ready；600+ UDP Opus uplink packets；真机 ASR/downlink/playout 当时 `not_run` |
 | UI/触摸人工视觉与配置回读 | `not_run`；display init 与 Wi-Fi 连接不能替代人工验收 |
 | 近讲/远讲/double-talk AEC | `not_run` |
 | WSS/UDP 同条件弱网 A/B | `not_run` |
@@ -88,8 +96,16 @@ SHA-256 `43bac4d4ed678b3298cc9f4c8e9da0c4ab7608af731406cec31939ee457350c8` 的 f
 `0.0.0.0:8092`，Redis/provider TCP readiness 与 lifecycle repair `d2fa0ca` stop/start 通过。Host synthetic media 已覆盖
 FunASR、LLM、CosyVoice 和 downlink audio；字幕/打断未单独验收，且该结果不能替代真机声学输入。
 
-设备自动播放测试语句时采集 peak 偏低，虽持续发送 600+ UDP Opus uplink packets，仍未触发真机 ASR。该结果是明确的
-未完成而非 provider 失败；真机 ASR/TTS 必须在可控声源/真人输入下重测。
+当前工作树的 `189 passed` 使用 WSL Redis `127.0.0.1:6379/15` 运行。完整套件曾出现一次 Worker 2 未在 15 秒内
+ready；该单项随即通过，后续完整套件也通过。因此该结果证明当前功能回归门禁通过，不提升容量或长稳证据等级。
+
+公网评测部署的 Director、Worker WSS/UDP、Redis 和 capacity 值仅描述本轮环境。当前 `61542...` 已完成独立
+public-path smoke：电脑 TTS 唤醒、WSS/AFE AEC/ASR/字幕/TTS/playout 与状态往返，100 帧 underrun 0，
+无 ERROR/panic/WDT。`0014` source contract 不等于物理 UI HIL；正式声学、延迟分位数、UI/触摸、UDP、20 轮
+或 30 分钟仍无证据。
+
+历史 reference 设备自动播放测试语句时采集 peak 偏低，虽持续发送 600+ UDP Opus uplink packets，仍未触发真机
+ASR。该历史结果不覆盖后续 WSS 真机闭环，也不能替代当前 artifact UDP HIL。
 
 ## 4. 四象限门禁
 

@@ -81,9 +81,13 @@ Endpoint 对网络/服务失败采用有上限指数退避和随机抖动。认�
 ## 7. 验证
 
 必须覆盖 malformed/duplicate/oversize/wrong-session、expired/replayed grant、UDP auth/replay/source、abort race、
-disconnect during handshake、double close、drain deadline 和 cancellation storm。Server commit `fca8de8` 的
-Redis-enabled pytest `179 passed`，已覆盖 grant replay、lease/fencing、heartbeat/drain 与多项 transport lifecycle；
-`259aeee` 将 drain 收紧为单向，`d2fa0ca` 的精确进程身份 launcher stop/start 已实测。Host synthetic 已通过
-Director bootstrap/grant；设备仍使用 direct Worker + lab token，仅验证了 WSS hello、UDP authenticated probe
-与持续 UDP 上行。端侧 Director bootstrap 以及最终真机网络切换、Server restart、设备重连、ASR/TTS 和完整音频 lifecycle 当前为
-`not_run`。
+disconnect during handshake、double close、drain deadline 和 cancellation storm。`d2fa0ca` 历史快照的
+Redis-enabled pytest 为 `179 passed`；当前工作树使用 WSL Redis `127.0.0.1:6379/15` 的完整 suite 为
+`189 passed`、`0 skipped`，已覆盖 grant replay、lease/fencing、heartbeat/drain、Windows 双 Worker Redis 进程
+用例与多项 transport lifecycle。`259aeee` 将 drain 收紧为单向，`d2fa0ca` 的精确进程身份 launcher stop/start
+已实测。公网 Director readiness/bootstrap、host WSS real-provider E2E 与 host UDP authenticated probe 已通过。
+`0014` 前 `cb544...` artifact 已从端侧 bootstrap 到公网 Worker，并完成 WSS、ASR、字幕、TTS 与 playout。
+当前 `61542...` artifact 已独立完成 public WSS、AFE AEC、ASR/字幕/TTS/playout 与状态往返，无
+ERROR/panic/WDT。其 `0014` toggle/旧上行隔离通过 source contract，但物理点击结束未 HIL。当前 artifact UDP
+HIL、人工打断、网络切换、Server restart、设备
+重连与完整音频 lifecycle 仍为 `not_run`。

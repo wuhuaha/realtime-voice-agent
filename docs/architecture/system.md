@@ -117,16 +117,19 @@ PCM/Opus -> selected transport -> endpoint playout。Abort/近讲打断递增 ge
 
 Server commit `fca8de8` 已实现 Director、memory/Redis store、Realtime Worker、shared contracts 与 providers；
 `259aeee` 收紧 coordination readiness 与 one-way drain，`d2fa0ca` 完成 public Worker URL 和 launcher process
-lifecycle 边界。Redis-enabled pytest `179 passed`、Server Ruff 通过，shared `jti` 原子单次消费及 Redis 重启/跨实例语义已有测试
+lifecycle 边界。`d2fa0ca` 历史快照的 Redis-enabled pytest 为 `179 passed`；当前工作树完整 Redis-enabled suite
+为 `189 passed`、`0 skipped`，Server Ruff 通过，shared `jti` 原子单次消费及 Redis 重启/跨实例语义已有测试
 证据。真实进程 host synthetic Chinese 已经通过 Director grant + WSS/UDP Opus/GCM 完成 FunASR final、DeepSeek
 HTTP 200、CosyVoice HTTP 200 和 downlink audio；单次观测约为 STT 480 ms、LLM TTFT 9876 ms、TTS TTFB
 594 ms，不外推为 SLO。
 
-Reference firmware commit `cf9bc69` 已在新仓 clean build，artifact SHA-256 为
-`43bac4d4ed678b3298cc9f4c8e9da0c4ab7608af731406cec31939ee457350c8`；该证据仅为 `build_passed/image_sized`。
-该 artifact 已在 COM11 烧录并 `boot_observed`：Wi-Fi 获得 `192.168.1.105`，唤醒成功、WSS handshake 约
-20 ms、UDP probe first-attempt ready、连续 600+ UDP Opus uplink packets。因设备采集 peak 偏低未触发 ASR；UI/触摸
-人工验收、真机 ASR/TTS、弱网、声学、20 轮和 30 分钟仍为 `not_run`。
+当前 production composition 的公网 Director artifact SHA-256 为
+`61542dad78a11a130263952e4148f9b7c70b1e8919e3f2ca192d21612e6716a3`。该 app 已在 COM11 烧录并 hash
+verified。电脑 TTS 唤醒后，该 artifact 完成 public Director/WSS、AFE AEC、ASR、流式字幕、TTS/playout 与
+`listening -> speaking -> listening`，100 帧 underrun 0、max write 62.3 ms，无 ERROR/panic/WDT。`0014` source
+contract 和 clean build 已通过，物理“AI”视觉与聆听点击结束未 HIL。当前 artifact 的 UDP provider HIL、
+UI/触摸、弱网、正式声学、20 轮和 30 分钟仍为
+`not_run`。Host 从外部网络完成的 `8093/udp` probe/ACK 只证明公网 UDP endpoint 可达。
 
 ## 8. 演进边界
 

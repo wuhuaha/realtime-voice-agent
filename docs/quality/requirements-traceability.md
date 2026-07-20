@@ -7,21 +7,21 @@
 
 | ID | 设计/协议 | 主要验证 | 当前证据 |
 | --- | --- | --- | --- |
-| FR-001 | `architecture/firmware.md` | firmware UI/NVS HIL、重启回读 | boot/Wi-Fi observed；UI/触摸/配置回读 `not_run` |
-| FR-002 | `architecture/server.md` | Director bootstrap contract + process e2e | 真实进程 bootstrap + grant `host_verified` |
+| FR-001 | `architecture/firmware.md` | firmware UI/NVS HIL、重启回读 | 当前 app `61542dad...` boot/public smoke observed；0014 source contract 通过，物理“AI”视觉、触摸点击结束与配置回读 `not_run` |
+| FR-002 | `architecture/server.md` | Director bootstrap contract + process e2e | 公网 Director readiness/bootstrap 与真机 grant 路径 `public_path_verified` |
 | FR-003 | `security/credentials.md` | grant unit/Redis single-use/tamper tests | shared 原子消费、tamper/replay/Redis 重建与跨实例 `unit_verified` |
-| FR-004 | `protocol/xiaozhi-control-v1.md` | schema fixtures、WSS host/HIL | device WSS handshake 约 20 ms；业务 control HIL 未完成 |
-| FR-005 | `protocol/wss-opus-v1.md` | deterministic host + real-provider HIL | host provider E2E；device 持续 uplink；真机 ASR/downlink `not_run` |
-| FR-006 | `protocol/udp-opus-gcm-v1.md` | cross-language fixtures、UDP host/HIL | device GCM probe ready + 600+ uplink；真机 ASR/downlink `not_run` |
-| FR-007 | `protocol/overview.md` | hello negotiation、UI toggle、restart | WSS/UDP device paths observed；UI toggle/restart `not_run` |
-| FR-008 | `architecture/server.md` | provider fake、real-provider smoke | host FunASR/DeepSeek/CosyVoice media E2E；ESP32 acoustic E2E `not_run` |
-| FR-009 | `architecture/firmware.md` | subtitle state fixture + display HIL | display initialized；UI/字幕人工验收 `not_run` |
+| FR-004 | `protocol/xiaozhi-control-v1.md` | schema fixtures、WSS host/HIL | 当前 artifact WSS hello/control 与流式字幕 observed；0014 toggle 调度仅 `contract_verified`，物理点击 HIL `not_run` |
+| FR-005 | `protocol/wss-opus-v1.md` | deterministic host + real-provider HIL | 当前 `61542dad...` artifact 完成 public WSS/AFE AEC/ASR/字幕/TTS/playout，100 帧 underrun 0，`device_verified` |
+| FR-006 | `protocol/udp-opus-gcm-v1.md` | cross-language fixtures、UDP host/HIL | 公网 host authenticated probe 通过；诊断镜像曾完成真机 provider/downlink/playout；最终 artifact UDP HIL `not_run` |
+| FR-007 | `protocol/overview.md` | hello negotiation、UI toggle、restart | 最终 WSS 与历史诊断 UDP device paths observed；UI toggle/restart `not_run` |
+| FR-008 | `architecture/server.md` | provider fake、real-provider smoke | 公网 host 与当前 `61542...` artifact 完成 real-provider smoke；正式声学 `not_run` |
+| FR-009 | `architecture/firmware.md` | subtitle state fixture + display HIL | 当前 artifact 流式字幕 observed；“AI”文案 source contract 通过，物理视觉与触摸验收 `not_run` |
 | FR-010 | `protocol/lifecycle-errors.md` | abort race、generation、double-talk HIL | host/source contract；最终 acoustic `not_run` |
 | FR-011 | `protocol/lifecycle-errors.md` | disconnect/restart/network flap e2e/HIL | `not_run` |
 | FR-012 | `architecture/server.md` | Worker admission boundary/overload | admission/capacity `unit_verified`；容量压测 `not_run` |
 | FR-013 | `architecture/server.md` | heartbeat/drain/deadline e2e | Redis heartbeat/drain 并发 `unit_verified`；部署演练 `not_run` |
-| FR-014 | `architecture/server.md` | provider adapter contract/fakes | Server test suite 覆盖 adapters/fakes；real-provider audio `not_run` |
-| FR-015 | `architecture/server.md` | structured event/redaction contract | observability/redaction tests 已纳入 `179 passed`；运维审计 `not_run` |
+| FR-014 | `architecture/server.md` | provider adapter contract/fakes | Server suite 覆盖 adapters/fakes；公网 host 和历史 `cb544...` real-provider audio 已通过，当前 artifact 下行复验 `not_run` |
+| FR-015 | `architecture/server.md` | structured event/redaction contract | observability/redaction tests 已纳入当前 Redis-enabled full suite `189 passed`；运维审计 `not_run` |
 
 ## 2. 非功能需求
 
@@ -34,7 +34,7 @@
 | NFR-005 | security model + UDP spec | auth/replay/fuzz/TLS/public path | fixture contract；public path `not_run` |
 | NFR-006 | security credentials/model | retention/redaction/log scan | repository rules defined；operational audit `not_run` |
 | NFR-007 | architecture docs/AGENTS | import/dependency architecture tests | repository contract partial |
-| NFR-008 | source lock/build scripts | clean checkout build + artifact digest | 新仓 `build_passed/image_sized`，SHA-256 `43bac4d4ed678b3298cc9f4c8e9da0c4ab7608af731406cec31939ee457350c8` |
+| NFR-008 | source lock/build scripts | clean checkout build + artifact digest | `0011..0014` clean build `2215/2215`；app SHA-256 `61542dad78a11a130263952e4148f9b7c70b1e8919e3f2ca192d21612e6716a3`，COM11 hash verified；不单独声明 bit-level reproducibility |
 | NFR-009 | compatibility baseline | reference/new four quadrants | `not_run` |
 | NFR-010 | deployment/runbooks | health/drain/rollback exercise | launcher stop/start `host_verified`；drain/rollback exercise `not_run` |
 | NFR-011 | test strategy capacity | CPU/RSS/event-loop/provider pressure | `not_run` |

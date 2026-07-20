@@ -149,10 +149,12 @@ provider error/429/timeout。日志不得替代 metrics，也不得记录 token�
 
 ## 8. 现状声明
 
-Server 主实现 commit 为 `fca8de8`，readiness repair 为 `259aeee`，当前 lifecycle repair 为 `d2fa0ca`。Server Ruff
-通过；启用 Redis 的完整 pytest 基线为 `179 passed`，覆盖 atomic
-lease/fencing、heartbeat/drain 并发、跨 Director 实例及 Redis-backed `jti` 单次消费（含重建 service/store
-实例后的 replay 拒绝）。根仓 pytest 为 `15 passed`。
+Server 主实现 commit 为 `fca8de8`，readiness repair 为 `259aeee`，lifecycle repair 为 `d2fa0ca`。该历史快照启用
+Redis 的完整 pytest 基线为 `179 passed`。当前工作树 Server Ruff 通过；使用 WSL Redis
+`127.0.0.1:6379/15` 的完整 suite 为 `189 passed`、`0 skipped`，覆盖 atomic lease/fencing、heartbeat/drain 并发、
+跨 Director 实例、Redis-backed `jti` 单次消费（含重建 service/store 后 replay 拒绝）及 Windows 双 Worker Redis
+进程用例。该完整 suite 曾有一次 Worker 2 readiness 15 秒超时；单项复跑与后续完整 suite 均通过，不据此提升
+容量或长稳等级。
 
 `259aeee` 新增 coordination heartbeat readiness 和单向 drain contract；`d2fa0ca` 将 public Worker endpoint
 收紧为绝对 `ws(s)://host/v1/xiaozhi`（production 仅 `wss://`），并修复 launcher process identity、停止确认与
@@ -162,5 +164,12 @@ lease/fencing、heartbeat/drain 并发、跨 Director 实例及 Redis-backed `jt
 Host synthetic Chinese 经真实 Director grant、WSS control 和 UDP Opus/GCM 完成 real-provider media E2E：
 FunASR 返回 final（STT duration 约 480 ms），DeepSeek HTTP 200（单次 TTFT 约 9876 ms），remote CosyVoice
 HTTP 200（单次 TTFB 约 594 ms），并产生 downlink audio。以上为单次 host 测量，不能外推为 SLO，也不是
-ESP32 acoustic E2E。ESP32 已完成 WSS handshake、UDP probe 和 600+ UDP Opus uplink packets，但因采集 peak 偏低未触发
-真机 ASR；真机 ASR/TTS/字幕/打断仍为 `not_run`。
+ESP32 acoustic E2E。
+
+公网评测部署使用 Director `http://182.254.219.7:8079`、Worker `ws://182.254.219.7:8082/v1/xiaozhi`、UDP
+`182.254.219.7:8093`、Redis `127.0.0.1:6380` 和可配置 capacity `5`。公网 readiness/bootstrap、host WSS
+real-provider E2E 和 host UDP authenticated probe 均通过；WSS host 轮次得到 ASR“你好，请用一句话介绍一下你自己。”、
+字幕、105 个下行包，整轮 12.701 秒。`0014` 前 `cb544...` 固件也经该 Director 完成 WSS 真机闭环：handshake
+约 160 ms，ASR/字幕/TTS/playout 成功，350 playback frames underrun 为 0。当前 `61542...` 又独立完成电脑
+TTS 唤醒、Director/WSS、AFE AEC、ASR/字幕/TTS/playout 与状态往返，100 帧 underrun 0、max write 62.3 ms，
+无 ERROR/panic/WDT。上述单轮值不外推为 SLO；当前 artifact UDP HIL、正式声学、20 轮和 30 分钟仍为 `not_run`。

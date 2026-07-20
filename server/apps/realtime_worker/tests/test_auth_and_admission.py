@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import time
 
 import pytest
@@ -54,10 +55,58 @@ def test_director_grant_is_verified_and_worker_bound_before_shared_consumption()
     assert WorkerAuthenticator(worker_settings("worker-b")).verify(f"Bearer {grant()}", "device-1") is None
 
 
+def test_director_grant_preserves_colon_mac_device_principal() -> None:
+    now = time.time()
+    claims = ConnectGrantClaims(
+        tenant_id="default",
+        device_id="8c:bf:ea:04:9e:88",
+        worker_id="worker-a",
+        session_epoch="epoch-mac",
+        fencing_token=1,
+        profiles=("wss-opus-v1",),
+        iat=now,
+        exp=now + 30,
+        jti="jti-mac",
+    )
+    token = GrantCodec("validator-grant-signing-key-with-32-bytes").issue(claims)
+
+    accepted = WorkerAuthenticator(worker_settings()).verify(
+        f"Bearer {token}",
+        "8c:bf:ea:04:9e:88",
+    )
+
+    assert accepted is not None
+    assert accepted.context.device_id == "8c:bf:ea:04:9e:88"
+
+
 def test_expired_and_wrong_device_grants_fail_closed() -> None:
     auth = WorkerAuthenticator(worker_settings())
     assert auth.verify(f"Bearer {grant(exp=time.time() - 1, jti='expired')}", "device-1") is None
     assert auth.verify(f"Bearer {grant(jti='wrong-device')}", "device-2") is None
+
+
+def test_rejected_grant_logs_only_safe_classification(caplog: pytest.LogCaptureFixture) -> None:
+    token = grant()
+    caplog.set_level(logging.WARNING, logger="realtime_worker.auth")
+
+    assert WorkerAuthenticator(worker_settings("worker-b")).verify(f"Bearer {token}", "device-1") is None
+
+    text = caplog.text
+    assert "reason=grant_grant_belongs_to_another_worker" in text
+    assert f"token_length={len(token)}" in text
+    assert "device_ref=" in text
+    assert "device-1" not in text
+    assert token not in text
+
+
+def test_invalid_scheme_log_redacts_device_principal(caplog: pytest.LogCaptureFixture) -> None:
+    caplog.set_level(logging.WARNING, logger="realtime_worker.auth")
+
+    assert WorkerAuthenticator(worker_settings()).verify("Basic credential", "8c:bf:ea:04:9e:88") is None
+
+    assert "reason=invalid_scheme" in caplog.text
+    assert "device_ref=" in caplog.text
+    assert "8c:bf:ea:04:9e:88" not in caplog.text
 
 
 def test_lab_compatibility_does_not_require_director_consumption() -> None:

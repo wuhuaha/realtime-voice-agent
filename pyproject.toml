@@ -25,7 +25,7 @@ testpaths = [
   "tests/repository",
   "tests/contract",
   "tests/compatibility",
-  "firmware/reference/xiaozhi-overlay/tests",
+  "firmware/targets/lichuang-dev/tests",
   "firmware/tools/tests",
 ]
 addopts = ["-q", "--strict-markers", "-p", "no:cacheprovider"]

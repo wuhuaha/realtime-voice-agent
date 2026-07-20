@@ -1,9 +1,32 @@
 # Fresh ESP-IDF 5.5.2 validator artifact; binary is intentionally not committed.
 870dfb4351281b1d403b0948566d524a5935af71a86d0ce3fdfffea0348715e3  xiaozhi.bin
-# New repository clean build with ignored local configuration; binaries are not committed or publishable.
-# The five flash regions below were written to COM11 and read-back verified on 2026-07-20.
+# Historical delivery-reference clean build with ignored local configuration; binaries are not committed or publishable.
+# The five flash regions below were written to COM11 and read-back verified on 2026-07-20; they are retained as history.
 5680a209a4e63ce51e5c7440c5ba4c757ef6a5d0ea15428844b88054e95228ca  bootloader.bin@0x0
 4811619cacae08ef2e0e71b7220c6033a346ca5da7ca179082408c963ef530b5  partition-table.bin@0x8000
 7d2c7ac4888bfd75cd5f56e8d61f69595121183afc81556c876732fd3782c62f  ota_data_initial.bin@0xd000
 43bac4d4ed678b3298cc9f4c8e9da0c4ab7608af731406cec31939ee457350c8  xiaozhi-new-repo-local-config.bin@0x20000
 317a3254747aa8e10056b7c7c210bbdd73254112412e54873adc837aebb9d11b  generated_assets.bin@0x800000
+# Historical intermediate composition (0011..0013, managed 0003..0008) with ignored local configuration.
+# These five regions were written to COM11 and esptool reported hash verified on 2026-07-20; they are not the current app.
+c70e2bfa33bac5d10f54b331c10e9f15d330ab20e77c31ba7109efcc332eae58  production-bootloader.bin@0x0
+4811619cacae08ef2e0e71b7220c6033a346ca5da7ca179082408c963ef530b5  production-partition-table.bin@0x8000
+7d2c7ac4888bfd75cd5f56e8d61f69595121183afc81556c876732fd3782c62f  production-ota-data-initial.bin@0xd000
+ef26530c25df4a8c8204c57f31cfa26341ac598693c6bd9c02eeb736f4dd49c4  production-xiaozhi-local-config.bin@0x20000
+317a3254747aa8e10056b7c7c210bbdd73254112412e54873adc837aebb9d11b  production-generated-assets.bin@0x800000
+# Historical pre-public-config clean build after retained WebSocket owner contract repair.
+# This app was written to COM11 at 0x20000 and hash verified before the current public-Director artifact.
+688f8dae97be4de0ae50c61003eb7fdb8079791c4c1fe9687643f11da00676e3  final-clean-bootloader.bin@0x0
+4811619cacae08ef2e0e71b7220c6033a346ca5da7ca179082408c963ef530b5  final-clean-partition-table.bin@0x8000
+7d2c7ac4888bfd75cd5f56e8d61f69595121183afc81556c876732fd3782c62f  final-clean-ota-data-initial.bin@0xd000
+3ea0f4b70f785d241b583c77298ed13530d2f85a2f926f64c9701dab35c231e4  final-clean-xiaozhi-local-config.bin@0x20000
+317a3254747aa8e10056b7c7c210bbdd73254112412e54873adc837aebb9d11b  final-clean-generated-assets.bin@0x800000
+# Historical pre-0014 public-Director evaluation artifact; app-only flashed and WSS device-verified on 2026-07-20.
+cb5449fbf824ac5bae0041df774daf257d22e3193a3998b5fa567a04492719a4  public-director-xiaozhi-local-config.bin@0x20000
+# Historical initial-0014 artifact before stale-uplink lifecycle fencing was added.
+070cc58f210fc9abbf6d8614c1404522f77c2572e8683aa4dcc9c8fed33ad739  ui-control-responsiveness-xiaozhi-local-config.bin@0x20000
+# Historical intermediate 0014 artifact superseded by the final graceful-stop semantics.
+9026f000a3603a5d5045a2a197cedb07e0fe23762ecfbf4c8884fcc170f3abf8  final-ui-control-lifecycle-xiaozhi-local-config.bin@0x20000
+# Current final 0014 graceful-stop artifact; app-only flashed to COM11 and hash verified on 2026-07-20.
+# The digest identifies an ignored local-configuration build and does not claim bit-level reproducibility.
+61542dad78a11a130263952e4148f9b7c70b1e8919e3f2ca192d21612e6716a3  final-graceful-stop-xiaozhi-local-config.bin@0x20000

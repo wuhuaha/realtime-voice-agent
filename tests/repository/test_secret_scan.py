@@ -35,7 +35,8 @@ def test_scans_env_templates_for_real_values(tmp_path: Path) -> None:
 def test_ignores_dynamic_validator_and_constant_assertion(tmp_path: Path) -> None:
     candidate = tmp_path / "contract.ps1"
     candidate.write_text(
-        '$token = "validator-token-" + [guid]::NewGuid()\n'
+        '$token = "validator-token-prefix-long-enough-" + [guid]::NewGuid()\n'
+        'const cJSON* fencing_token = cJSON_GetObjectItemCaseSensitive(root, "fencing_token");\n'
         "$source.Contains('voice_agent_token = VOICE_AGENT_WS_TOKEN')\n",
         encoding="utf-8",
     )

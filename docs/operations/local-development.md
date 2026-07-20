@@ -19,12 +19,12 @@ Copy-Item .env.example .env
 
 编辑 `.env`，至少替换所有 `replace-with-*`。默认 `VOICE_COORDINATION_BACKEND=memory` 只适合本地单进程验证。
 
-需要 reference firmware：
+需要 production firmware source：
 
 ```powershell
-./firmware/reference/xiaozhi-overlay/scripts/materialize-upstream.ps1
-Copy-Item ./firmware/reference/xiaozhi-overlay/.env.local.example `
-  ./firmware/reference/xiaozhi-overlay/.env.local
+./firmware/targets/lichuang-dev/scripts/materialize-upstream.ps1
+Copy-Item ./firmware/targets/lichuang-dev/.env.local.example `
+  ./firmware/targets/lichuang-dev/.env.local
 ```
 
 `bootstrap.ps1` 的非 `-SkipFirmware` 路径调用仓内 materialize wrapper，并校验固定 upstream 与 ESP-IDF
@@ -90,12 +90,13 @@ UDP 或多 Worker，避免同时改变多个变量。API key 不得出现在命�
 
 ## 6. Firmware 配置与构建
 
-`.env.local` 字段：`XIAOZHI_WS_URL`、`XIAOZHI_LAB_TOKEN`、`XIAOZHI_TRANSPORT_MODE`、
-`XIAOZHI_WIFI_SSID`、`XIAOZHI_WIFI_PASSWORD`。本地直连 Worker 可用于兼容 baseline；生产设备应通过
-Director bootstrap/短期 grant，不能固化长期 lab token。
+`.env.local` 字段包括 `XIAOZHI_DIRECTOR_URL`、`XIAOZHI_DEVICE_BOOTSTRAP_TOKEN`、`XIAOZHI_WS_URL`、
+`XIAOZHI_LAB_TOKEN`、`XIAOZHI_TRANSPORT_MODE`、主/回退 Wi-Fi SSID 与密码。Director bootstrap/短期 grant
+是当前主路径；`XIAOZHI_WS_URL` 与 lab token 只用于显式开发回退。配置输入变化后必须使用 `-Clean`，脚本的
+config-input guard 会拒绝复用陈旧生成配置。
 
 ```powershell
-./firmware/reference/xiaozhi-overlay/scripts/build.ps1 -Clean
+./firmware/targets/lichuang-dev/scripts/build.ps1 -Clean
 ```
 
 只有用户明确授权目标板和端口后才 flash。每次记录 artifact SHA-256、source revision、overlay digest、IDF、
@@ -117,6 +118,10 @@ COM、命令和观察时长。本轮已在 COM11 的 ESP32-S3 rev0.2（8 MB PSRA
 WSS + UDP Opus/GCM 完成 provider media E2E：FunASR final（约 480 ms）、DeepSeek HTTP 200（单次 TTFT 约
 9876 ms）、remote CosyVoice HTTP 200（单次 TTFB 约 594 ms）并产生 downlink audio。
 
-Final reference firmware 已 `boot_observed`：Wi-Fi 获得 `192.168.1.105`，唤醒、WSS handshake 约 20 ms、UDP
-probe first-attempt ready、AEC `VOIP_HIGH_PERF` 和 600+ UDP Opus uplink packets 已观察。设备采集 peak 偏低，未触发
-真机 ASR；UI/触摸人工验收、真机 ASR/TTS、弱网、声学、20 轮和 30 分钟仍为 `not_run`。
+当前公网 Director 配置的 production firmware clean build 为 `2,970,272` bytes，SHA-256
+`61542dad78a11a130263952e4148f9b7c70b1e8919e3f2ca192d21612e6716a3`。COM11 app-only 烧录 hash verified。
+电脑 TTS 唤醒后，该 artifact 完成 public Director/WSS、AFE AEC、ASR、流式字幕、TTS/playout 与状态往返；
+100 帧 underrun 0、max write 62.3 ms，无 ERROR/panic/WDT。`0014` source contract 验证“AI”文案、4 包批次、
+graceful stop/取消策略和 generation fence，但物理视觉与点击结束未 HIL。当前固件 UDP provider、UI/触摸、
+弱网、正式声学、20 轮和
+30 分钟仍为 `not_run`。

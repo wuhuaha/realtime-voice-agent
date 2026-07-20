@@ -12,7 +12,18 @@ foreach ($fixture in @("positive.json", "negative.json")) {
     }
 }
 
-$forbidden = @("lvgl", "freertos", "board.h", "application.h", "audio_service", "websocket_protocol")
+$forbidden = @(
+    "lvgl",
+    "freertos",
+    "board.h",
+    "application.h",
+    "audio_service",
+    "websocket_protocol",
+    "esp_wifi",
+    "esp_netif",
+    "lwip/",
+    "driver/i2s"
+)
 foreach ($sourceRoot in @($contractsRoot, $coreRoot)) {
     foreach ($file in Get-ChildItem -LiteralPath $sourceRoot -Recurse -File -Include *.h,*.cc) {
         $content = Get-Content -Raw -LiteralPath $file.FullName
@@ -30,11 +41,28 @@ if ($duplicateFixtures.Count -ne 0) {
     throw "firmware/device must consume canonical root fixtures rather than copy them"
 }
 
-$referenceScripts = Join-Path $repoRoot "firmware/reference/xiaozhi-overlay/scripts"
-foreach ($scriptName in @("test-udp-wire-fixtures.ps1", "test-udp-media-source-contract.ps1")) {
-    $content = Get-Content -Raw -LiteralPath (Join-Path $referenceScripts $scriptName)
-    if (-not $content.Contains('protocol/xiaozhi_udp_v1/fixtures/')) {
-        throw "Reference fixture consumer is not rooted at canonical protocol/: $scriptName"
+$hostTestScript = Get-Content -Raw -LiteralPath (
+    Join-Path $PSScriptRoot "test-headless-contract.ps1")
+foreach ($fixturePath in @(
+    "protocol/xiaozhi_udp_v1/fixtures/positive.json",
+    "protocol/xiaozhi_udp_v1/fixtures/negative.json"
+)) {
+    if (-not $hostTestScript.Contains($fixturePath, [StringComparison]::Ordinal)) {
+        throw "Target host tests must consume the canonical root fixture: $fixturePath"
+    }
+}
+if ($hostTestScript.Contains("external/", [StringComparison]::OrdinalIgnoreCase) -or
+    $hostTestScript.Contains("firmware/reference/", [StringComparison]::OrdinalIgnoreCase)) {
+    throw "Target host tests must not depend on reference or external checkouts"
+}
+
+$cmakeContent = @(
+    Get-Content -Raw -LiteralPath (Join-Path $contractsRoot "CMakeLists.txt")
+    Get-Content -Raw -LiteralPath (Join-Path $coreRoot "CMakeLists.txt")
+) -join "`n"
+foreach ($dependency in @("lvgl", "esp_wifi", "esp_netif", "lwip", "voice_board", "voice_audio", "voice_transport")) {
+    if ($cmakeContent.Contains($dependency, [StringComparison]::OrdinalIgnoreCase)) {
+        throw "Headless contract components contain forbidden dependency: $dependency"
     }
 }
 

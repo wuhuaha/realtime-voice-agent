@@ -89,6 +89,7 @@ Python/C++ canonical fixtures、non-zero KEEPALIVE timestamp 和 source/lifecycl
 `fca8de8` + repair `259aeee` 在真实 Worker UDP socket `0.0.0.0:8092` 上以 synthetic Chinese 完成 AES-GCM
 probe、Opus uplink、真实 provider 链路和 downlink audio。
 
-Final firmware 的 UDP GCM probe 首次成功，AEC 为 `VOIP_HIGH_PERF`，连续发送 600+ UDP Opus uplink packets；因采集 peak
-偏低未触发真机 ASR，device downlink/playout 也未完成验收。弱网收益、AES-GCM deadline 成本、声学、20 轮和
-30 分钟均为 `not_run`。在这些门禁前 UDP 不能成为无条件默认 profile。
+历史 firmware 的 UDP GCM probe、600+ Opus uplink 和诊断 provider/downlink 路径已有 HIL。当前公网 Worker
+`182.254.219.7:8093` 已从外部网络完成 authenticated probe/ACK，证明公网 UDP endpoint 可达；这不替代当前
+final artifact 的 UDP provider HIL。弱网收益、正式声学、20 轮和 30 分钟均为 `not_run`，因此 `auto` 仍保守
+选择 WSS，UDP 不成为无条件默认 profile。

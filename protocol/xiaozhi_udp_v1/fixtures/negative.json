@@ -21,6 +21,11 @@
       "datagram_hex": "564101010123456789abcdef1020304000000001000003c00000000100000004bdfd8eae2120996d83a19a5b85bbec2fd6a362"
     },
     {
+      "id": "reject-zero-media-epoch",
+      "reject_stage": "parser",
+      "datagram_hex": "564101010123456789abcdef0000000000000001000003c00000000100000003bdfd8eae2120996d83a19a5b85bbec2fd6a362"
+    },
+    {
       "id": "reject-aad-generation-tamper",
       "reject_stage": "authentication",
       "datagram_hex": "564101010123456789abcdef1020304000000001000003c00000000200000003bdfd8eae2120996d83a19a5b85bbec2fd6a362"

@@ -1,4 +1,4 @@
-schema_version: 1
+schema_version: 2
 created_at: 2026-07-20
 source_repository:
   path_hint: voice-agent-research
@@ -30,6 +30,7 @@ delivery_snapshots:
   server_lifecycle_tree: a89e6ba4d23b70c6374dfd27d96c45d35c1e4fbd
   dependency_lock_blob: e5538d7e54cd2792b4d385e226f59c92e33907c5
 device_evidence:
+  evidence_label: historical_delivery_reference
   firmware_commit: cf9bc69
   port: COM11
   chip: ESP32-S3 revision 0.2
@@ -60,6 +61,7 @@ device_evidence:
     - twenty_turns
     - thirty_minute_stability
 host_synthetic_evidence:
+  evidence_label: historical_259aeee_snapshot
   server_commit: 259aeee
   funasr_final_ms_approx: 480
   deepseek_http_status: 200
@@ -69,11 +71,106 @@ host_synthetic_evidence:
   downlink_audio_observed: true
   device_acoustic_loop: false
 files:
-  - path: protocol/xiaozhi_udp_v1/README.md
+  - production_path: protocol/xiaozhi_udp_v1/README.md
     sha256: e17aa03c4249422a54937dfed5e9ad9d67862768dccf440b8f0347897725649c
     source_sha256: a6c5409cbfe0a58139b6a9d8635136b6a20c5f9415b9deaed7dbbc9ba00b1255
     normalization: removed one trailing blank line
-  - path: protocol/xiaozhi_udp_v1/fixtures/positive.json
-    sha256: 38298f767c23927a3c109860429e5f6ccc6c978c8dcb30fe782a3ac388d87b20
-  - path: protocol/xiaozhi_udp_v1/fixtures/negative.json
-    sha256: d6c03e211371b56e73b59186a4b00ace549e12eeb123061b6b795b4bd140a8f5
+  - production_path: protocol/xiaozhi_udp_v1/fixtures/positive.json
+    sha256: bfab0648d9d7976fa90ac5c600a06a5ae9338399bfc0182ce2e1ea3e641eab61
+  - production_path: protocol/xiaozhi_udp_v1/fixtures/negative.json
+    sha256: d355179c29adf5041dce12ae61d6cef68f087a4daa223b02d5ebf2ada99f67b0
+  - production_path: third_party/sources.lock.yaml
+    sha256: 7eb0342c9abd8fb11572bb36050ea22953bc3190ea414f614c1040cb881dbe2f
+  - production_path: firmware/locks/xiaozhi-esp32.dependencies.lock
+    sha256: 5ada8c797ad185737923533677bc7bd6b323f3fe5998eba00a840dd4000a5189
+  - source_path: firmware/reference/xiaozhi-overlay/.env.local.example
+    production_path: firmware/targets/lichuang-dev/.env.local.example
+    sha256: 716d97e27d50397167aaf98c42b870e723e7259919c2efd5569cad09ea7a52ff
+  - source_path: firmware/reference/xiaozhi-overlay/sdkconfig.defaults
+    production_path: firmware/targets/lichuang-dev/sdkconfig.defaults
+    sha256: e82f6bd9a42f8b0554baf2da763a55c28da2ffac36b759c85bc7300625c12d62
+  - source_path: firmware/reference/xiaozhi-overlay/overlay-files/main/protocols/voice_udp_wire.h
+    production_path: firmware/targets/lichuang-dev/overlay-files/main/protocols/voice_udp_wire.h
+    sha256: 594f441e7558d2959ca6deacf6498de0c04d7dbd2440ee76e98207e863d05977
+  - source_path: firmware/reference/xiaozhi-overlay/overlay-files/main/protocols/voice_director_bootstrap.h
+    production_path: firmware/targets/lichuang-dev/overlay-files/main/protocols/voice_director_bootstrap.h
+    sha256: 3674a6750fc7d5dabd0d0626245376efd40920c6e04c033d5f3ae2463ba540f6
+  - source_path: firmware/reference/xiaozhi-overlay/overlay/0011-director-bootstrap.patch
+    production_path: firmware/targets/lichuang-dev/overlay/0011-director-bootstrap.patch
+    sha256: c1f0336d68cc8278b6500443c376b3c35bf467eb7233edb1871363b8e3407176
+  - source_path: firmware/reference/xiaozhi-overlay/overlay/0012-dual-wifi-defaults.patch
+    production_path: firmware/targets/lichuang-dev/overlay/0012-dual-wifi-defaults.patch
+    sha256: 7fb9b122bf8aa83cd705ca34feaaf7075051d6bfd741d00e1b1f18d17d2def1a
+  - source_path: firmware/reference/xiaozhi-overlay/overlay/0013-websocket-owner-teardown.patch
+    production_path: firmware/targets/lichuang-dev/overlay/0013-websocket-owner-teardown.patch
+    sha256: 853cbbf71e74eafdf2673c89ab23755ebb47c856ac20a04561f787df919b5e19
+  - source_path: firmware/reference/xiaozhi-overlay/overlay/0014-ui-control-responsiveness.patch
+    production_path: firmware/targets/lichuang-dev/overlay/0014-ui-control-responsiveness.patch
+    sha256: ae8913666f6004d46af59e9cedcfb64956c7ee424af6a93bda51f77a4c1d0b92
+  - source_path: firmware/reference/xiaozhi-overlay/overlay-managed/0003-http-request-header-redaction.patch
+    production_path: firmware/targets/lichuang-dev/overlay-managed/0003-http-request-header-redaction.patch
+    sha256: a8ed3b48c589ec12da1835fa4e320fd277e68ad632b162230a535b183a5185db
+  - source_path: firmware/reference/xiaozhi-overlay/overlay-managed/0004-bounded-http-response.patch
+    production_path: firmware/targets/lichuang-dev/overlay-managed/0004-bounded-http-response.patch
+    sha256: 39129969111653c6b9d62d7ec50bcc4d93c757c7e0210ae0aad00d0e41ee5aac
+  - source_path: firmware/reference/xiaozhi-overlay/overlay-managed/0005-at-command-log-redaction.patch
+    production_path: firmware/targets/lichuang-dev/overlay-managed/0005-at-command-log-redaction.patch
+    sha256: 872e0b1a1db13d92bd2c828ccac2f8a88b7921af2499bd9caacde573f9f5d605
+  - source_path: firmware/reference/xiaozhi-overlay/overlay-managed/0006-deadline-aware-http.patch
+    production_path: firmware/targets/lichuang-dev/overlay-managed/0006-deadline-aware-http.patch
+    sha256: b87df61553315ffdfee85ff845418f79c39469c0410c5f489ab2c202d3c68419
+  - source_path: firmware/reference/xiaozhi-overlay/overlay-managed/0007-wifi-credential-priority.patch
+    production_path: firmware/targets/lichuang-dev/overlay-managed/0007-wifi-credential-priority.patch
+    sha256: 9334856929d0d680ddb84f7e8de72de4fb58579fb577bafd75382a380f9a70eb
+  - source_path: firmware/reference/xiaozhi-overlay/overlay-managed/0008-websocket-disconnect-join.patch
+    production_path: firmware/targets/lichuang-dev/overlay-managed/0008-websocket-disconnect-join.patch
+    sha256: 50d36c88359e7ee68c9b9d71913eff86532e9a7a3e102309303b6f8bb137663e
+  - source_path: firmware/reference/xiaozhi-overlay/scripts/apply-managed-overlay.ps1
+    production_path: firmware/targets/lichuang-dev/scripts/apply-managed-overlay.ps1
+    sha256: d953a743f04bc5bfceaaae1a1a8c0725260b2631d56a894ea75c570bdd8ccb7e
+  - source_path: firmware/reference/xiaozhi-overlay/scripts/assert-generated-config.ps1
+    production_path: firmware/targets/lichuang-dev/scripts/assert-generated-config.ps1
+    sha256: 848b5e75d8b70c6aff0a64c874573606b507b6aff110ac186e47542aaf86c288
+  - source_path: firmware/reference/xiaozhi-overlay/scripts/build.ps1
+    production_path: firmware/targets/lichuang-dev/scripts/build.ps1
+    sha256: 4a4cd9fd1c76bc8649d43f6fbe69c2e8c02b41634a873b06d72d2a041bd91304
+  - source_path: firmware/reference/xiaozhi-overlay/scripts/generate-local-config.ps1
+    production_path: firmware/targets/lichuang-dev/scripts/generate-local-config.ps1
+    sha256: 0b4731cd39bfe91ecdf8918dd6e821cd9c845f206eb2cc825c08949b7fa0e41a
+  - source_path: firmware/reference/xiaozhi-overlay/scripts/test-director-bootstrap-contract.ps1
+    production_path: firmware/targets/lichuang-dev/scripts/test-director-bootstrap-contract.ps1
+    sha256: 5482e4cf61e856d782c0a6aebc4966d0222560ac51ecbe9fc8876a1ae2d952d6
+  - source_path: firmware/reference/xiaozhi-overlay/scripts/test-ui-control-contract.ps1
+    production_path: firmware/targets/lichuang-dev/scripts/test-ui-control-contract.ps1
+    sha256: c874c25757b4a059aa0fa9e2fdf8440128f5f44f4345e860363d864ea7501104
+traceability:
+  udp_wire_contract:
+    - protocol/xiaozhi_udp_v1/fixtures/positive.json
+    - protocol/xiaozhi_udp_v1/fixtures/negative.json
+    - firmware/targets/lichuang-dev/overlay-files/main/protocols/voice_udp_wire.h
+  pinned_production_sources:
+    - third_party/sources.lock.yaml
+    - firmware/locks/xiaozhi-esp32.dependencies.lock
+  director_bootstrap_and_dual_wifi_configuration:
+    - firmware/targets/lichuang-dev/.env.local.example
+    - firmware/targets/lichuang-dev/overlay-files/main/protocols/voice_director_bootstrap.h
+    - firmware/targets/lichuang-dev/overlay/0011-director-bootstrap.patch
+    - firmware/targets/lichuang-dev/overlay/0012-dual-wifi-defaults.patch
+    - firmware/targets/lichuang-dev/scripts/assert-generated-config.ps1
+    - firmware/targets/lichuang-dev/scripts/generate-local-config.ps1
+    - firmware/targets/lichuang-dev/scripts/test-director-bootstrap-contract.ps1
+  websocket_owner_teardown:
+    - firmware/targets/lichuang-dev/overlay/0013-websocket-owner-teardown.patch
+    - firmware/targets/lichuang-dev/overlay-managed/0008-websocket-disconnect-join.patch
+  ui_control_responsiveness:
+    - firmware/targets/lichuang-dev/overlay/0014-ui-control-responsiveness.patch
+    - firmware/targets/lichuang-dev/scripts/test-ui-control-contract.ps1
+    - firmware/targets/lichuang-dev/scripts/build.ps1
+  bounded_and_redacted_modem_http:
+    - firmware/targets/lichuang-dev/overlay-managed/0003-http-request-header-redaction.patch
+    - firmware/targets/lichuang-dev/overlay-managed/0004-bounded-http-response.patch
+    - firmware/targets/lichuang-dev/overlay-managed/0005-at-command-log-redaction.patch
+    - firmware/targets/lichuang-dev/overlay-managed/0006-deadline-aware-http.patch
+    - firmware/targets/lichuang-dev/overlay-managed/0007-wifi-credential-priority.patch
+    - firmware/targets/lichuang-dev/scripts/apply-managed-overlay.ps1
+    - firmware/targets/lichuang-dev/scripts/build.ps1

@@ -27,7 +27,6 @@ if ($LASTEXITCODE -ne 0) { throw "Overlay preparation failed" }
 $overlayTreeVerifier = Join-Path $PSScriptRoot "verify-overlay-tree.py"
 & uv run --project $repoRoot python $overlayTreeVerifier --checkout $Checkout --integration $integration
 if ($LASTEXITCODE -ne 0) { throw "Canonical overlay tree verification failed" }
-
 $buildDir = Join-Path $Checkout "build-voice-agent"
 $sdkconfig = Join-Path $Checkout "sdkconfig.voice-agent"
 $configInputPath = "$sdkconfig.config-input.sha256"
@@ -88,8 +87,12 @@ try {
     }
     & (Join-Path $PSScriptRoot "apply-managed-overlay.ps1") -Checkout $Checkout
     if ($LASTEXITCODE -ne 0) { throw "Managed component overlay failed" }
+    & (Join-Path $PSScriptRoot "test-director-bootstrap-contract.ps1") -Checkout $Checkout
+    if ($LASTEXITCODE -ne 0) { throw "Director bootstrap source/configuration contract failed" }
     & (Join-Path $PSScriptRoot "test-udp-media-source-contract.ps1") -Checkout $Checkout
     if ($LASTEXITCODE -ne 0) { throw "UDP final-source contract failed" }
+    & (Join-Path $PSScriptRoot "test-ui-control-contract.ps1") -Checkout $Checkout
+    if ($LASTEXITCODE -ne 0) { throw "UI control final-source contract failed" }
     & python $idf -B $buildDir "-DSDKCONFIG=$sdkconfig" "-DSDKCONFIG_DEFAULTS=$defaults" "-DBOARD_NAME=lichuang-dev" "-DBOARD_TYPE=lichuang-dev" build
     if ($LASTEXITCODE -ne 0) { throw "idf.py build failed" }
     & python $idf -B $buildDir "-DSDKCONFIG=$sdkconfig" size

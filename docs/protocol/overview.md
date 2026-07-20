@@ -77,9 +77,10 @@ Canonical schema、fixtures 和 ESP32/Python wire helper 已有 host/contract �
 `259aeee` 的真实进程已使用 synthetic Chinese 经 Director grant、WSS control 和 UDP Opus/GCM 完成 real-provider
 media E2E，并产生 downlink audio。
 
-最终 `0001..0010` firmware 已在 COM11 烧录和启动；设备 WSS handshake 约 20 ms，UDP GCM probe 首次 ready，
-连续 600+ UDP Opus uplink packets。设备采集 peak 偏低，未触发真机 ASR。UI/触摸人工验收、真机 ASR/TTS、弱网、
-声学、20 轮和 30 分钟验证仍为 `not_run`。旧闭环只作为兼容 baseline。
+当前 `61542...` production firmware 已在 COM11 烧录，并完成电脑 TTS 唤醒、public Director/WSS、AFE AEC、
+FunASR、流式字幕、TTS/playout 与状态往返；100 帧 underrun 0，无 ERROR/panic/WDT。公网 host 还完成
+`8093/udp` AES-GCM probe/ACK。当前 artifact UDP provider HIL、UI/触摸、
+弱网、正式声学、20 轮和 30 分钟仍为 `not_run`。
 
 详见：
 

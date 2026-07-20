@@ -6,8 +6,9 @@
 ## 1. 范围与基线
 
 首个 target 为立创实战派 ESP32-S3，固定上游 `xiaozhi-esp32@7b190b78e4f8dfef14126f6cd478c134b3cd3cd8`，
-ESP-IDF `v5.5.2`（revision `30aaf64524299d3bde422ca9a2848090d1bc5d0f`），board `lichuang-dev`。当前交付仓保留可复现 reference overlay，随后按 owner 逐模块迁移，
-不以一次重写替代已经验证的 UI、音频、AEC 和 WSS 行为。
+ESP-IDF `v5.5.2`（revision `30aaf64524299d3bde422ca9a2848090d1bc5d0f`），board `lichuang-dev`。
+`firmware/targets/lichuang-dev/` 中的 pinned-upstream + overlay 是唯一 production composition；随后仍可按 owner
+逐模块抽取，但不以一次重写替代已经验证的 UI、音频、AEC 和 WSS 行为。
 
 上游 board config 的事实：`AUDIO_INPUT_REFERENCE=true`、`CONFIG_USE_DEVICE_AEC=y`、AFE 输入格式 `MR`，
 realtime listening 期间播放不停止 voice processing。这只证明配置和源码路径，不证明最终固件 AEC、
@@ -39,19 +40,21 @@ flowchart TD
 
 ```text
 firmware/
-  reference/xiaozhi-overlay/   # 固定来源、patch、复现脚本，迁移比较基线
-  components/
-    voice_contracts/           # generated protocol constants/admission helpers
-    voice_session/             # lifecycle, generation, command/event facade
-    voice_audio/               # capture/render/Opus/AEC-facing ports
-    voice_transport_wss/
-    voice_transport_udp/
-    voice_board_lichuang/
-    voice_presentation_lvgl/   # 可选
-  targets/lichuang-dev/
+  targets/lichuang-dev/        # 唯一 production composition
+  device/                      # non-release component-extraction prototype
+    components/
+      voice_contracts/         # generated protocol constants/admission helpers
+      voice_session/           # lifecycle, generation, command/event facade
+      voice_audio/             # capture/render/Opus/AEC-facing ports
+      voice_transport_wss/
+      voice_transport_udp/
+      voice_board_lichuang/
+      voice_presentation_lvgl/ # 可选
 ```
 
-组件只在迁移到该 owner 时创建。Reference lane 在目标 lane 通过等价门禁前保留；它不是最终发布架构。
+组件只在迁移到该 owner 时创建。`firmware/device` 在通过等价门禁并被新的决策纳入 production composition 前，
+不生成 release firmware。Production target 内的 overlay 是当前产品实现，不是可被 prototype headless build 替代的
+“参考目录”。
 
 ## 4. 音频流水线
 
@@ -110,7 +113,7 @@ NVS 规则：
 | playback queue/decoder | playback task | generation 变化清空旧音频；缺包按 deadline PLC |
 | LVGL objects | UI task | 其他 task 通过 command/event，不直接操作对象 |
 
-当前已知技术债以 `firmware/reference/xiaozhi-overlay/KNOWN_DEBT.md` 为准，包括部分统计字段数据竞争、
+当前已知技术债以 `firmware/targets/lichuang-dev/KNOWN_DEBT.md` 为准，包括部分统计字段数据竞争、
 底层单次 send 取消边界和第三方线程安全依赖。技术债不能被文档中的目标接口掩盖。
 
 ## 8. 可移植性
@@ -124,13 +127,13 @@ NVS 规则：
 
 ## 9. 验证状态
 
-固件复现门禁收口于 commit `cf9bc69`。新仓独立 materialization 后，Reference `0001..0010` 已通过 source
+固件复现门禁收口于 commit `cf9bc69`。新仓独立 materialization 后，当时的 composition `0001..0010` 已通过 source
 contract、wire fixture、patch round-trip 和 ESP-IDF 5.5.2 clean build：`2215/2215`，`xiaozhi.bin=0x2d2660`，
 app partition 余量 `0x11d9a0`（约 28%），DIRAM `170887/341760`（50.0%），artifact SHA-256 为
 `43bac4d4ed678b3298cc9f4c8e9da0c4ab7608af731406cec31939ee457350c8`。证据等级仅为 `build_passed` 与
 `image_sized`，且该 ignored local-config artifact 不得提交或发布。
 
-该 final reference artifact 已烧录至 COM11 的 ESP32-S3 rev0.2（8 MB PSRAM）：仅擦除 NVS
+该历史 artifact 已烧录至 COM11 的 ESP32-S3 rev0.2（8 MB PSRAM）：仅擦除 NVS
 `0x9000/16 KiB`，随后写入完整 bootloader、partition table、otadata、app 和 assets，写入后各分区 hash verified。
 Boot log 观察到 Wi-Fi“广告位招租”连接并取得 `192.168.1.105`，display、audio codec、ES7210、AEC、VAD 和
 wake model 初始化，无 panic/WDT，达到 `boot_observed`。Display 初始化日志不等于 UI 视觉正确，触摸和 UI
@@ -141,3 +144,15 @@ wake model 初始化，无 panic/WDT，达到 `boot_observed`。Display 初始�
 路径；自动播放测试语句期间设备采集 peak 偏低，未触发真机 ASR，因此不得声称 ESP32 ASR/TTS/LLM、字幕、
 打断或声学闭环。UI/触摸人工验收、真机 ASR/TTS、20 轮、不同距离声学、弱网和 30 分钟长稳仍为
 `not_run`。
+
+当前 `0011..0014` 与 managed `0003..0008` composition 使用公网 Director 配置完成 ESP-IDF 5.5.2 clean build；
+`xiaozhi.bin` 为 `2,970,272` bytes，SHA-256 为
+`61542dad78a11a130263952e4148f9b7c70b1e8919e3f2ca192d21612e6716a3`，app 余量约 28%，DIRAM 为
+`170,991 / 341,760`（50.03%）。
+该 app 已写入 COM11 并 hash verified。电脑 TTS 唤醒后，当前 artifact 完成公网 Director/WSS、AFE AEC、
+ASR“请用一句话介绍你自己”、流式字幕、`listening -> speaking -> listening` 与板端 playback；100 帧 underrun
+为 0、max write 62.3 ms，无 ERROR/panic/WDT。该单次 smoke 不外推为正式声学或延迟 SLO。
+`0014` 的“AI”文案、有界 4 包发送、停止清队列和 generation fence 已通过 source contract；物理视觉与点击结束
+仍未手指 HIL。`cb544...` 的 350 帧零 underrun 保留为历史证据；当前 artifact 的 UDP provider、
+UDP provider 闭环、UI/触摸、正式声学/弱网/20 轮/30 分钟仍为 `not_run`，完整边界见
+[firmware/MIGRATION_STATUS.md](../../firmware/MIGRATION_STATUS.md)。

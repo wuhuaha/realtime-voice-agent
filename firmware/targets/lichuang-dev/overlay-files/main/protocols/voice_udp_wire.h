@@ -57,7 +57,7 @@ inline void WriteU32(std::uint8_t* bytes, std::uint32_t value) {
 }
 
 inline bool HeaderFieldsValid(const Header& header, Direction direction) {
-    if (header.generation == 0) {
+    if (header.media_epoch == 0 || header.payload_length > kMaxPayloadBytes) {
         return false;
     }
     if (header.flags == kAudio) {
@@ -102,8 +102,7 @@ inline bool ParseDatagram(const std::uint8_t* data, std::size_t size,
     header.timestamp = ReadU32(data + 20);
     header.generation = ReadU32(data + 24);
     header.payload_length = ReadU32(data + 28);
-    if (header.payload_length > kMaxPayloadBytes ||
-        size != kHeaderBytes + header.payload_length + kTagBytes ||
+    if (size != kHeaderBytes + header.payload_length + kTagBytes ||
         !HeaderFieldsValid(header, direction)) {
         return false;
     }

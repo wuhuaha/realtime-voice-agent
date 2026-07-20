@@ -16,11 +16,11 @@ try {
         uv run --directory (Join-Path $Root 'server') ruff check .
         uv run --directory (Join-Path $Root 'server') pytest
     }
-    if (Test-Path -LiteralPath (Join-Path $Root 'firmware/reference/xiaozhi-overlay/scripts/verify-source-contract.ps1')) {
-        & (Join-Path $Root 'firmware/reference/xiaozhi-overlay/scripts/verify-source-contract.ps1')
+    if (Test-Path -LiteralPath (Join-Path $Root 'firmware/targets/lichuang-dev/scripts/verify-source-contract.ps1')) {
+        & (Join-Path $Root 'firmware/targets/lichuang-dev/scripts/verify-source-contract.ps1')
     }
     if ($BuildFirmware) {
-        & (Join-Path $Root 'firmware/reference/xiaozhi-overlay/scripts/build.ps1') -Clean
+        & (Join-Path $Root 'firmware/targets/lichuang-dev/scripts/build.ps1') -Clean
     }
 } finally {
     Pop-Location

@@ -26,7 +26,7 @@ $required = @(
     'voice_agent.GetInt(kProtocolVersionKey, kLocalProtocolVersion)',
     'VOICE_AGENT_WS_URL, VOICE_AGENT_WS_TOKEN',
     'Settings websocket("websocket", false)',
-    'const WebsocketEndpointSnapshot endpoint = ResolveWebsocketEndpoint()',
+    'endpoint = ResolveWebsocketEndpoint()',
     'endpoint.source, endpoint.host.c_str(), version_',
     'WebsocketProtocol::ParseEndpointOrigin'
 )

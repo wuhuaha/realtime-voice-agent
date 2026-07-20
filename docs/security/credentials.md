@@ -54,8 +54,8 @@ Redis 媒体数据结构、metrics label 或 error response 泄露。
 
 ```powershell
 Copy-Item .env.example .env
-Copy-Item firmware/reference/xiaozhi-overlay/.env.local.example `
-  firmware/reference/xiaozhi-overlay/.env.local
+Copy-Item firmware/targets/lichuang-dev/.env.local.example `
+  firmware/targets/lichuang-dev/.env.local
 ```
 
 填值后运行 repository/secret checks。不得使用 `git add .`；提交前检查 staged diff 和 staged secret scan。

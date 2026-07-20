@@ -1,0 +1,27 @@
+diff --git a/managed_components/78__esp-ml307/src/at_uart.cc b/managed_components/78__esp-ml307/src/at_uart.cc
+--- a/managed_components/78__esp-ml307/src/at_uart.cc
++++ b/managed_components/78__esp-ml307/src/at_uart.cc
+@@ -271,8 +271,13 @@ bool AtUart::ParseResponse() {
+         }
+ 
+         if (debug_) {
+-            ESP_LOGI(TAG, "<< %.64s (%u bytes) [%02x%02x%02x]", rx_buffer_.substr(0, end_pos).c_str(), end_pos,
+-                rx_buffer_[0], rx_buffer_[1], rx_buffer_[2]);
++            if (rx_buffer_.compare(0, 15, "AT+MHTTPHEADER=") == 0) {
++                ESP_LOGI(TAG, "<< AT+MHTTPHEADER=<redacted> (%u bytes)", end_pos);
++            } else {
++                ESP_LOGI(TAG, "<< %.64s (%u bytes) [%02x%02x%02x]",
++                    rx_buffer_.substr(0, end_pos).c_str(), end_pos,
++                    rx_buffer_[0], rx_buffer_[1], rx_buffer_[2]);
++            }
+         }
+@@ -471,7 +476,11 @@ bool AtUart::SendCommandWithData(const std::string& command, size_t timeout_ms,
+     std::lock_guard<std::mutex> lock(command_mutex_);
+     if (debug_) {
+-        ESP_LOGI(TAG, ">> %.64s (%u bytes)", command.data(), command.length());
++        if (command.compare(0, 15, "AT+MHTTPHEADER=") == 0) {
++            ESP_LOGI(TAG, ">> AT+MHTTPHEADER=<redacted> (%u bytes)", command.length());
++        } else {
++            ESP_LOGI(TAG, ">> %.64s (%u bytes)", command.data(), command.length());
++        }
+     }

@@ -31,15 +31,22 @@ try {
 #define VOICE_AGENT_LOCAL_LAB 1
 #define VOICE_AGENT_WS_URL "wss://fixture.invalid/ws"
 #define VOICE_AGENT_WS_TOKEN "fixture"
+#define VOICE_AGENT_BOOTSTRAP_MODE "direct"
+#define VOICE_AGENT_DIRECTOR_URL ""
+#define VOICE_AGENT_BOOTSTRAP_TOKEN ""
+#define VOICE_AGENT_TENANT_ID "default"
+#define VOICE_AGENT_DEVELOPMENT_DIRECT_FALLBACK 0
 #define VOICE_AGENT_WIFI_SSID "fixture"
 #define VOICE_AGENT_WIFI_PASSWORD "fixture"
+#define VOICE_AGENT_WIFI_FALLBACK_SSID ""
+#define VOICE_AGENT_WIFI_FALLBACK_PASSWORD ""
 "@, $utf8NoBom)
     [IO.File]::WriteAllText($validConfig, @"
 XIAOZHI_LAB_TOKEN=$token
 XIAOZHI_WIFI_PASSWORD=$password
 "@, $utf8NoBom)
     [IO.File]::WriteAllText($invalidConfig, @"
-XIAOZHI_WIFI_PASSWORD=$password
+XIAOZHI_LAB_TOKEN=$token
 "@, $utf8NoBom)
 
     & $hostExecutable -NoLogo -NoProfile -NonInteractive -File $validator `

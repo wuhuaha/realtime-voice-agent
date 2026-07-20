@@ -35,7 +35,7 @@
 - [兼容基线](../quality/compatibility-baseline.md)。
 - `migration/baseline/source-manifest.yaml`、`behavior-matrix.yaml` 和 `third_party/sources.lock.yaml`。
 - Server 迁移 commit `fca8de8`、repair commits `259aeee`/`d2fa0ca`；固件与仓库复现门禁 commit `cf9bc69`。
-- 新仓根 pytest `15 passed`；Server Ruff 与 Redis-enabled pytest `179 passed`；reference firmware 在新仓
+- 本决策收口时新仓根 pytest `15 passed`；Server Ruff 与 Redis-enabled pytest `179 passed`；reference firmware 在新仓
   clean build `2215/2215`。同一 final reference artifact 随后已在 COM11 完整烧录并观察启动、Wi-Fi、唤醒、
   WSS handshake、UDP probe 与持续 UDP 上行；真机语音闭环仍需独立门禁。
 
@@ -58,8 +58,9 @@ target lane 并存，存在短期重复和更多兼容测试。风险：目录�
 
 Reference lane 在目标 lane 通过等价门禁前保持可构建；最终发布不依赖研究仓或 external checkout常驻。
 Provenance、fixtures 和 baseline 永久保留。新仓 host synthetic Chinese 已完成真实 provider media E2E，但该
-host 证据不能替代 ESP32 acoustic E2E；设备目前只证明 boot、wake、WSS handshake、UDP transport 和持续 UDP 上行，尚未触发
-真机 ASR。
+host 证据不能替代 ESP32 acoustic E2E。当前 final `0014` artifact 已完成 boot、电脑 TTS 唤醒、public WSS、
+AFE AEC、真机 ASR、流式字幕、TTS/playout 与状态往返；100 帧 playback underrun 为 0。该 scoped smoke
+不替代物理 UI/触摸、最终 artifact UDP HIL、正式声学、弱网、多轮与长稳验收。
 
 ## 复查触发条件
 

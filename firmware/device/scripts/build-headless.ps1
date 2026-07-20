@@ -35,6 +35,16 @@ try {
     }
     & python $idf -B $buildDir "-DSDKCONFIG=$sdkconfig" build
     if ($LASTEXITCODE -ne 0) { throw "idf.py build failed" }
+    $projectDescription = Get-Content -Raw -LiteralPath (
+        Join-Path $buildDir "project_description.json") | ConvertFrom-Json
+    $forbiddenComponents = @($projectDescription.build_components | Where-Object {
+        $_ -in @("lvgl", "esp_wifi", "esp_netif", "lwip") -or
+        $_ -like "voice_board*" -or $_ -like "voice_audio*" -or
+        $_ -like "voice_transport*" -or $_ -like "voice_presentation*"
+    })
+    if ($forbiddenComponents.Count -ne 0) {
+        throw "Headless build linked forbidden components: $($forbiddenComponents -join ', ')"
+    }
     & python $idf -B $buildDir "-DSDKCONFIG=$sdkconfig" size
     if ($LASTEXITCODE -ne 0) { throw "idf.py size failed" }
 } finally {

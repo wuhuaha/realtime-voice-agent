@@ -1,0 +1,176 @@
+diff --git a/managed_components/78__esp-ml307/include/http.h b/managed_components/78__esp-ml307/include/http.h
+--- a/managed_components/78__esp-ml307/include/http.h
++++ b/managed_components/78__esp-ml307/include/http.h
+@@ -1,6 +1,7 @@
+ #ifndef HTTP_H
+ #define HTTP_H
+ 
++#include <cstddef>
+ #include <string>
+ #include <map>
+ #include <functional>
+@@ -12,6 +13,10 @@ public:
+     // Set timeout
+     virtual void SetTimeout(int timeout_ms) = 0;
+ 
++    // Bound response buffering for small control-plane requests. Backends that
++    // buffer asynchronously must enforce this before appending received data.
++    virtual void SetResponseBodyLimit(size_t max_bytes) { (void)max_bytes; }
++
+     // 设置 HTTP 请求头
+     virtual void SetHeader(const std::string& key, const std::string& value) = 0;
+diff --git a/managed_components/78__esp-ml307/src/ml307/ml307_http.h b/managed_components/78__esp-ml307/src/ml307/ml307_http.h
+--- a/managed_components/78__esp-ml307/src/ml307/ml307_http.h
++++ b/managed_components/78__esp-ml307/src/ml307/ml307_http.h
+@@ -10,6 +10,7 @@
+ #include <functional>
+ #include <mutex>
+ #include <condition_variable>
++#include <limits>
+ #include <optional>
+ 
+ #define ML307_HTTP_EVENT_INITIALIZED (1 << 0)
+@@ -24,6 +25,7 @@ public:
+     ~Ml307Http();
+ 
+     void SetTimeout(int timeout_ms) override;
++    void SetResponseBodyLimit(size_t max_bytes) override;
+     void SetHeader(const std::string& key, const std::string& value) override;
+     void SetContent(std::string&& content) override;
+@@ -57,6 +59,9 @@ private:
+     std::string body_;
+     size_t body_offset_ = 0;
+     size_t content_length_ = 0;
++    size_t total_body_received_ = 0;
++    size_t response_body_limit_ = std::numeric_limits<size_t>::max();
++    bool response_body_limit_exceeded_ = false;
+     bool eof_ = false;
+     bool instance_active_ = false;
+diff --git a/managed_components/78__esp-ml307/src/ml307/ml307_http.cc b/managed_components/78__esp-ml307/src/ml307/ml307_http.cc
+--- a/managed_components/78__esp-ml307/src/ml307/ml307_http.cc
++++ b/managed_components/78__esp-ml307/src/ml307/ml307_http.cc
+@@ -1,6 +1,7 @@
+ #include "ml307_http.h"
+ #include <esp_log.h>
++#include <charconv>
+ #include <cstring>
+ #include <sstream>
+ #include <chrono>
+@@ -15,6 +16,8 @@ Ml307Http::Ml307Http(std::shared_ptr<AtUart> at_uart) : at_uart_(at_uart) {
+                     eof_ = false;
+                     body_offset_ = 0;
+                     body_.clear();
++                    total_body_received_ = 0;
++                    response_body_limit_exceeded_ = false;
+                     status_code_ = arguments[2].int_value;
+                     if (arguments.size() >= 5) {
+                         ParseResponseHeaders(at_uart_->DecodeHex(arguments[4].string_value));
+@@ -23,11 +25,30 @@ Ml307Http::Ml307Http(std::shared_ptr<AtUart> at_uart) : at_uart_(at_uart) {
+                         // FIXME: <header> 被分包发送
+                         ESP_LOGE(TAG, "Missing header");
+                     }
+-                    xEventGroupSetBits(event_group_handle_, ML307_HTTP_EVENT_HEADERS_RECEIVED);
++                    xEventGroupSetBits(event_group_handle_, response_body_limit_exceeded_
++                        ? ML307_HTTP_EVENT_ERROR : ML307_HTTP_EVENT_HEADERS_RECEIVED);
+                 } else if (type == "content") {
+                     // +MHTTPURC: "content",<httpid>,<content_len>,<sum_len>,<cur_len>,<data>
++                    const int current_length = arguments.size() >= 5
++                        ? arguments[4].int_value : -1;
++                    const size_t current_size = current_length >= 0
++                        ? static_cast<size_t>(current_length) : 0;
++                    if (response_body_limit_exceeded_ || current_length < 0 ||
++                        total_body_received_ > response_body_limit_ ||
++                        current_size > response_body_limit_ - total_body_received_) {
++                        std::lock_guard<std::mutex> lock(mutex_);
++                        response_body_limit_exceeded_ = true;
++                        error_code_ = 8;
++                        body_.clear();
++                        eof_ = true;
++                        cv_.notify_all();
++                        xEventGroupSetBits(event_group_handle_, ML307_HTTP_EVENT_ERROR);
++                        return;
++                    }
+                     std::string decoded_data;
+                     if (arguments.size() >= 6) {
+                         at_uart_->DecodeHexAppend(decoded_data, arguments[5].string_value.c_str(), arguments[5].string_value.length());
+@@ -36,8 +57,19 @@ Ml307Http::Ml307Http(std::shared_ptr<AtUart> at_uart) : at_uart_(at_uart) {
+                     }
+ 
+                     std::lock_guard<std::mutex> lock(mutex_);
++                    if (decoded_data.size() != current_size) {
++                        response_body_limit_exceeded_ = true;
++                        error_code_ = 7;
++                        body_.clear();
++                        eof_ = true;
++                        cv_.notify_all();
++                        xEventGroupSetBits(event_group_handle_, ML307_HTTP_EVENT_ERROR);
++                        return;
++                    }
+                     body_.append(decoded_data);
++                    total_body_received_ += decoded_data.size();
+ 
+                     // chunked传输时，EOF由cur_len == 0判断，非 chunked传输时，EOF由content_len判断
+@@ -78,7 +110,8 @@ int Ml307Http::Read(char* buffer, size_t buffer_size) {
+     // 使用条件变量等待数据
+     auto timeout = std::chrono::milliseconds(timeout_ms_);
+     bool received = cv_.wait_for(lock, timeout, [this] { 
+-        return !body_.empty() || eof_; 
++        return !body_.empty() || eof_ || response_body_limit_exceeded_;
+     });
+@@ -89,6 +122,9 @@ int Ml307Http::Read(char* buffer, size_t buffer_size) {
+                  body_offset_, eof_);
+         return -1;
+     }
++    if (response_body_limit_exceeded_) {
++        return -1;
++    }
+     if (!instance_active_) {
+         return -1;
+@@ -145,6 +181,10 @@ void Ml307Http::SetTimeout(int timeout_ms) {
+     timeout_ms_ = timeout_ms;
+ }
+ 
++void Ml307Http::SetResponseBodyLimit(size_t max_bytes) {
++    response_body_limit_ = max_bytes;
++}
++
+ void Ml307Http::SetKeepAlive(bool enable) {
+@@ -179,6 +219,17 @@ void Ml307Http::ParseResponseHeaders(const std::string& headers) {
+         response_headers_[key] = value;
++        if (key == "Content-Length") {
++            size_t parsed_length = 0;
++            const auto parsed = std::from_chars(
++                value.data(), value.data() + value.size(), parsed_length);
++            if (parsed.ec != std::errc{} || parsed.ptr != value.data() + value.size()) {
++                response_body_limit_exceeded_ = true;
++                error_code_ = 7;
++            } else {
++                content_length_ = parsed_length;
++                if (content_length_ > response_body_limit_) {
++                    response_body_limit_exceeded_ = true;
++                    error_code_ = 8;
++                }
++            }
++        }
+ 
+         // 检查是否为chunked传输编码
+@@ -189,6 +240,8 @@ void Ml307Http::ParseResponseHeaders(const std::string& headers) {
+ 
+ bool Ml307Http::Open(const std::string& method, const std::string& url) {
++    total_body_received_ = 0;
++    response_body_limit_exceeded_ = false;
+     method_ = method;
+@@ -316,7 +369,7 @@ std::string Ml307Http::ReadAll() {
+     auto timeout = std::chrono::milliseconds(timeout_ms_);
+     bool received = cv_.wait_for(lock, timeout, [this] { 
+-        return eof_; 
++        return eof_ || response_body_limit_exceeded_;
+     });
+@@ -327,6 +380,9 @@ std::string Ml307Http::ReadAll() {
+         return body_;
+     }
++    if (response_body_limit_exceeded_) {
++        return {};
++    }
+ 
+     return body_;

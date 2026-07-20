@@ -1,0 +1,48 @@
+diff --git a/main/boards/common/wifi_board.cc b/main/boards/common/wifi_board.cc
+index 5038dd4..a0512a2 100644
+--- a/main/boards/common/wifi_board.cc
++++ b/main/boards/common/wifi_board.cc
+@@ -10,6 +10,7 @@
+ #include <freertos/task.h>
+ #include <esp_network.h>
+ #include <esp_log.h>
++#include <algorithm>
+ #include <utility>
+ 
+ #include <font_awesome.h>
+@@ -55,9 +56,32 @@ void WifiBoard::StartNetwork() {
+ 
+ #if VOICE_AGENT_LOCAL_LAB
+     auto& ssid_manager = SsidManager::GetInstance();
+-    if (ssid_manager.GetSsidList().empty() && VOICE_AGENT_WIFI_SSID[0] != '\0') {
+-        ssid_manager.AddSsid(VOICE_AGENT_WIFI_SSID, VOICE_AGENT_WIFI_PASSWORD);
+-        ESP_LOGI(TAG, "Installed local lab WiFi default");
++    const auto install_local_credential = [&ssid_manager](const char* ssid,
++                                                          const char* password) {
++        if (ssid[0] == '\0') {
++            return;
++        }
++        const auto& configured = ssid_manager.GetSsidList();
++        const auto existing = std::find_if(
++            configured.begin(), configured.end(), [ssid](const SsidItem& item) {
++                return item.ssid == ssid;
++            });
++        if (existing == configured.end() || existing->password != password) {
++            ssid_manager.AddSsid(ssid, password);
++            ESP_LOGI(TAG, "Installed local lab WiFi credential");
++        }
++    };
++    install_local_credential(VOICE_AGENT_WIFI_FALLBACK_SSID,
++                             VOICE_AGENT_WIFI_FALLBACK_PASSWORD);
++    install_local_credential(VOICE_AGENT_WIFI_SSID, VOICE_AGENT_WIFI_PASSWORD);
++    const auto& configured = ssid_manager.GetSsidList();
++    const auto primary = std::find_if(
++        configured.begin(), configured.end(), [](const SsidItem& item) {
++            return item.ssid == VOICE_AGENT_WIFI_SSID;
++        });
++    if (primary != configured.end() && primary != configured.begin()) {
++        ssid_manager.SetDefaultSsid(
++            static_cast<int>(std::distance(configured.begin(), primary)));
+     }
+ #endif
+ 

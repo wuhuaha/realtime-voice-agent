@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import hashlib
 import hmac
+import logging
 from dataclasses import dataclass
 from typing import Literal
 
@@ -9,6 +11,11 @@ from voice_contracts import GrantCodec, GrantError
 from .config import Settings
 
 TransportProfile = Literal["wss-opus-v1", "udp-opus-gcm-v1"]
+logger = logging.getLogger(__name__)
+
+
+def _device_ref(device_id: str) -> str:
+    return hashlib.sha256(device_id.encode("utf-8")).hexdigest()[:12]
 
 
 @dataclass(frozen=True, slots=True)
@@ -36,10 +43,19 @@ class WorkerAuthenticator:
         self._codec = GrantCodec(settings.grant_signing_key.get_secret_value())
 
     def verify(self, authorization: str | None, device_id: str | None) -> VerifiedAuth | None:
-        if authorization is None or device_id is None:
+        if authorization is None:
+            logger.warning("worker_auth_rejected reason=missing_authorization worker_id=%s", self._worker_id)
+            return None
+        if device_id is None:
+            logger.warning("worker_auth_rejected reason=missing_device_id worker_id=%s", self._worker_id)
             return None
         scheme, _, supplied = authorization.partition(" ")
         if scheme.lower() != "bearer":
+            logger.warning(
+                "worker_auth_rejected reason=invalid_scheme worker_id=%s device_ref=%s",
+                self._worker_id,
+                _device_ref(device_id),
+            )
             return None
         if self._lab_token is not None and hmac.compare_digest(supplied, self._lab_token):
             return VerifiedAuth(
@@ -48,7 +64,14 @@ class WorkerAuthenticator:
             )
         try:
             claims = self._codec.verify(supplied, worker_id=self._worker_id, device_id=device_id)
-        except GrantError:
+        except GrantError as exc:
+            logger.warning(
+                "worker_auth_rejected reason=grant_%s worker_id=%s device_ref=%s token_length=%d",
+                str(exc).replace(" ", "_"),
+                self._worker_id,
+                _device_ref(device_id),
+                len(supplied),
+            )
             return None
         return VerifiedAuth(
             AuthContext(

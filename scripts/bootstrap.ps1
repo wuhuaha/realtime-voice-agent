@@ -15,7 +15,7 @@ try {
         if ($LASTEXITCODE -ne 0) { throw 'Server dependency sync failed.' }
     }
     if (-not $SkipFirmware) {
-        & (Join-Path $Root 'firmware/reference/xiaozhi-overlay/scripts/materialize-upstream.ps1')
+        & (Join-Path $Root 'firmware/targets/lichuang-dev/scripts/materialize-upstream.ps1')
         if ($LASTEXITCODE -ne 0) { throw 'Firmware materialization failed.' }
     }
 } finally {

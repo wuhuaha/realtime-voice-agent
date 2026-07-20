@@ -58,6 +58,9 @@ WSS ping/pong 只证明连接活性，不替代媒体 age、AgentSession 或 pro
 至少记录 packets/bytes、decode errors、queue drops、max media age、send wait、playback underrun、interrupt tail
 和 close reason。WSS 弱网结果必须与 UDP 在相同 codec/provider/网络模型下比较。
 
-Server `fca8de8` + repair `259aeee` 已通过真实 Director bootstrap + grant；host synthetic Chinese 经 WSS control
-和 UDP media 完成 real-provider E2E。Final firmware 的 WSS handshake 约 20 ms，并持续产生 uplink packets；但
-设备输入未触发 ASR，WSS binary downlink/playout、真机 ASR/TTS、20 轮、30 分钟和弱网 A/B 仍为 `not_run`。
+公网评测部署已通过 Director bootstrap + grant。Host synthetic Chinese 经公网 WSS 完成 real-provider E2E；
+`0014` 前 `cb544...` firmware 从 `river` 网络请求 `182.254.219.7:8079`，WSS handshake 约 160 ms，并完成
+真机 ASR、流式字幕、TTS 与板端播放，350 帧播放窗口 underrun 为 0。当前 `61542...` firmware 另行完成
+public WSS、AFE AEC、ASR/字幕/TTS/playout 与状态往返；100 帧 underrun 0、max write 62.3 ms，无
+ERROR/panic/WDT。当前 artifact
+正式声学、20 轮、30 分钟和弱网 A/B 仍为 `not_run`。

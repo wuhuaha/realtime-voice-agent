@@ -1,0 +1,40 @@
+diff --git a/main/protocols/websocket_protocol.cc b/main/protocols/websocket_protocol.cc
+--- a/main/protocols/websocket_protocol.cc
++++ b/main/protocols/websocket_protocol.cc
+@@ -4,6 +4,7 @@
+ #include "application.h"
+ #include "settings.h"
+ #include "voice_agent_local_config.h"
++#include "voice_director_bootstrap.h"
+ 
+ #include <algorithm>
+ #include <atomic>
+@@ -372,9 +373,26 @@ void WebsocketProtocol::CloseAudioChannel(bool send_goodbye) {
+ bool WebsocketProtocol::OpenAudioChannel() {
+     // A fresh control connection must never inherit a previous UDP owner or key.
+     CloseAudioChannel(false);
+-    const WebsocketEndpointSnapshot endpoint = ResolveWebsocketEndpoint();
++    WebsocketEndpointSnapshot endpoint;
++    const auto bootstrap = voice_agent::RequestDirectorBootstrap(GetTransportMode());
++    if (bootstrap.status == voice_agent::DirectorBootstrapStatus::kSucceeded) {
++        endpoint = MakeEndpointSnapshot(
++            bootstrap.worker_wss_url, bootstrap.connect_grant,
++            kLocalProtocolVersion, "director_bootstrap");
++    } else if (bootstrap.status == voice_agent::DirectorBootstrapStatus::kFailed) {
++        if (!voice_agent::DevelopmentDirectFallbackEnabled()) {
++            ESP_LOGE(TAG, "Director bootstrap failed; direct Worker fallback is disabled");
++            SetError(Lang::Strings::SERVER_NOT_CONNECTED);
++            return false;
++        }
++        ESP_LOGW(TAG, "Director bootstrap failed; using explicit development direct fallback");
++    }
++    if (!endpoint.IsValid() &&
++        bootstrap.status != voice_agent::DirectorBootstrapStatus::kSucceeded) {
++        endpoint = ResolveWebsocketEndpoint();
++    }
+     if (!endpoint.IsValid()) {
+-        ESP_LOGE(TAG, "No valid WebSocket v1 endpoint configured");
++        ESP_LOGE(TAG, "No valid WebSocket v1 endpoint is available");
+         SetError(Lang::Strings::SERVER_NOT_CONNECTED);
+         return false;
+     }

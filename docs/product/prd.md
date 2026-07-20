@@ -112,20 +112,23 @@ TTS 和 interruption；ESP32 使用 `xiaozhi-control-v1`，媒体可选择 `wss-
 
 | Gate | 通过条件 | 当前状态 |
 | --- | --- | --- |
-| A. Repository | secret/license/source lock/目录依赖检查通过 | 根 pytest `15 passed`；复现门禁 commit `cf9bc69` |
-| B. Server | unit、contract、integration、host e2e 通过；Director/Worker/Redis 语义可复现 | `fca8de8` + repairs `259aeee`/`d2fa0ca`；Redis-enabled pytest `179 passed`，host synthetic real-provider media E2E 已通过 |
-| C. Firmware | 固定 revision + overlay clean build、size、artifact hash 可复现 | `build_passed/image_sized/boot_observed`；SHA-256 `43bac4d4ed678b3298cc9f4c8e9da0c4ab7608af731406cec31939ee457350c8`，COM11 hash verified |
-| D. WSS HIL | 当前固件与新 Server 完成真实 provider、字幕、打断和播放闭环 | handshake 约 20 ms；持续 WSS media 与真机 ASR/TTS 未完成 |
-| E. UDP HIL | grant/probe/GCM、上下行音频、generation、重连完成真机闭环 | first-attempt probe ready、600+ UDP Opus uplink packets；真机 ASR/downlink/playout 未完成 |
+| A. Repository | secret/license/source lock/目录依赖检查通过 | repository tests `11 passed`；verifier、Ruff、PowerShell parse 与 source/config contracts 通过 |
+| B. Server | unit、contract、integration、host e2e 通过；Director/Worker/Redis 语义可复现 | 当前工作树 Redis-enabled full suite `189 passed`、`0 skipped`；双 Worker readiness、bootstrap 与 host synthetic real-provider media E2E 已通过 |
+| C. Firmware | 固定 revision + overlay clean build、size、artifact hash 可复现 | `0011..0014` clean build `2215/2215`，`2,970,272` bytes；当前 app SHA-256 `61542dad78a11a130263952e4148f9b7c70b1e8919e3f2ca192d21612e6716a3`，COM11 app-flash hash verified |
+| D. WSS HIL | 当前固件与新 Server 完成真实 provider、字幕、打断和播放闭环 | 当前 `61542...` 完成 public WSS/AFE AEC/ASR/流式字幕/TTS/playout smoke，100 帧 underrun 0；物理点击结束仍 `not_run` |
+| E. UDP HIL | grant/probe/GCM、上下行音频、generation、重连完成真机闭环 | 诊断镜像完成 first probe、600+ uplink、真实 provider 与 downlink/playout；最终 artifact 复验、reconnect/generation `not_run` |
 | F. 声学 | 近讲、远讲、播放中 double-talk 和回声抑制按固定方法评测 | `not_run` |
 | G. 稳定性 | 至少 20 轮对话和 30 分钟会话，无 panic/WDT/失控自问自答/持续队列增长 | `not_run` |
 | H. 弱网 | WSS/UDP 在同一 loss/burst/jitter 模型下 A/B，保留原始指标 | `not_run` |
 | I. Scale | Redis backend 下多 Director/Worker 的 lease/fencing/drain/overload 验证 | atomic lease/fence/grant 与跨实例测试已通过；真实多进程容量/故障演练 `not_run` |
 
 旧固件和旧 Server 的真实 provider 闭环只能作为 compatibility baseline，不能替代上述最终组合验收。
-当前 host synthetic Chinese 已证明真实 FunASR/DeepSeek/CosyVoice/downlink media 链路，但它不是 ESP32 acoustic
-E2E。设备自动播放测试因采集 peak 偏低未触发 ASR，不得把 host provider E2E 升级为 FR-008/FR-009/FR-010
-真机端云验收。
+当前公网部署与 host WSS real-provider E2E 已证明远端 FunASR/DeepSeek/CosyVoice/downlink media 链路；最终 artifact
+也已通过电脑声源唤醒完成真机 WSS 闭环。该单次观测不是正式近讲/远讲/double-talk 评测，也不替代 UI 触摸、
+人工打断、UDP HIL 或长稳复验。
+
+最终 `0014` 已通过 source contract、clean build、app-flash 与当前 `61542...` public-path smoke。“AI”文案的
+物理屏视觉和聆听按钮点击结束没有手指 HIL；单次电脑 TTS smoke 不等于正式声学或长稳。
 
 ## 8. 成功判定
 

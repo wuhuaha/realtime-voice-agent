@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import re
 import subprocess
 from pathlib import Path
 
@@ -17,6 +18,9 @@ FORBIDDEN_PARTS = {
     "client/archive",
 }
 FORBIDDEN_SUFFIXES = {".bin", ".elf", ".map", ".wav", ".pcm", ".key", ".pem"}
+SHA256_PATTERN = re.compile(r"^[0-9a-fA-F]{64}$")
+PRODUCTION_FIRMWARE_PATH = "firmware/targets/lichuang-dev"
+HISTORICAL_FIRMWARE_PATH = "firmware/reference/xiaozhi-overlay"
 
 
 def sha256(path: Path) -> str:
@@ -56,9 +60,35 @@ def validate_manifest(root: Path) -> list[str]:
     if not manifest_path.is_file():
         return [f"missing manifest: {manifest_path.relative_to(root)}"]
     payload = yaml.safe_load(manifest_path.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        return ["source manifest must be a mapping"]
+    entries = payload.get("files")
+    if not isinstance(entries, list):
+        return ["source manifest files must be a list"]
     errors: list[str] = []
-    for entry in payload.get("files", []):
-        relative = Path(entry["path"])
+    manifest_paths: set[str] = set()
+    for entry in entries:
+        if not isinstance(entry, dict) or not isinstance(entry.get("production_path"), str):
+            errors.append("manifest file entry must contain a string production_path")
+            continue
+        normalized_path = entry["production_path"].replace("\\", "/")
+        if normalized_path in manifest_paths:
+            errors.append(f"duplicate manifest production_path: {normalized_path}")
+            continue
+        manifest_paths.add(normalized_path)
+        source_path = entry.get("source_path")
+        if source_path is not None and not isinstance(source_path, str):
+            errors.append(f"invalid manifest source_path: {normalized_path}")
+        if normalized_path.startswith(f"{PRODUCTION_FIRMWARE_PATH}/"):
+            suffix = normalized_path.removeprefix(PRODUCTION_FIRMWARE_PATH)
+            expected_source = f"{HISTORICAL_FIRMWARE_PATH}{suffix}"
+            if source_path != expected_source:
+                errors.append(f"firmware provenance path mismatch: {normalized_path}")
+        expected_hash = entry.get("sha256")
+        if not isinstance(expected_hash, str) or SHA256_PATTERN.fullmatch(expected_hash) is None:
+            errors.append(f"invalid manifest SHA256: {normalized_path}")
+            continue
+        relative = Path(normalized_path)
         target = (root / relative).resolve()
         if not target.is_relative_to(root.resolve()):
             errors.append(f"manifest path escapes repository: {relative}")
@@ -67,8 +97,63 @@ def validate_manifest(root: Path) -> list[str]:
             errors.append(f"manifest file missing: {relative.as_posix()}")
             continue
         actual = sha256(target)
-        if actual.lower() != str(entry["sha256"]).lower():
+        if actual.lower() != expected_hash.lower():
             errors.append(f"manifest hash mismatch: {relative.as_posix()}")
+    traceability = payload.get("traceability", {})
+    if not isinstance(traceability, dict):
+        errors.append("source manifest traceability must be a mapping")
+    else:
+        for capability, paths in traceability.items():
+            if not isinstance(paths, list) or not paths:
+                errors.append(f"traceability group must be a non-empty list: {capability}")
+                continue
+            for raw_path in paths:
+                if not isinstance(raw_path, str) or raw_path.replace("\\", "/") not in manifest_paths:
+                    errors.append(f"traceability path is not hashed in manifest: {capability}: {raw_path}")
+    return errors
+
+
+def validate_firmware_composition(root: Path) -> list[str]:
+    errors: list[str] = []
+    production = root / PRODUCTION_FIRMWARE_PATH
+    legacy = root / HISTORICAL_FIRMWARE_PATH
+    if legacy.exists():
+        errors.append(f"legacy firmware runtime path still exists: {HISTORICAL_FIRMWARE_PATH}")
+    for relative in (
+        "README.md",
+        "sdkconfig.defaults",
+        "scripts/materialize-upstream.ps1",
+        "scripts/verify-source-contract.ps1",
+        "scripts/build.ps1",
+    ):
+        if not (production / relative).is_file():
+            errors.append(f"production firmware source missing: {PRODUCTION_FIRMWARE_PATH}/{relative}")
+
+    required_markers = {
+        root / "firmware" / "MIGRATION_STATUS.md": (
+            "唯一 production firmware composition",
+            "non-release component-extraction prototype",
+            "全量 clean build 完成 `2215/2215`",
+        ),
+        root / "firmware" / "device" / "README.md": (
+            "non-release component-extraction prototype",
+            PRODUCTION_FIRMWARE_PATH,
+        ),
+        root / ".github" / "workflows" / "ci.yml": (
+            "production-source-contract:",
+            f"./{PRODUCTION_FIRMWARE_PATH}/scripts/materialize-upstream.ps1",
+        ),
+    }
+    for path, markers in required_markers.items():
+        if not path.is_file():
+            errors.append(f"firmware composition document missing: {path.relative_to(root).as_posix()}")
+            continue
+        content = path.read_text(encoding="utf-8")
+        for marker in markers:
+            if marker not in content:
+                errors.append(
+                    f"firmware composition marker missing: {path.relative_to(root).as_posix()}: {marker}"
+                )
     return errors
 
 
@@ -102,6 +187,7 @@ def main() -> int:
         *validate_tracked_paths(tracked_files(root)),
         *validate_manifest(root),
         *validate_protocol(root),
+        *validate_firmware_composition(root),
     ]
     if errors:
         for error in errors:

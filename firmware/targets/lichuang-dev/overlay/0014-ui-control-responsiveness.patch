@@ -1,0 +1,237 @@
+diff --git a/main/application.cc b/main/application.cc
+index 5aea11d..9098804 100644
+--- a/main/application.cc
++++ b/main/application.cc
+@@ -206,8 +206,9 @@ void Application::Run() {
+             HandleStateChangedEvent();
+         }
+ 
++        bool skip_audio_send = false;
+         if (bits & MAIN_EVENT_TOGGLE_CHAT) {
+-            HandleToggleChatEvent();
++            skip_audio_send = HandleToggleChatEvent();
+         }
+ 
+         if (bits & MAIN_EVENT_START_LISTENING) {
+@@ -218,12 +219,23 @@ void Application::Run() {
+             HandleStopListeningEvent();
+         }
+ 
+-        if (bits & MAIN_EVENT_SEND_AUDIO) {
+-            while (auto packet = audio_service_.PopPacketFromSendQueue()) {
++        if ((bits & MAIN_EVENT_SEND_AUDIO) && !skip_audio_send) {
++            constexpr int kMaxAudioPacketsPerPass = 4;
++            int packets_sent = 0;
++            bool send_failed = false;
++            for (; packets_sent < kMaxAudioPacketsPerPass; ++packets_sent) {
++                auto packet = audio_service_.PopPacketFromSendQueue();
++                if (!packet) {
++                    break;
++                }
+                 if (protocol_ && !protocol_->SendAudio(std::move(packet))) {
++                    send_failed = true;
+                     break;
+                 }
+             }
++            if (!send_failed && packets_sent == kMaxAudioPacketsPerPass) {
++                xEventGroupSetBits(event_group_, MAIN_EVENT_SEND_AUDIO);
++            }
+         }
+ 
+         if (bits & MAIN_EVENT_WAKE_WORD_DETECTED) {
+@@ -520,6 +532,7 @@ void Application::InitializeProtocol() {
+     
+     protocol_->OnAudioChannelClosed([this, &board]() {
+         incoming_tts_audio_.store(false, std::memory_order_release);
++        audio_service_.DiscardPendingUplink();
+         audio_service_.ResetDecoder();
+         board.SetPowerSaveLevel(PowerSaveLevel::LOW_POWER);
+         Schedule([this]() {
+@@ -686,25 +699,25 @@ void Application::StopListening() {
+     xEventGroupSetBits(event_group_, MAIN_EVENT_STOP_LISTENING);
+ }
+ 
+-void Application::HandleToggleChatEvent() {
++bool Application::HandleToggleChatEvent() {
+     auto state = GetDeviceState();
+     
+     if (state == kDeviceStateActivating) {
+         SetDeviceState(kDeviceStateIdle);
+-        return;
++        return false;
+     } else if (state == kDeviceStateWifiConfiguring) {
+         audio_service_.EnableAudioTesting(true);
+         SetDeviceState(kDeviceStateAudioTesting);
+-        return;
++        return false;
+     } else if (state == kDeviceStateAudioTesting) {
+         audio_service_.EnableAudioTesting(false);
+         SetDeviceState(kDeviceStateWifiConfiguring);
+-        return;
++        return false;
+     }
+ 
+     if (!protocol_) {
+         ESP_LOGE(TAG, "Protocol not initialized");
+-        return;
++        return false;
+     }
+ 
+     if (state == kDeviceStateIdle) {
+@@ -715,14 +728,18 @@ void Application::HandleToggleChatEvent() {
+             Schedule([this, mode]() {
+                 ContinueOpenAudioChannel(mode);
+             });
+-            return;
++            return false;
+         }
+         SetListeningMode(mode);
+     } else if (state == kDeviceStateSpeaking) {
+         AbortSpeaking(kAbortReasonNone);
+     } else if (state == kDeviceStateListening) {
++        audio_service_.EnableVoiceProcessing(false);
++        audio_service_.DiscardPendingUplink();
+         protocol_->CloseAudioChannel();
++        return true;
+     }
++    return false;
+ }
+ 
+ void Application::ContinueOpenAudioChannel(ListeningMode mode) {
+diff --git a/main/application.h b/main/application.h
+index cbb4905..17a6c7b 100644
+--- a/main/application.h
++++ b/main/application.h
+@@ -152,7 +152,7 @@ private:
+ 
+     // Event handlers
+     void HandleStateChangedEvent();
+-    void HandleToggleChatEvent();
++    bool HandleToggleChatEvent();
+     void HandleStartListeningEvent();
+     void HandleStopListeningEvent();
+     void HandleNetworkConnectedEvent();
+diff --git a/main/audio/audio_service.cc b/main/audio/audio_service.cc
+index 183878a..75f1b4c 100644
+--- a/main/audio/audio_service.cc
++++ b/main/audio/audio_service.cc
+@@ -458,11 +458,15 @@ void AudioService::OpusCodecTask() {
+                     packet->payload.assign(buf.data(), buf.data() + out.encoded_bytes);
+ 
+                     if (task->type == kAudioTaskTypeEncodeToSendQueue) {
++                        bool packet_queued = false;
+                         {
+                             std::lock_guard<std::mutex> lock2(audio_queue_mutex_);
+-                            audio_send_queue_.push_back(std::move(packet));
++                            if (uplink_accepting_ && task->uplink_generation == uplink_generation_) {
++                                audio_send_queue_.push_back(std::move(packet));
++                                packet_queued = true;
++                            }
+                         }
+-                        if (callbacks_.on_send_queue_available) {
++                        if (packet_queued && callbacks_.on_send_queue_available) {
+                             callbacks_.on_send_queue_available();
+                         }
+                     } else if (task->type == kAudioTaskTypeEncodeToTestingQueue) {
+@@ -528,13 +532,21 @@ void AudioService::PushTaskToEncodeQueue(AudioTaskType type, std::vector<int16_t
+     std::unique_lock<std::mutex> lock(audio_queue_mutex_);
+ 
+     /* If the task is to send queue, we need to set the timestamp */
+-    if (type == kAudioTaskTypeEncodeToSendQueue && !timestamp_queue_.empty()) {
+-        if (timestamp_queue_.size() <= MAX_TIMESTAMPS_IN_QUEUE) {
+-            task->timestamp = timestamp_queue_.front();
++    if (type == kAudioTaskTypeEncodeToSendQueue) {
++        if (!uplink_accepting_) {
++            return;
++        }
++        task->uplink_generation = uplink_generation_;
++        if (!timestamp_queue_.empty()) {
++            if (timestamp_queue_.size() <= MAX_TIMESTAMPS_IN_QUEUE) {
++                task->timestamp = timestamp_queue_.front();
++            } else {
++                ESP_LOGW(TAG, "Timestamp queue (%u) is full, dropping timestamp", timestamp_queue_.size());
++            }
++            timestamp_queue_.pop_front();
+         } else {
+-            ESP_LOGW(TAG, "Timestamp queue (%u) is full, dropping timestamp", timestamp_queue_.size());
++            task->timestamp = 0;
+         }
+-        timestamp_queue_.pop_front();
+     }
+ 
+     audio_queue_cv_.wait(lock, [this]() { return audio_encode_queue_.size() < MAX_ENCODE_TASKS_IN_QUEUE; });
+@@ -634,6 +646,10 @@ void AudioService::EnableVoiceProcessing(bool enable) {
+                 esp_ae_rate_cvt_reset(input_resampler_);
+             }
+         }
++        {
++            std::lock_guard<std::mutex> lock(audio_queue_mutex_);
++            uplink_accepting_ = true;
++        }
+         audio_processor_->Start();
+         xEventGroupSetBits(event_group_, AS_EVENT_AUDIO_PROCESSOR_RUNNING);
+     } else {
+@@ -642,6 +658,19 @@ void AudioService::EnableVoiceProcessing(bool enable) {
+     }
+ }
+ 
++void AudioService::DiscardPendingUplink() {
++    std::lock_guard<std::mutex> lock(audio_queue_mutex_);
++    uplink_accepting_ = false;
++    ++uplink_generation_;
++    audio_send_queue_.clear();
++    timestamp_queue_.clear();
++    audio_encode_queue_.erase(
++        std::remove_if(audio_encode_queue_.begin(), audio_encode_queue_.end(),
++                       [](const auto& task) { return task->type == kAudioTaskTypeEncodeToSendQueue; }),
++        audio_encode_queue_.end());
++    audio_queue_cv_.notify_all();
++}
++
+ void AudioService::EnableAudioTesting(bool enable) {
+     ESP_LOGI(TAG, "%s audio testing", enable ? "Enabling" : "Disabling");
+     if (enable) {
+diff --git a/main/audio/audio_service.h b/main/audio/audio_service.h
+index 949eac0..d926804 100644
+--- a/main/audio/audio_service.h
++++ b/main/audio/audio_service.h
+@@ -93,7 +93,8 @@ enum AudioTaskType {
+ struct AudioTask {
+     AudioTaskType type;
+     std::vector<int16_t> pcm;
+-    uint32_t timestamp;
++    uint32_t timestamp = 0;
++    uint32_t uplink_generation = 0;
+ };
+ 
+ struct DebugStatistics {
+@@ -125,6 +126,7 @@ public:
+ 
+     void EnableWakeWordDetection(bool enable);
+     void EnableVoiceProcessing(bool enable);
++    void DiscardPendingUplink();
+     void EnableAudioTesting(bool enable);
+     void EnableDeviceAec(bool enable);
+ 
+@@ -176,6 +178,8 @@ private:
+     std::deque<std::unique_ptr<AudioTask>> audio_playback_queue_;
+     // For server AEC
+     std::deque<uint32_t> timestamp_queue_;
++    uint32_t uplink_generation_ = 0;
++    bool uplink_accepting_ = false;
+ 
+     bool wake_word_initialized_ = false;
+     bool audio_processor_initialized_ = false;
+diff --git a/main/boards/lichuang-dev/lichuang_dev_board.cc b/main/boards/lichuang-dev/lichuang_dev_board.cc
+index 184bcf1..e604870 100644
+--- a/main/boards/lichuang-dev/lichuang_dev_board.cc
++++ b/main/boards/lichuang-dev/lichuang_dev_board.cc
+@@ -649,7 +649,7 @@ public:
+         lv_obj_align(divider, LV_ALIGN_TOP_LEFT, 0, 81);
+ 
+         lv_obj_t* assistant_role = lv_label_create(transcript);
+-        lv_label_set_text(assistant_role, "小智");
++        lv_label_set_text(assistant_role, "AI");
+         lv_obj_set_style_text_color(assistant_role, ColorSpeaking(), 0);
+         lv_obj_align(assistant_role, LV_ALIGN_TOP_LEFT, 0, 91);
+ 

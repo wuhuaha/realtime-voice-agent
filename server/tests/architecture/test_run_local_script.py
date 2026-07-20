@@ -4,6 +4,7 @@ import subprocess
 from pathlib import Path
 
 SCRIPT = Path(__file__).resolve().parents[2] / "scripts" / "run-local.ps1"
+SUPERVISOR = Path(__file__).resolve().parents[2] / "scripts" / "windows_job_supervisor.py"
 ROOT_SCRIPT = Path(__file__).resolve().parents[3] / "scripts" / "run-local.ps1"
 BOOTSTRAP_SCRIPT = Path(__file__).resolve().parents[3] / "scripts" / "bootstrap.ps1"
 HORIZONTAL_SCALE_SMOKE = Path(__file__).resolve().parents[1] / "e2e" / "test_horizontal_scale_processes.py"
@@ -48,6 +49,7 @@ def test_run_local_script_parses_and_stop_is_idempotent(tmp_path: Path) -> None:
 
 def test_run_local_assigns_unique_worker_and_udp_ports() -> None:
     content = SCRIPT.read_text(encoding="utf-8")
+    supervisor = SUPERVISOR.read_text(encoding="utf-8")
     assert "$WorkerBasePort + $index" in content
     assert "$UdpBasePort + $index" in content
     assert "VOICE_WORKER_ID" in content
@@ -61,11 +63,38 @@ def test_run_local_assigns_unique_worker_and_udp_ports() -> None:
     assert "start_time_utc" in content
     assert "start_time_utc_ticks" in content
     assert "OrdinalIgnoreCase" in content
-    assert "$manifest.processes = @($unmatched)" in content
-    assert "Failed to stop recorded PID" in content
-    assert "Get-DescendantProcessIds" in content
-    assert "Get-CimInstance Win32_Process" in content
-    assert "$ownedProcessIds" in content
+    assert "$manifest.processes = @($survivors)" in content
+    assert "retaining its recoverable identity" in content
+    assert 'throw "Failed to stop $($survivors.Count)' in content
+    assert "supervisor_pid" in content
+    assert "supervisor_start_time_utc_ticks" in content
+    assert "windows_job_supervisor.py" in content
+    assert "job_managed" in content
+    assert "Write-StartedManifest -StartupFailed $true" in content
+    assert content.count("Stop-ProcessEntries") >= 3
+    assert "Write-StartedManifest -StartupInProgress $true" in content
+    assert "Resolve-RecordedStartTimeUtcTicks" in content
+    assert "Get-LegacyProcessTreeSnapshot" in content
+    assert content.index("$manifest.processes = @($recoverable)") < content.index(
+        "$stopResult = Stop-ProcessEntries -Entries @($recoverable)"
+    )
+    assert "JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE" in supervisor
+    assert "CREATE_SUSPENDED" in supervisor
+    assert "OpenProcess" in supervisor
+    assert "GetProcessTimes" in supervisor
+    assert "QueryFullProcessImageNameW" in supervisor
+    assert "terminate_verified_process" in supervisor
+    assert "_terminate_suspended_process" in supervisor
+    assert "TerminateProcess(handle, 1)" in supervisor
+    assert "TerminateProcess(process, 1)" in supervisor
+    assert "_wait_for_process(kernel32, process, timeout_ms)" in supervisor
+    assert "os.path.realpath" in supervisor
+    assert "os.path.realpath(sys._base_executable)" in content
+    assert supervisor.index("AssignProcessToJobObject(job, process.process)") < supervisor.index(
+        "ResumeThread(process.thread)"
+    )
+    assert "Get-DescendantProcessIds" not in content
+    assert "Stop-Process -Id $descendantIds" not in content
     assert "[string]$EnvironmentFile" in content
     assert "$EnvironmentFile = [System.IO.Path]::GetFullPath($EnvironmentFile)" in content
     assert "$EnvFile = $EnvironmentFile" in content

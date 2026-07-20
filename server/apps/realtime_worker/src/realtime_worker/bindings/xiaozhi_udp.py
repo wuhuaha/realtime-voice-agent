@@ -70,6 +70,8 @@ class UdpPacketHeader:
         )
         if magic != UDP_MAGIC or version != UDP_VERSION:
             raise ValueError("unsupported UDP media packet")
+        if epoch == 0:
+            raise ValueError("UDP media epoch must be non-zero")
         if payload_length > UDP_MAX_PAYLOAD_BYTES:
             raise ValueError("UDP payload is too large")
         encrypted = datagram[UDP_HEADER_BYTES:]

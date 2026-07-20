@@ -89,8 +89,8 @@ def test_listen_and_abort_require_the_active_session() -> None:
         parse_client_message(json.dumps(listen), "session-other")
 
 
-def test_xiaozhi_device_id_accepts_source_mac_header_without_weakening_auth_shape() -> None:
-    assert normalize_device_id("AA:BB:CC:DD:EE:FF") == "AA-BB-CC-DD-EE-FF"
+def test_xiaozhi_device_id_preserves_grant_bound_source_mac() -> None:
+    assert normalize_device_id("AA:BB:CC:DD:EE:FF") == "AA:BB:CC:DD:EE:FF"
     assert normalize_device_id("550e8400-e29b-41d4-a716-446655440000") == ("550e8400-e29b-41d4-a716-446655440000")
     assert normalize_device_id("bad/device") is None
 
@@ -98,8 +98,8 @@ def test_xiaozhi_device_id_accepts_source_mac_header_without_weakening_auth_shap
 @pytest.mark.parametrize(
     ("device_id", "client_id", "expected"),
     [
-        ("AA:BB:CC:DD:EE:FF", None, "AA-BB-CC-DD-EE-FF"),
-        ("AA:BB:CC:DD:EE:FF", "client-uuid", "AA-BB-CC-DD-EE-FF"),
+        ("AA:BB:CC:DD:EE:FF", None, "AA:BB:CC:DD:EE:FF"),
+        ("AA:BB:CC:DD:EE:FF", "client-uuid", "AA:BB:CC:DD:EE:FF"),
         (None, "client-uuid", None),
         ("AA:BB:CC:DD:EE:FF", "bad/client", None),
     ],

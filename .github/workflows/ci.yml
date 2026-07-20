@@ -18,8 +18,8 @@ jobs:
       - run: uv sync --locked --dev
       - run: >-
           uv run ruff check scripts tests firmware/tools
-          firmware/reference/xiaozhi-overlay/scripts
-          firmware/reference/xiaozhi-overlay/tests
+          firmware/targets/lichuang-dev/scripts
+          firmware/targets/lichuang-dev/tests
       - run: uv run pytest
       - run: uv run python scripts/verify_repository.py
       - run: uv run python scripts/check_secrets.py
@@ -35,11 +35,72 @@ jobs:
       - run: uv run --directory server ruff check .
       - run: uv run --directory server pytest
 
-  firmware-source-contract:
+  redis-integration:
+    runs-on: ubuntu-latest
+    services:
+      redis:
+        image: redis:7.4.5-alpine3.21@sha256:bb186d083732f669da90be8b0f975a37812b15e913465bb14d845db72a4e3e08
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 2s
+          --health-timeout 2s
+          --health-retries 15
+    env:
+      VOICE_TEST_REDIS_URL: redis://127.0.0.1:6379/0
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - run: uv sync --directory server --locked --all-packages --dev
+      - name: Run Redis coordination store integration tests
+        run: >-
+          uv run --directory server pytest
+          apps/session_director/tests/test_redis_store.py
+          --junitxml=redis-results.xml
+      - name: Reject skipped Redis integration tests
+        run: >-
+          uv run --directory server python -c
+          "import xml.etree.ElementTree as ET;
+          root = ET.parse('redis-results.xml').getroot();
+          skipped = root.findall('.//skipped');
+          assert not skipped, f'{len(skipped)} Redis integration test(s) skipped'"
+
+  windows-local-process-lifecycle-redis-e2e-not-covered:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - run: uv sync --directory server --locked --all-packages --dev
+      - name: Parse local PowerShell launcher
+        shell: pwsh
+        run: |
+          $errors = @()
+          [void][Management.Automation.Language.Parser]::ParseFile(
+            (Resolve-Path server/scripts/run-local.ps1),
+            [ref]$null,
+            [ref]$errors
+          )
+          if ($errors.Count -gt 0) { $errors | Format-List; exit 1 }
+      - name: Verify Windows Job Object process lifecycle (Redis E2E not covered)
+        run: >-
+          uv run --directory server pytest
+          tests/architecture/test_run_local_script.py
+          tests/e2e/test_horizontal_scale_processes.py
+          -k "run_local or windows_job_supervisor"
+
+  production-source-contract:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - run: uv sync --locked --dev
       - name: Parse PowerShell scripts
         shell: pwsh
         run: |
@@ -50,4 +111,10 @@ jobs:
           if ($errors.Count -gt 0) { $errors | Format-List; exit 1 }
       - name: Run firmware host contracts
         shell: pwsh
-        run: ./firmware/device/scripts/test-headless-contract.ps1
+        run: ./firmware/device/scripts/verify-component-boundaries.ps1
+      - name: Verify pinned production firmware inputs (not a clean firmware build)
+        shell: pwsh
+        run: ./firmware/targets/lichuang-dev/scripts/materialize-upstream.ps1 -VerifyInputsOnly
+      - name: Verify ignored production firmware configuration handling
+        shell: pwsh
+        run: ./firmware/targets/lichuang-dev/scripts/test-assert-generated-config-contract.ps1

@@ -1,0 +1,34 @@
+diff --git a/main/protocols/websocket_protocol.cc b/main/protocols/websocket_protocol.cc
+index e381f02..3bce174 100644
+--- a/main/protocols/websocket_protocol.cc
++++ b/main/protocols/websocket_protocol.cc
+@@ -360,12 +360,27 @@ void WebsocketProtocol::CloseAudioChannel(bool send_goodbye) {
+         old_udp_media->RequestStop();
+     }
+     std::shared_ptr<WebSocket> old_websocket;
++    bool defer_websocket_close = false;
+     {
+         std::lock_guard<std::mutex> lock(control_owner_mutex_);
+-        old_websocket = std::move(websocket_);
+-        websocket_generation_ = 0;
++        const auto websocket_owner = websocket_;
++        if (websocket_owner != nullptr && websocket_owner->IsReceiveTask()) {
++            defer_websocket_close = true;
++        } else {
++            old_websocket = std::move(websocket_);
++            websocket_generation_ = 0;
++        }
+     }
+     old_udp_media.reset();
++    if (defer_websocket_close) {
++        Application::GetInstance().Schedule([this]() {
++            CloseAudioChannel(false);
++        });
++        return;
++    }
++    if (old_websocket != nullptr) {
++        old_websocket->Disconnect();
++    }
+     old_websocket.reset();
+ }
+ 

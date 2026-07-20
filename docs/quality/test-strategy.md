@@ -108,10 +108,15 @@ double-talk 和连续 20 轮。采集误唤醒、漏检、ASR CER/人工转写�
 
 ## 5. 当前缺口
 
-当前 Redis-enabled pytest `179 passed`，已经覆盖 shared grant consumption、atomic lease/fencing、Redis-backed
-重建与跨实例语义；它不等于真实多进程容量、Redis HA 或网络分区演练。Lifecycle repair `d2fa0ca` 的 launcher
-stop/start 已实测通过。Host synthetic Chinese 已完成真实 provider media E2E，但只是一组 host 单次观测。
+`d2fa0ca` 历史快照的 Redis-enabled pytest 为 `179 passed`。当前工作树使用 WSL Redis
+`127.0.0.1:6379/15` 运行完整 suite 为 `189 passed`、`0 skipped`，覆盖 shared grant consumption、atomic
+lease/fencing、Redis-backed 重建、跨实例语义和 Windows 双 Worker Redis 进程用例。完整 suite 曾出现一次 Worker 2
+readiness 15 秒超时；该单项与后续完整 suite 均通过，因此当前结果不等于真实容量、长稳、Redis HA 或网络分区
+演练。Lifecycle repair `d2fa0ca` 的 launcher stop/start 已实测通过。Host synthetic Chinese 已完成真实 provider
+media E2E，但只是一组 host 单次观测。
 
-Final reference firmware 已完整烧录并达到 `boot_observed`；设备唤醒、WSS handshake、UDP probe 与 600+ UDP Opus
-uplink packets 已观察。因采集 peak 偏低未触发真机 ASR。UI/触摸人工验收、真机 ASR/TTS、弱网、声学、20 轮、
-30 分钟和容量仍为 `not_run`。任何当前测试报告必须追加到 evidence artifact，而不是直接改写本策略中的证据词义。
+当前 app SHA-256 `61542dad78a11a130263952e4148f9b7c70b1e8919e3f2ca192d21612e6716a3` 已 app-flash/hash
+verified；电脑 TTS 唤醒、public WSS、AFE AEC、ASR/字幕/TTS/playout 与状态往返通过，100 帧 underrun 0，
+无 ERROR/panic/WDT。`0014` 文案、有界发送、graceful stop/取消策略与 generation fence 通过 scoped source
+contract；“AI”视觉与物理点击结束未 HIL。公网 host UDP probe 已通过，但当前 artifact UDP
+HIL、UI/触摸、人工打断、弱网、正式声学、20 轮、30 分钟和容量仍为 `not_run`。

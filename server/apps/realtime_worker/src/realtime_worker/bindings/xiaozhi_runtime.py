@@ -146,14 +146,13 @@ class _AudioDiagnostics:
 
 
 def normalize_device_id(value: str | None) -> str | None:
-    """Map Xiaozhi's MAC-shaped Device-Id into the existing lab auth alphabet."""
+    """Validate a device principal without changing its grant-bound identity."""
 
     if value is None or not value or len(value) > 64:
         return None
-    normalized = value.replace(":", "-")
-    if not all(char.isalnum() or char in "_-" for char in normalized):
+    if not all(char.isalnum() or char in "_.:-" for char in value):
         return None
-    return normalized
+    return value
 
 
 def resolve_xiaozhi_device_id(device_id: str | None, client_id: str | None) -> str | None:

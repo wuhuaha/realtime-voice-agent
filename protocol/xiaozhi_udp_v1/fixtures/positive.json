@@ -18,14 +18,14 @@
         "media_epoch": 270544960,
         "sequence": 0,
         "timestamp": 0,
-        "generation": 1,
+        "generation": 0,
         "payload_length": 0
       },
       "payload_hex": "",
-      "header_hex": "564101020123456789abcdef1020304000000000000000000000000100000000",
+      "header_hex": "564101020123456789abcdef1020304000000000000000000000000000000000",
       "nonce_hex": "a0a1a2a3a4a5a6a700000000",
-      "ciphertext_and_tag_hex": "c7471d60b046ca8e938d41528bb41bff",
-      "datagram_hex": "564101020123456789abcdef1020304000000000000000000000000100000000c7471d60b046ca8e938d41528bb41bff"
+      "ciphertext_and_tag_hex": "98e72f27df6ca46349c8fa5b92fcd2d3",
+      "datagram_hex": "564101020123456789abcdef102030400000000000000000000000000000000098e72f27df6ca46349c8fa5b92fcd2d3"
     },
     {
       "id": "downlink-probe-ack-sequence-0",

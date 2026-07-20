@@ -36,7 +36,7 @@ WSS control 与 UDP media 必须落在同一个 active session owner。普通无
 - `voice_contracts` 中 Worker heartbeat、route lease、grant claims。
 - `session_director` 的 memory/Redis coordination adapters。
 - [协议总览](../protocol/overview.md) 的同 Worker control/media ownership。
-- 当前 Server `d2fa0ca` 的 Redis-enabled pytest `179 passed`，覆盖 atomic lease/fencing、heartbeat/drain 并发、
+- 本决策记录时 Server `d2fa0ca` 的 Redis-enabled pytest `179 passed`，覆盖 atomic lease/fencing、heartbeat/drain 并发、
   shared `jti` 单次消费、Redis-backed service/store 重建后 replay 拒绝和跨实例行为。
 
 ## 决定与范围
