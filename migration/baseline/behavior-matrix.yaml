@@ -1,157 +1,35 @@
-schema_version: 1
+schema_version: 2
+purpose: Minimal rollback behavior oracle; current release evidence lives in docs/quality/release-readiness.md.
+
 baseline:
-  - id: endpoint-ui-audio-wss
-    behavior: LCD/touch/Wi-Fi/NVS/AEC/Opus/WSS/provider interaction
-    evidence: device_verified
-    applies_to: overlay-0001-through-0005
-    note: Old WSS artifact is a behavior baseline only.
-  - id: final-overlay-clean-build
-    behavior: overlay 0001 through 0010 clean build and size
-    evidence: build_passed
-    applies_to: cf1950d
-  - id: delivery-reference-clean-build
-    behavior: 新仓独立 materialize 后应用 0001 through 0010 并完成 clean build/size
-    evidence: build_passed
-    applies_to: cf9bc69
-    result: 2215/2215, image 0x2d2660, app remaining 28%, DIRAM 50.0%
-    note: Artifact embeds ignored local configuration and is not publishable.
-  - id: delivery-reference-flash-boot
-    behavior: 完整 reference artifact 烧录、cold boot、Wi-Fi 与硬件/音频算法初始化
-    evidence: device_verified
-    applies_to: cf9bc69
-    result: COM11 ESP32-S3 rev0.2 with 8 MiB PSRAM; IP 192.168.1.105; no panic/WDT observed
-    note: NVS 0x9000/16 KiB erased; bootloader, partition, otadata, app and assets read-back hashes matched.
-  - id: delivery-reference-wss-handshake
-    behavior: wake and WSS handshake
-    evidence: device_verified
-    applies_to: cf9bc69
-    result: wake succeeded; WSS handshake about 20 ms
-    note: Sustained WSS media and device acoustic ASR/TTS/downlink playout were not proven in this run.
-  - id: delivery-reference-udp-probe
-    behavior: UDP GCM authenticated probe and ready transition
-    evidence: device_verified
-    applies_to: cf9bc69
-    result: first probe authenticated; transport ready; more than 600 UDP Opus uplink packets; AEC VOIP_HIGH_PERF
-    note: Does not prove UDP uplink ASR or downlink playout.
-  - id: delivery-host-synthetic-provider-e2e
-    behavior: synthetic real-media input through FunASR, DeepSeek and CosyVoice to downlink audio
-    evidence: host_verified
-    applies_to: 259aeee
-    result: FunASR final about 480 ms; DeepSeek 200 TTFT about 9876 ms; CosyVoice 200 TTFB about 594 ms
-    note: Host synthetic evidence is not a device acoustic closed loop.
-  - id: final-overlay-ui-touch
-    behavior: historical cf9bc69 overlay UI visual and touch interaction
-    evidence: not_run
-    applies_to: cf9bc69
-  - id: final-overlay-device-acoustic-loop
-    behavior: historical cf9bc69 device microphone through ASR/LLM/TTS to device playout
-    evidence: not_run
-    applies_to: cf9bc69
-    note: Automated utterance capture peak was too low and did not trigger ASR in that historical run; later WSS HIL artifacts are recorded separately.
-  - id: final-overlay-acoustic
-    behavior: historical cf9bc69 near/far/double-talk, 20 turns and 30 minute stability
-    evidence: not_run
-    applies_to: cf9bc69
-  - id: final-overlay-weak-network
-    behavior: historical cf9bc69 WSS/UDP loss, jitter, reorder and blocked-UDP fallback
-    evidence: not_run
-    applies_to: cf9bc69
-  - id: server-unit-contract
-    behavior: Xiaozhi WSS/UDP lifecycle and provider fake paths
+  - id: legacy-wss-voice-loop
+    behavior: Wi-Fi/bootstrap, AEC capture, WSS Opus, ASR/text/TTS playout and interruption
+    evidence: historical_device_verified
+    role: rollback_oracle
+    excluded_scope:
+      - current_native_artifact
+      - release_slo
+      - weak_network
+      - stability
+
+  - id: legacy-udp-wire
+    behavior: udp-opus-gcm-v1 byte layout, AEAD vectors, probe and generation fence
     evidence: contract_verified
-    result: 136 passed in source repository
-  - id: real-provider-baseline
-    behavior: FunASR, DeepSeek and CosyVoice roomless AgentSession loop
-    evidence: host_verified
-    applies_to: 259aeee
-    note: At the 259aeee snapshot, device acoustic E2E remained not_run; later WSS device evidence is recorded separately.
-  - id: redis-store-integration-local
-    behavior: Redis coordination route ownership, capacity, fencing, grant replay and heartbeat/drain interleaving
-    evidence: host_verified
-    applies_to: working-tree-2026-07-20
-    result: 2 passed against local Redis with zero skipped tests
-    note: Ubuntu CI pins the Redis service image by tag and digest and rejects skipped tests; the hosted workflow run is not yet observed.
-  - id: windows-two-worker-redis-ci
-    behavior: Windows run-local.ps1 two-Worker spillover and drain with Redis
-    evidence: host_verified
-    applies_to: working-tree-2026-07-20
-    result: Local Windows Redis-backed process E2E passed as part of the 189-test full suite.
-    note: The hosted Windows Redis-backed process E2E workflow has not been observed.
-  - id: server-full-suite-redis-local
-    behavior: Complete Server unit, contract, integration and Windows host E2E suite with Redis enabled
-    evidence: host_verified
-    applies_to: working-tree-2026-07-20
-    result: 189 passed, 0 skipped with WSL Redis at 127.0.0.1:6379/15
-    note: One earlier run hit a Worker 2 readiness timeout; the focused test and subsequent complete suite passed, so this is not capacity or stability evidence.
-  - id: production-composition-0011-0013-hosted-build
-    behavior: 公网配置前的 production firmware 应用 0011 through 0013 与 managed 0003 through 0008 后 clean build/size
-    evidence: build_passed
-    applies_to: working-tree-2026-07-20
-    result: 2215/2215, image 2968608 bytes, SHA256 3ea0f4b70f785d241b583c77298ed13530d2f85a2f926f64c9701dab35c231e4, app remaining 28%, DIRAM 50.03%
-    note: Historical pre-public-config local pinned ESP-IDF 5.5.2 clean build; hosted CI did not run this build.
-  - id: production-composition-0011-0013-local-build-flash-boot
-    behavior: 公网配置前的 production firmware 0011 through 0013 and managed 0003 through 0008 app flash and cold boot
-    evidence: device_verified
-    applies_to: working-tree-2026-07-20
-    result: xiaozhi.bin 2968608 bytes, SHA256 3ea0f4b70f785d241b583c77298ed13530d2f85a2f926f64c9701dab35c231e4; COM11 app hash verified; river 192.168.3.13
-    note: Historical pre-public-config artifact. The preceding same-composition image received the five-region flash; this clean artifact was then flashed to the app partition only.
-  - id: production-wss-device-provider-diagnostic
-    behavior: diagnostic firmware microphone through WSS/FunASR/DeepSeek/CosyVoice to subtitles and device playout
-    evidence: device_verified
-    applies_to: working-tree-2026-07-20-diagnostic
-    result: grant consumed; WSS connected; ASR final, LLM stream, TTS first PCM and device playback observed; 50-frame window had zero underruns
-    note: One-shot auto-trigger was removed. Subsequent public-Director artifacts passed WSS interaction HIL; this diagnostic remains historical evidence only.
-  - id: production-udp-device-provider-diagnostic
-    behavior: diagnostic firmware authenticated UDP uplink and downlink through real providers to device playout
-    evidence: device_verified
-    applies_to: working-tree-2026-07-20-diagnostic
-    result: first authenticated probe ready on UDP 8092; more than 600 encrypted Opus uplink packets; ASR/LLM/TTS and device playout observed
-    note: force_udp_for_test and one-shot auto-trigger were removed before the final clean build; formal acoustic and weak-network evaluation remain not_run.
-  - id: public-evaluation-server-path
-    behavior: Public Director/Worker readiness, bootstrap, real-provider WSS host E2E and authenticated UDP host probe
-    evidence: public_path_verified
-    applies_to: working-tree-2026-07-20-public-evaluation
-    result: Director 182.254.219.7:8079; Worker WSS 8082; UDP 8093; Redis 127.0.0.1:6380; capacity 5; WSS ASR/subtitles/105 downlink packets in 12.701 s; UDP probe/ACK passed
-    note: The evaluation endpoints use HTTP/WS without a trusted TLS domain and are not production-ready.
-  - id: public-director-final-firmware-wss
-    behavior: Historical pre-0014 firmware cold boot, public Director bootstrap and real-provider WSS device loop
-    evidence: device_verified
-    applies_to: cb5449fbf824ac5bae0041df774daf257d22e3193a3998b5fa567a04492719a4
-    result: COM11 app hash verified; river 10.45.215.95; WSS handshake about 160 ms; ASR/subtitles/TTS/playout passed; 350 playback frames with 0 underruns
-    note: Historical pre-0014 artifact; it remains valid only for its recorded WSS loop and does not validate 0014 UI behavior.
-  - id: ui-control-responsiveness-source-contract
-    behavior: 0014 assistant label and bounded audio-send batching protect UI toggle scheduling
-    evidence: contract_verified
-    applies_to: ae8913666f6004d46af59e9cedcfb64956c7ee424af6a93bda51f77a4c1d0b92
-    result: assistant_role is AI; toggle precedes bounded 4-packet audio dispatch; stopping skips same-pass audio, clears pending uplink queues and fences in-flight encodes by generation; scoped contract runs before idf build
-    note: Source contract does not prove physical screen rendering or listening-button click behavior.
-  - id: ui-control-responsiveness-current-firmware-wss
-    behavior: Historical initial-0014 firmware clean build, flash, boot and public-Director WSS chain
-    evidence: device_verified
-    applies_to: 070cc58f210fc9abbf6d8614c1404522f77c2572e8683aa4dcc9c8fed33ad739
-    result: 2215/2215; 2968608 bytes; app remaining 28%; DIRAM 170991/341760; COM11 app hash verified; public Director/WSS/ASR/streaming subtitles passed; no panic/WDT
-    note: Historical artifact before the final stale-uplink lifecycle fence; physical AI visual and listening-button stop interaction were not proven.
-  - id: ui-control-lifecycle-final-firmware-wss
-    behavior: Historical intermediate 0014 firmware clean build, flash, boot and public-Director WSS chain
-    evidence: device_verified
-    applies_to: 9026f000a3603a5d5045a2a197cedb07e0fe23762ecfbf4c8884fcc170f3abf8
-    result: 2215/2215; 2970272 bytes; app remaining 28%; DIRAM 170991/341760; COM11 app hash verified; Director/WSS/AFE AEC/ASR/streaming subtitles passed; no panic/WDT
-    note: Superseded by the final graceful-stop source semantics. Server observed FunASR, DeepSeek, remote CosyVoice and session_closed reason=user_initiated, but the close origin was not proven to be physical touch.
-  - id: graceful-stop-final-firmware-build-flash
-    behavior: Historical final 0014 graceful-stop clean build, app flash and public-path device smoke
-    evidence: device_verified
-    applies_to: 61542dad78a11a130263952e4148f9b7c70b1e8919e3f2ca192d21612e6716a3
-    result: 2215/2215; 2970272 bytes; app remaining 28%; DIRAM 170991/341760; COM11 app hash verified; TTS wake; public Director/WSS; AFE AEC; ASR; streaming subtitles; listening-speaking-listening; 100 playback frames with 0 underruns; no ERROR/panic/WDT
-    note: The smoke is device_verified and public_path_verified for its stated scope. It exposed a missing local-close notification and is superseded by the 0015 artifact for listening-button stop behavior.
-  - id: local-close-notification-source-contract
-    behavior: 0015 local and remote WebSocket close paths share a generation-deduplicated Application notification after owner teardown
-    evidence: contract_verified
-    applies_to: a08c68f5f2d203fe40298e90535fb23a87e7dd76ab2ad2dbb045c7da91f702fe
-    result: receive-task close is deferred; local close revokes generation, stops media, disconnects and releases the WebSocket owner, then invokes channel_closed outside locks; duplicate local/remote notifications are fenced by generation
-    note: The focused source contract passed before the clean build.
-  - id: local-close-notification-current-firmware
-    behavior: Current 0015 firmware clean build, app flash and physical listening-button stop
-    evidence: device_verified
-    applies_to: 394fc4b380a3269aef424b5836d46d806457fa40c38249d3d8c57e3c45562aed
-    result: 2215/2215; 2970512 bytes; app remaining 28%; DIRAM 170991/341760; COM11 app hash verified; physical click logged Audio channel closed generation=8 followed by listening to idle
-    note: The ignored HIL log is .runtime/logs/firmware-394fc4b3-toggle-hil.log. Server interruption cleanup emitted non-blocking warnings (speech not done in time after interruption; Xiaozhi runner cleanup failed), so warning-free teardown is not claimed. AI visual, UDP HIL, formal acoustics, weak network, 20 turns and 30 minutes remain not_run.
+    role: canonical_compatibility_oracle
+    authoritative_files:
+      - protocol/xiaozhi_udp_v1/README.md
+      - protocol/xiaozhi_udp_v1/fixtures/positive.json
+      - protocol/xiaozhi_udp_v1/fixtures/negative.json
+
+  - id: native-parity-gate
+    behavior: Native endpoint must match the affected legacy behavior before compatibility code is retired.
+    evidence: not_run
+    required_scope:
+      - clean_build_and_size
+      - display_and_touch
+      - wifi_nvs_and_bootstrap
+      - wss_voice_loop
+      - udp_voice_loop
+      - aec_and_interruption
+      - twenty_turns
+      - thirty_minute_stability

@@ -1,16 +1,20 @@
 # 协议总览
 
 状态：accepted
-更新日期：2026-07-20
+更新日期：2026-07-21
 
 ## 1. 权威层级
 
-协议采用一个控制协议、多个媒体 profile：
+迁移期同时提供 legacy 和 Product-native 两组 binding；每个 session 只 commit 一个控制协议和一个媒体 profile：
 
 ```text
 xiaozhi-control-v1 over WSS
   + wss-opus-v1        baseline
   + udp-opus-gcm-v1    challenger, WSS control retained
+
+rva-control-v1 over WSS
+  + wss-opus-v2        native baseline (implementing)
+  + udp-opus-gcm-v1    shared challenger (implementing)
 ```
 
 权威顺序：
@@ -18,8 +22,9 @@ xiaozhi-control-v1 over WSS
 1. `protocol/registry.yaml` 定义协议/profile 标识和固定 codec 参数。
 2. `protocol/xiaozhi_control_v1/messages.schema.json` 与 fixtures 定义 JSON wire。
 3. `protocol/xiaozhi_udp_v1/README.md` 与 fixtures 定义 UDP byte wire 和 AEAD 向量。
-4. 本目录定义状态机、语义、安全、关闭和兼容政策。
-5. Python/C++ 实现、README 示例和未来 HTML 均不得反向改变 wire。
+4. `protocol/rva_control_v1/contract.yaml`、schema 与 fixtures 定义 RVA control 和 shared media header。
+5. 本目录定义状态机、语义、安全、关闭和兼容政策。
+6. Python/C++ 实现、README 示例和 HTML 均不得反向改变 wire。
 
 任何冲突必须修正 artifact 或本文，不能在某个 endpoint 内建立第二份隐式协议。
 
@@ -28,6 +33,7 @@ xiaozhi-control-v1 over WSS
 | ID | Control | Media carrier | Codec | 状态 |
 | --- | --- | --- | --- | --- |
 | `wss-opus-v1` | WSS JSON | 同一 WSS binary message | Opus 16 kHz mono 60 ms uplink | baseline |
+| `wss-opus-v2` | RVA WSS JSON | 同一 WSS typed binary message | Opus 16 kHz mono 60 ms | implementing |
 | `udp-opus-gcm-v1` | WSS JSON | authenticated UDP datagram | Opus 16 kHz mono 60 ms uplink | challenger |
 
 Server output sample rate 由 hello 的 `audio_params.sample_rate` commit，v1 允许 16 kHz 或 24 kHz，mono、
@@ -73,17 +79,13 @@ Worker 从 device capability、connect grant allowed profiles、server policy、
 
 ## 7. 证据状态
 
-Canonical schema、fixtures 和 ESP32/Python wire helper 已有 host/contract 证据。Server `fca8de8` + repair
-`259aeee` 的真实进程已使用 synthetic Chinese 经 Director grant、WSS control 和 UDP Opus/GCM 完成 real-provider
-media E2E，并产生 downlink audio。
-
-当前 `61542...` production firmware 已在 COM11 烧录，并完成电脑 TTS 唤醒、public Director/WSS、AFE AEC、
-FunASR、流式字幕、TTS/playout 与状态往返；100 帧 underrun 0，无 ERROR/panic/WDT。公网 host 还完成
-`8093/udp` AES-GCM probe/ACK。当前 artifact UDP provider HIL、UI/触摸、
-弱网、正式声学、20 轮和 30 分钟仍为 `not_run`。
+Canonical schema、fixtures 和 Python/C++ consumers 必须通过 contract/host gate。真实 Server、native firmware、
+WSS/UDP HIL 和声学状态统一见 [Release readiness](../quality/release-readiness.md)。
 
 详见：
 
+- [RVA Control v1](rva-control-v1.md)
+- [WSS Opus v2](wss-opus-v2.md)
 - [Xiaozhi Control v1](xiaozhi-control-v1.md)
 - [WSS Opus v1](wss-opus-v1.md)
 - [UDP Opus GCM v1](udp-opus-gcm-v1.md)

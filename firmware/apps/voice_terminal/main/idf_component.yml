@@ -1,0 +1,11 @@
+dependencies:
+  espressif/esp-sr: 2.3.1
+  espressif/esp_audio_codec: 2.4.1
+  espressif/esp_audio_effects: 1.2.1
+  espressif/esp_codec_dev: 1.5.11
+  espressif/esp_lcd_touch: 1.2.1
+  espressif/esp_lcd_touch_ft5x06: 1.1.0~1
+  espressif/esp_lvgl_port: 2.8.0~1
+  espressif/esp_websocket_client: 1.7.0
+  idf: 5.5.2
+  lvgl/lvgl: 9.5.0

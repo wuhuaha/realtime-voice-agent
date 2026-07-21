@@ -36,7 +36,7 @@ extern "C" void app_main() {
     assert(gate.CommitMedia(
         voice::contracts::TransportProfile::kWssOpusV1,
         voice::core::MediaOwner::kWss));
-    assert(gate.AdvancePlaybackGeneration(2));
+    assert(gate.AdvancePlaybackGeneration(1));
     assert(gate.BeginClose());
     assert(gate.FinishClose());
 

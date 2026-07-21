@@ -60,13 +60,13 @@
 
 - 显式启用的 FunASR、LLM、TTS smoke；记录 provider/model/region/config 和 redacted request id。
 - 不进入默认 CI，不输出 API key、原始 provider body 或用户音频。
-- 旧 provider 闭环只作 baseline；新仓组合必须重跑。
+- 兼容实现的 provider 闭环只作 baseline；当前 Product 组合必须重跑。
 
 ### Firmware build/HIL
 
 - 固定 ESP-IDF、target、source revision、overlay digest、sdkconfig input digest。
 - clean build、size、artifact SHA-256。
-- 指定 COM/board 授权后才 flash；记录 flash 命令、boot log 和 artifact identity。
+- 确认目标设备与串口并获得授权后才 flash；记录 flash 命令、boot log 和 artifact identity。
 - WSS/UDP、UI/NVS、AEC、字幕、打断、音量、网络切换、Server restart 分项验收。
 
 ## 3. 风险专项
@@ -106,17 +106,8 @@ double-talk 和连续 20 轮。采集误唤醒、漏检、ASR CER/人工转写�
 6. 20 轮、30 分钟、网络切换、Server restart 和 AEC/double-talk 完成或有批准 waiver。
 7. 需求追踪无未解释缺口，rollback artifact 与 drain 步骤已验证。
 
-## 5. 当前缺口
+## 5. 当前状态
 
-`d2fa0ca` 历史快照的 Redis-enabled pytest 为 `179 passed`。当前工作树使用 WSL Redis
-`127.0.0.1:6379/15` 运行完整 suite 为 `189 passed`、`0 skipped`，覆盖 shared grant consumption、atomic
-lease/fencing、Redis-backed 重建、跨实例语义和 Windows 双 Worker Redis 进程用例。完整 suite 曾出现一次 Worker 2
-readiness 15 秒超时；该单项与后续完整 suite 均通过，因此当前结果不等于真实容量、长稳、Redis HA 或网络分区
-演练。Lifecycle repair `d2fa0ca` 的 launcher stop/start 已实测通过。Host synthetic Chinese 已完成真实 provider
-media E2E，但只是一组 host 单次观测。
-
-当前 app SHA-256 `61542dad78a11a130263952e4148f9b7c70b1e8919e3f2ca192d21612e6716a3` 已 app-flash/hash
-verified；电脑 TTS 唤醒、public WSS、AFE AEC、ASR/字幕/TTS/playout 与状态往返通过，100 帧 underrun 0，
-无 ERROR/panic/WDT。`0014` 文案、有界发送、graceful stop/取消策略与 generation fence 通过 scoped source
-contract；“AI”视觉与物理点击结束未 HIL。公网 host UDP probe 已通过，但当前 artifact UDP
-HIL、UI/触摸、人工打断、弱网、正式声学、20 轮、30 分钟和容量仍为 `not_run`。
+本策略只定义证据口径和发布门禁，不记录单次 commit、端口、地址、hash、日志或实验编年。当前 Product source
+的通过项、显式 skip 与缺口统一维护在 [Release readiness](release-readiness.md)；原始日志、音频、指标和大型
+artifact 保存在受控证据系统或 Research 仓，并以 source identity 关联。

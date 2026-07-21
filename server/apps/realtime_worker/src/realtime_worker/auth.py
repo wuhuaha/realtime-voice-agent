@@ -10,7 +10,8 @@ from voice_contracts import GrantCodec, GrantError
 
 from .config import Settings
 
-TransportProfile = Literal["wss-opus-v1", "udp-opus-gcm-v1"]
+ControlProtocol = Literal["xiaozhi-control-v1", "rva-control-v1"]
+TransportProfile = Literal["wss-opus-v1", "wss-opus-v2", "udp-opus-gcm-v1"]
 logger = logging.getLogger(__name__)
 
 
@@ -26,6 +27,7 @@ class AuthContext:
     session_epoch: str | None = None
     fencing_token: int | None = None
     expires_at: float | None = None
+    control_protocol: ControlProtocol = "xiaozhi-control-v1"
 
 
 @dataclass(frozen=True, slots=True)
@@ -39,10 +41,17 @@ class WorkerAuthenticator:
 
     def __init__(self, settings: Settings) -> None:
         self._worker_id = settings.worker_id
+        self._rva_udp_enabled = settings.rva_udp_enabled
         self._lab_token = settings.lab_token.get_secret_value() if settings.allow_lab_auth else None
         self._codec = GrantCodec(settings.grant_signing_key.get_secret_value())
 
-    def verify(self, authorization: str | None, device_id: str | None) -> VerifiedAuth | None:
+    def verify(
+        self,
+        authorization: str | None,
+        device_id: str | None,
+        *,
+        control_protocol: ControlProtocol = "xiaozhi-control-v1",
+    ) -> VerifiedAuth | None:
         if authorization is None:
             logger.warning("worker_auth_rejected reason=missing_authorization worker_id=%s", self._worker_id)
             return None
@@ -58,8 +67,16 @@ class WorkerAuthenticator:
             )
             return None
         if self._lab_token is not None and hmac.compare_digest(supplied, self._lab_token):
+            if control_protocol == "rva-control-v1":
+                profiles: tuple[TransportProfile, ...] = (
+                    ("wss-opus-v2", "udp-opus-gcm-v1")
+                    if self._rva_udp_enabled
+                    else ("wss-opus-v2",)
+                )
+            else:
+                profiles = ("wss-opus-v1", "udp-opus-gcm-v1")
             return VerifiedAuth(
-                AuthContext("lab", device_id, ("wss-opus-v1", "udp-opus-gcm-v1")),
+                AuthContext("lab", device_id, profiles, control_protocol=control_protocol),
                 None,
             )
         try:
@@ -73,6 +90,13 @@ class WorkerAuthenticator:
                 len(supplied),
             )
             return None
+        if claims.control_protocol != control_protocol:
+            logger.warning(
+                "worker_auth_rejected reason=control_protocol_mismatch worker_id=%s device_ref=%s",
+                self._worker_id,
+                _device_ref(device_id),
+            )
+            return None
         return VerifiedAuth(
             AuthContext(
                 tenant_id=claims.tenant_id,
@@ -81,6 +105,24 @@ class WorkerAuthenticator:
                 session_epoch=claims.session_epoch,
                 fencing_token=claims.fencing_token,
                 expires_at=claims.exp,
+                control_protocol=claims.control_protocol,
             ),
             supplied,
         )
+
+
+def resolve_device_id(device_id: str | None, client_id: str | None) -> str | None:
+    """Keep the grant-bound physical Device-Id as the stable principal."""
+
+    def valid(value: str | None) -> bool:
+        return (
+            value is not None
+            and 1 <= len(value) <= 96
+            and value.isascii()
+            and value[0].isalnum()
+            and all(character.isalnum() or character in "_.:-" for character in value)
+        )
+
+    if not valid(device_id) or (client_id is not None and not valid(client_id)):
+        return None
+    return device_id

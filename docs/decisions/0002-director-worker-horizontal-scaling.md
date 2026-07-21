@@ -36,8 +36,6 @@ WSS control 与 UDP media 必须落在同一个 active session owner。普通无
 - `voice_contracts` 中 Worker heartbeat、route lease、grant claims。
 - `session_director` 的 memory/Redis coordination adapters。
 - [协议总览](../protocol/overview.md) 的同 Worker control/media ownership。
-- 本决策记录时 Server `d2fa0ca` 的 Redis-enabled pytest `179 passed`，覆盖 atomic lease/fencing、heartbeat/drain 并发、
-  shared `jti` 单次消费、Redis-backed service/store 重建后 replay 拒绝和跨实例行为。
 
 ## 决定与范围
 
@@ -61,10 +59,6 @@ WSS/UDP endpoint必须设备可达，证书、防火墙、service discovery和 d
 Director 在 shared coordination store 原子消费 `jti`，并已有 Redis 重启/跨实例测试，不再是 process-local
 replay guard；但 Redis HA、网络分区、真实多进程压力与生产故障演练尚未完成。默认容量被误解仍会造成过载，
 必须用目标环境压测调整。
-
-Repair commit `259aeee` 已使 Worker readiness 依赖 coordination heartbeat，并让 drain request 仅允许 `true`；
-`d2fa0ca` 强制 public endpoint 为绝对 canonical URL、production 使用 `wss://`，并修复 launcher process
-identity 与停止失败保留语义；精确 tick 路径的 local stop/start 已实测通过。
 
 ## 兼容和迁移
 

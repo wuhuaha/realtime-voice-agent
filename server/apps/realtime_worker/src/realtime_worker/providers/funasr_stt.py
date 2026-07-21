@@ -764,7 +764,7 @@ class FunASRSTT(stt.STT):
     async def _recognize_impl(self, buffer: Any, *, language: Any, conn_options: Any) -> stt.SpeechEvent:
         del conn_options
         if self._config.protocol is FunASRProtocol.LOCAL:
-            raise NotImplementedError("FunASR prototype only supports streaming recognition")
+            raise NotImplementedError("FunASR adapter only supports streaming recognition")
 
         frame = utils.combine_frames(buffer)
         if frame.num_channels != 1:

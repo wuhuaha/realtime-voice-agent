@@ -29,6 +29,7 @@ UDP_HEADER = struct.Struct("!2sBB8sIIIII")
 UDP_HEADER_BYTES = UDP_HEADER.size
 UDP_MAX_DATAGRAM_BYTES = 1280
 UDP_MAX_PAYLOAD_BYTES = 1200
+UDP_MAX_SEQUENCE_FORWARD_JUMP = 1024
 
 AudioReceiver = Callable[[bytes, int, int], Awaitable[None]]
 FailureReceiver = Callable[[BaseException], None]
@@ -84,17 +85,22 @@ class UdpPacketHeader:
 
 
 class ReplayWindow:
-    """Fixed 64-packet authenticated replay/reorder window."""
+    """64-packet replay history with a bounded forward admission jump."""
 
     def __init__(self) -> None:
         self._highest = -1
         self._bitmap = 0
 
     def can_accept(self, sequence: int) -> bool:
-        if self._highest < 0 or sequence > self._highest:
+        if self._highest < 0:
             return True
+        if sequence > self._highest:
+            return sequence - self._highest <= UDP_MAX_SEQUENCE_FORWARD_JUMP
         distance = self._highest - sequence
         return distance < 64 and (self._bitmap & (1 << distance)) == 0
+
+    def exceeds_forward_window(self, sequence: int) -> bool:
+        return self._highest >= 0 and sequence > self._highest + UDP_MAX_SEQUENCE_FORWARD_JUMP
 
     def commit(self, sequence: int) -> None:
         if not self.can_accept(sequence):
@@ -285,7 +291,10 @@ class UdpMediaSession:
             self.stats.invalid += 1
             return
         if not self._replay.can_accept(header.sequence):
-            self.stats.replayed += 1
+            if self._replay.exceeds_forward_window(header.sequence):
+                self.stats.invalid += 1
+            else:
+                self.stats.replayed += 1
             return
         try:
             payload = self._uplink.decrypt(
@@ -304,13 +313,16 @@ class UdpMediaSession:
             if payload:
                 self.stats.invalid += 1
                 return
+            if self._source is None and header.sequence != 0:
+                self.stats.invalid += 1
+                return
             expected = self._next_audio_sequence
-            if expected is not None and header.sequence - expected >= 64:
+            if expected is not None and header.sequence > expected + UDP_MAX_SEQUENCE_FORWARD_JUMP:
                 self.stats.invalid += 1
                 return
             self._replay.commit(header.sequence)
             self._source = addr
-            await self._send(UDP_FLAG_PROBE_ACK, b"", timestamp=0, generation=header.generation)
+            await self._send(UDP_FLAG_PROBE_ACK, b"", timestamp=0, generation=1)
             if expected is not None and header.sequence < expected:
                 self.stats.replayed += 1
                 return
@@ -335,7 +347,7 @@ class UdpMediaSession:
         if header.sequence < expected:
             self.stats.replayed += 1
             return
-        if header.sequence - expected >= 64:
+        if header.sequence > expected + UDP_MAX_SEQUENCE_FORWARD_JUMP:
             self.stats.invalid += 1
             return
         self._replay.commit(header.sequence)
@@ -349,7 +361,7 @@ class UdpMediaSession:
         if header.sequence < expected:
             self.stats.replayed += 1
             return
-        if header.sequence - expected >= 64:
+        if header.sequence > expected + UDP_MAX_SEQUENCE_FORWARD_JUMP:
             self.stats.invalid += 1
             return
         if header.sequence != expected:

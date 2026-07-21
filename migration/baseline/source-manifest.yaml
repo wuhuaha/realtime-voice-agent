@@ -29,47 +29,6 @@ delivery_snapshots:
   server_readiness_tree: aa7fdc3c81ab1868bb022e86c7c0190f08d31960
   server_lifecycle_tree: a89e6ba4d23b70c6374dfd27d96c45d35c1e4fbd
   dependency_lock_blob: e5538d7e54cd2792b4d385e226f59c92e33907c5
-device_evidence:
-  evidence_label: historical_delivery_reference
-  firmware_commit: cf9bc69
-  port: COM11
-  chip: ESP32-S3 revision 0.2
-  psram_mib: 8
-  nvs_erased:
-    offset: 0x9000
-    size_kib: 16
-  app_sha256: 43bac4d4ed678b3298cc9f4c8e9da0c4ab7608af731406cec31939ee457350c8
-  flash_regions_hash_verified: true
-  wifi_ssid: 广告位招租
-  device_ip: 192.168.1.105
-  verified_scope:
-    - boot
-    - wifi
-    - display_init
-    - audio_codec_init
-    - es7210_init
-    - aec_voip_high_perf
-    - vad_and_wake_model_init
-    - wake
-    - wss_handshake
-    - udp_gcm_first_probe
-    - udp_opus_uplink
-  excluded_scope:
-    - ui_visual_and_touch
-    - device_acoustic_asr_tts_loop
-    - weak_network
-    - twenty_turns
-    - thirty_minute_stability
-host_synthetic_evidence:
-  evidence_label: historical_259aeee_snapshot
-  server_commit: 259aeee
-  funasr_final_ms_approx: 480
-  deepseek_http_status: 200
-  deepseek_ttft_ms_approx: 9876
-  cosyvoice_http_status: 200
-  cosyvoice_ttfb_ms_approx: 594
-  downlink_audio_observed: true
-  device_acoustic_loop: false
 files:
   - production_path: protocol/xiaozhi_udp_v1/README.md
     sha256: e17aa03c4249422a54937dfed5e9ad9d67862768dccf440b8f0347897725649c

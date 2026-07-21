@@ -2,8 +2,8 @@ $ErrorActionPreference = "Stop"
 
 $deviceRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $repoRoot = (Resolve-Path (Join-Path $deviceRoot "../..")).Path
-$contractsRoot = Join-Path $deviceRoot "components/voice_contracts"
-$coreRoot = Join-Path $deviceRoot "components/voice_core"
+$contractsRoot = Join-Path $repoRoot "firmware/components/voice_contracts"
+$coreRoot = Join-Path $repoRoot "firmware/components/voice_core"
 $canonicalFixtures = Join-Path $repoRoot "protocol/xiaozhi_udp_v1/fixtures"
 
 foreach ($fixture in @("positive.json", "negative.json")) {
@@ -38,7 +38,7 @@ foreach ($sourceRoot in @($contractsRoot, $coreRoot)) {
 $duplicateFixtures = @(Get-ChildItem -LiteralPath $deviceRoot -Recurse -File |
     Where-Object { $_.Name -in @("positive.json", "negative.json") })
 if ($duplicateFixtures.Count -ne 0) {
-    throw "firmware/device must consume canonical root fixtures rather than copy them"
+    throw "Headless harness must consume canonical root fixtures rather than copy them"
 }
 
 $hostTestScript = Get-Content -Raw -LiteralPath (

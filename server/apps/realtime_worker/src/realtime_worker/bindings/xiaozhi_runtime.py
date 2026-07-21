@@ -1060,7 +1060,7 @@ class XiaozhiSessionRegistry:
         self._udp_gateway = udp_gateway
         self._connections: dict[tuple[str, str], XiaozhiConnection] = {}
         self._lease_deadlines: dict[str, float] = {}
-        self._pending_releases: deque[LeaseRenewal] = deque(maxlen=64)
+        self._pending_releases: deque[LeaseRenewal] = deque()
         self._lock = asyncio.Lock()
 
     async def run(self, websocket: WebSocket, auth: AuthContext) -> None:
@@ -1154,7 +1154,6 @@ class XiaozhiSessionRegistry:
                 if (release.tenant_id, release.device_id, release.session_epoch, release.fencing_token)
                 not in acknowledged
             ),
-            maxlen=64,
         )
 
     @staticmethod

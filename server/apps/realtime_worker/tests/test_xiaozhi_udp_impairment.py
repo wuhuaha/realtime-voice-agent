@@ -278,10 +278,10 @@ async def test_multiple_loss_gaps_rearm_deadline_and_far_future_packet_does_not_
         await _eventually(lambda: received == [b"two", b"four"])
         assert session.stats.lost == 2
 
-        # This authenticated packet is outside the bounded reorder window. It
+        # This authenticated packet is outside the canonical forward window. It
         # must not advance ReplayWindow and block the next legitimate packet.
         session.enqueue(
-            _uplink_packet(grant, flags=UDP_FLAG_AUDIO, sequence=69, payload=b"future"),
+            _uplink_packet(grant, flags=UDP_FLAG_AUDIO, sequence=1029, payload=b"future"),
             _SOURCE,
         )
         await _eventually(lambda: session.stats.invalid == 1)

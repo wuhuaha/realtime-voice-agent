@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+import asyncio
 import json
 
 import httpx
 import pytest
 from fastapi.testclient import TestClient
 from realtime_worker import app as app_module
-from realtime_worker.app import DirectorGrantConsumer, WorkerHeartbeatLoop, create_app
+from realtime_worker.app import DirectorGrantConsumer, RvaSessionRegistry, WorkerHeartbeatLoop, create_app
 from realtime_worker.auth import AuthContext
 from realtime_worker.bindings.xiaozhi import SharedSessionAdmission, XiaozhiSessionRegistry
 from realtime_worker.config import Settings
@@ -33,6 +34,7 @@ def test_worker_exposes_xiaozhi_and_health_without_direct_routes() -> None:
     app = create_app(settings())
     paths = {route.path for route in app.routes}
     assert "/v1/xiaozhi" in paths
+    assert "/v1/voice" in paths
     assert "/v1/direct" not in paths
     assert "/v1/device/bootstrap" not in paths
 
@@ -43,6 +45,7 @@ def test_worker_exposes_xiaozhi_and_health_without_direct_routes() -> None:
         assert ready.json()["provider_network_checked"] is True
         assert ready.json()["provider_network_ready"] is True
         assert ready.json()["coordination_ready"] is True
+        assert ready.json()["rva_enabled"] is True
 
 
 def test_worker_drain_rejects_readiness_and_requires_internal_credential() -> None:
@@ -112,6 +115,19 @@ async def test_worker_heartbeat_reports_capacity_and_applies_director_drain() ->
     assert requests[0]["max_sessions"] == 5
     assert requests[0]["active_sessions"] == 0
     assert requests[0]["healthy"] is True
+    assert requests[0]["profiles"] == ["wss-opus-v1", "wss-opus-v2"]
+    assert requests[0]["bindings"] == [
+        {
+            "control_protocol": "xiaozhi-control-v1",
+            "public_wss_url": "ws://worker-a.test/v1/xiaozhi",
+            "profiles": ["wss-opus-v1"],
+        },
+        {
+            "control_protocol": "rva-control-v1",
+            "public_wss_url": "ws://127.0.0.1:8081/v1/voice",
+            "profiles": ["wss-opus-v2"],
+        },
+    ]
     assert requests[0]["active_leases"] == [
         {
             "tenant_id": "tenant-1",
@@ -122,6 +138,137 @@ async def test_worker_heartbeat_reports_capacity_and_applies_director_drain() ->
     ]
     assert admission.draining is True
     assert revoked == [{"epoch-1"}]
+
+
+@pytest.mark.asyncio
+async def test_heartbeat_with_failed_udp_gateway_removes_udp_and_reports_unhealthy() -> None:
+    requests: list[dict[str, object]] = []
+
+    class FailedUdpGateway:
+        is_ready = False
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(json.loads(request.read()))
+        return httpx.Response(
+            200,
+            json={
+                "accepted": True,
+                "draining": False,
+                "heartbeat_expires_at": 123.0,
+                "lease_expires_at": 153.0,
+                "rejected_session_epochs": [],
+            },
+        )
+
+    worker_settings = settings(
+        director_url="http://director.test",
+        heartbeat_enabled=True,
+        rva_udp_enabled=True,
+        xiaozhi_udp_advertise_host="voice.example.test",
+    )
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        heartbeat = WorkerHeartbeatLoop(
+            worker_settings,
+            SharedSessionAdmission(5),
+            udp_gateway=FailedUdpGateway(),  # type: ignore[arg-type]
+            client=client,
+        )
+        await heartbeat.send_once()
+
+    assert requests[0]["healthy"] is False
+    assert requests[0]["profiles"] == ["wss-opus-v1", "wss-opus-v2"]
+    assert all(
+        "udp-opus-gcm-v1" not in binding["profiles"]
+        for binding in requests[0]["bindings"]  # type: ignore[union-attr]
+    )
+
+
+@pytest.mark.asyncio
+async def test_rva_registry_holds_admission_until_connection_cleanup_finishes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cleanup_release = asyncio.Event()
+
+    class FakeConnection:
+        async def run(self) -> None:
+            return None
+
+        async def wait_closed(self) -> None:
+            await cleanup_release.wait()
+
+    monkeypatch.setattr(app_module, "RvaWssConnection", lambda *args, **kwargs: FakeConnection())
+    admission = SharedSessionAdmission(1)
+    registry = RvaSessionRegistry(settings(), admission)
+    auth = AuthContext(tenant_id="tenant-1", device_id="device-1")
+    reservation = await registry.reserve(auth)
+    assert reservation is not None
+
+    task = asyncio.create_task(registry.run(object(), auth, reservation))  # type: ignore[arg-type]
+    await asyncio.sleep(0)
+    assert admission.active_count == 1
+    assert await registry.reserve(auth) is None
+
+    cleanup_release.set()
+    await task
+    assert admission.active_count == 0
+
+
+@pytest.mark.asyncio
+async def test_rva_registry_does_not_drop_release_claims_above_heartbeat_batch_size(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeConnection:
+        async def run(self) -> None:
+            return None
+
+        async def wait_closed(self) -> None:
+            return None
+
+    monkeypatch.setattr(app_module, "RvaWssConnection", lambda *args, **kwargs: FakeConnection())
+    admission = SharedSessionAdmission(80)
+    registry = RvaSessionRegistry(settings(max_sessions=80), admission)
+
+    for index in range(80):
+        auth = AuthContext(
+            tenant_id="tenant-1",
+            device_id=f"device-{index}",
+            session_epoch=f"epoch-{index}",
+            fencing_token=1,
+            expires_at=200.0,
+        )
+        reservation = await registry.reserve(auth)
+        assert reservation is not None
+        await registry.run(object(), auth, reservation)  # type: ignore[arg-type]
+
+    assert len(registry.pending_lease_releases()) == 80
+
+
+@pytest.mark.asyncio
+async def test_xiaozhi_registry_does_not_drop_release_claims_above_heartbeat_batch_size(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeConnection:
+        def __init__(self, _websocket: object, auth: AuthContext, *_args: object, **_kwargs: object) -> None:
+            self.auth_context = auth
+
+        async def run(self) -> None:
+            return None
+
+    monkeypatch.setattr("realtime_worker.bindings.xiaozhi_runtime.XiaozhiConnection", FakeConnection)
+    admission = SharedSessionAdmission(80)
+    registry = XiaozhiSessionRegistry(settings(max_sessions=80), admission)
+
+    for index in range(80):
+        auth = AuthContext(
+            tenant_id="tenant-1",
+            device_id=f"device-{index}",
+            session_epoch=f"epoch-{index}",
+            fencing_token=1,
+            expires_at=200.0,
+        )
+        await registry.run(object(), auth)  # type: ignore[arg-type]
+
+    assert len(registry.pending_lease_releases()) == 80
 
 
 @pytest.mark.asyncio

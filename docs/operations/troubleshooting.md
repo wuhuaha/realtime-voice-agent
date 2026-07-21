@@ -16,12 +16,12 @@ repository/config -> Director/Redis -> Worker WSS/UDP -> codec/audio -> Agent/pr
 ```powershell
 ./scripts/verify.ps1
 git status --short
-Invoke-RestMethod http://127.0.0.1:8079/health/ready # 当前已验证 Director 端口
-Invoke-RestMethod http://127.0.0.1:8080/health/ready # 当前已验证 Worker 端口
+Invoke-RestMethod "$env:VOICE_DIRECTOR_URL/health/ready"
+Invoke-RestMethod "$env:VOICE_WORKER_URL/health/ready"
 ```
 
 确认 `.env` 和 `.env.local` ignored，endpoint 可达，时钟同步，Worker public URL/UDP advertise 是设备可访问地址，
-不是错误的 `127.0.0.1`。
+不能误用仅在 Worker 本机可达的 loopback 地址。
 
 ## 3. Director 找不到 Worker / bootstrap 503
 
@@ -63,7 +63,7 @@ Close `1002` 看 protocol category，`1009` 看消息大小，`1013` 看 admissi
 
 按顺序检查：
 
-1. 已发送 `listen start` 且 mode 正确。
+1. `session.opened` 已完成且设备处于 listening。
 2. Worker收到 binary Opus，packet size/cadence/decode 无错误。
 3. 解码 PCM 的 peak/RMS 非零；诊断仅显式短期开启。
 4. Agent runner 为 `livekit`，FunASR URL/protocol/timeout 与远端一致。
@@ -72,9 +72,8 @@ Close `1002` 看 protocol category，`1009` 看消息大小，`1013` 看 admissi
 
 用固定 Opus/PCM host fixture 区分 transport 与麦克风，不能仅凭 UI“聆听”判定上行正常。
 
-当前对照数据：host synthetic Chinese 已取得 FunASR final，而 COM11 设备可连续发送 600+ UDP uplink packets，
-但自动播放测试时采集 peak 偏低且未触发 ASR。这种组合优先检查设备输入幅度、测试声源耦合、AFE/VAD 门限和
-Opus 解码 PCM peak/RMS，不应归因于 grant、UDP probe 或 provider endpoint。
+若 host fixture 可触发 ASR，而设备持续上传却没有 ASR，优先检查输入幅度、测试声源耦合、AFE/VAD 门限和
+Opus 解码 PCM peak/RMS，再检查 grant、transport admission 与 provider endpoint。
 
 ## 7. UDP 无音频
 
@@ -111,7 +110,8 @@ Opus 解码 PCM peak/RMS，不应归因于 grant、UDP probe 或 provider endpoi
 
 ## 10. 固件黑屏/启动失败
 
-- 确认烧录的是 reference 完整固件，不是 `firmware/device` headless skeleton。
+- 确认烧录的是 `firmware/apps/voice_terminal` 的完整 native artifact；`firmware/device` 仅是 headless contract
+  harness，不包含板级、显示或音频运行时。
 - 核对 artifact SHA-256、target、partition、ESP-IDF、board 和完整 boot log。
 - 先看 reset reason、panic/WDT、PSRAM、LCD init、backlight 与 LVGL task，再看网络。
 - 不用擦 NVS 掩盖启动 bug；只有明确验证配置迁移且已备份时才擦除。

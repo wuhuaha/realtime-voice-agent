@@ -1,0 +1,227 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="referrer" content="no-referrer">
+  <meta name="color-scheme" content="light">
+  <link rel="icon" href="data:,">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'unsafe-inline'; img-src 'self' data:; object-src 'none'; base-uri 'none'; form-action 'none'">
+  <title>Realtime Voice Agent 端云开发手册</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --paper: #f5f7f6;
+      --surface: #ffffff;
+      --ink: #16201e;
+      --muted: #5c6966;
+      --line: #c9d2cf;
+      --control: #087f8c;
+      --control-soft: #dceff1;
+      --media: #267455;
+      --media-soft: #deeee5;
+      --runtime: #7156a5;
+      --runtime-soft: #ece7f5;
+      --device: #ad6614;
+      --device-soft: #f6e9d8;
+      --danger: #b43f37;
+      --danger-soft: #f5e2df;
+      --font-display: Bahnschrift, "Segoe UI Variable Display", "Microsoft YaHei UI", sans-serif;
+      --font-body: "Segoe UI Variable Text", "Microsoft YaHei UI", "Segoe UI", sans-serif;
+      --font-mono: "Cascadia Code", Consolas, monospace;
+      --radius: 6px;
+    }
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; scroll-padding-top: 20px; background: var(--paper); }
+    body { margin: 0; color: var(--ink); background: var(--paper); font: 15px/1.65 var(--font-body); letter-spacing: 0; }
+    a { color: var(--control); text-underline-offset: 3px; }
+    a:hover, a:focus-visible { color: var(--ink); }
+    a:focus-visible { outline: 3px solid rgba(8,127,140,.25); outline-offset: 3px; }
+    h1, h2, h3 { margin: 0; font-family: var(--font-display); line-height: 1.2; letter-spacing: 0; }
+    h1 { max-width: 860px; font-size: clamp(34px, 5vw, 58px); font-weight: 680; }
+    h2 { font-size: 28px; }
+    h3 { font-size: 17px; }
+    p { margin: 0; }
+    code { padding: 1px 5px; border-radius: 3px; background: #e7ecea; font: .9em var(--font-mono); overflow-wrap: anywhere; }
+    pre { margin: 0; overflow: auto; border-radius: var(--radius); background: #17201f; color: #eef5f2; font: 13px/1.6 var(--font-mono); }
+    pre code { display: block; min-width: 620px; padding: 20px; background: transparent; color: inherit; }
+    .skip { position: fixed; top: 8px; left: 8px; z-index: 10; padding: 8px 12px; transform: translateY(-160%); background: var(--ink); color: white; }
+    .skip:focus { transform: translateY(0); }
+    .masthead { border-bottom: 1px solid var(--line); background: var(--surface); }
+    .masthead-inner { width: min(1460px, calc(100% - 48px)); margin: auto; padding: 28px 0 38px; }
+    .document-line { display: flex; justify-content: space-between; gap: 16px; margin-bottom: 48px; color: var(--muted); font: 12px var(--font-mono); }
+    .document-mark { color: var(--ink); font-weight: 700; }
+    .hero { display: grid; grid-template-columns: minmax(0, .9fr) minmax(480px, 1.1fr); gap: 54px; align-items: end; }
+    .hero-copy { display: grid; gap: 20px; }
+    .eyebrow { color: var(--control); font: 700 12px var(--font-mono); text-transform: uppercase; }
+    .lede { max-width: 720px; color: var(--muted); font-size: 18px; }
+    .status-row { display: flex; flex-wrap: wrap; gap: 8px; }
+    .status { padding: 4px 8px; border: 1px solid currentColor; border-radius: 3px; font: 700 11px var(--font-mono); }
+    .accepted { color: var(--media); background: var(--media-soft); }
+    .implementing { color: var(--device); background: var(--device-soft); }
+    .not-run { color: var(--danger); background: var(--danger-soft); }
+    .signal-board { border: 1px solid var(--line); border-radius: var(--radius); background: #fbfcfb; overflow: hidden; }
+    .signal-title { padding: 12px 16px; border-bottom: 1px solid var(--line); color: var(--muted); font: 12px var(--font-mono); }
+    .lane { display: grid; grid-template-columns: 92px 1fr; min-height: 54px; border-bottom: 1px solid var(--line); }
+    .lane:last-child { border-bottom: 0; }
+    .lane b { display: grid; place-items: center; border-right: 5px solid; font: 12px var(--font-mono); }
+    .lane span { display: flex; align-items: center; padding: 10px 16px; color: var(--muted); }
+    .lane-control b { border-color: var(--control); background: var(--control-soft); }
+    .lane-media b { border-color: var(--media); background: var(--media-soft); }
+    .lane-runtime b { border-color: var(--runtime); background: var(--runtime-soft); }
+    .lane-device b { border-color: var(--device); background: var(--device-soft); }
+    .layout { display: grid; grid-template-columns: 270px minmax(0, 1fr); width: min(1460px, calc(100% - 48px)); margin: 0 auto; }
+    .toc { position: sticky; top: 0; align-self: start; max-height: 100vh; overflow: auto; padding: 34px 28px 34px 0; }
+    .toc-title { margin-bottom: 14px; color: var(--muted); font: 11px var(--font-mono); }
+    .toc a { display: block; padding: 7px 10px; border-left: 2px solid var(--line); color: var(--muted); text-decoration: none; }
+    .toc a:hover { border-color: var(--control); color: var(--ink); background: var(--control-soft); }
+    main { min-width: 0; padding: 0 0 90px 42px; border-left: 1px solid var(--line); }
+    section { display: grid; gap: 22px; padding: 58px 0; border-bottom: 1px solid var(--line); }
+    .section-head { display: grid; grid-template-columns: 90px 1fr; gap: 18px; align-items: baseline; }
+    .section-no { color: var(--control); font: 700 12px var(--font-mono); }
+    .section-intro { max-width: 920px; color: var(--muted); font-size: 16px; }
+    .notice { padding: 14px 18px; border-left: 5px solid var(--control); background: var(--control-soft); }
+    .notice-danger { border-color: var(--danger); background: var(--danger-soft); }
+    .flow { display: grid; grid-template-columns: repeat(5, minmax(120px, 1fr)); border: 1px solid var(--line); border-radius: var(--radius); overflow: hidden; background: var(--surface); }
+    .flow-item { position: relative; min-height: 126px; padding: 18px; border-right: 1px solid var(--line); }
+    .flow-item:last-child { border-right: 0; }
+    .flow-item small { display: block; margin-bottom: 18px; color: var(--muted); font: 11px var(--font-mono); }
+    .flow-item strong { display: block; font-family: var(--font-display); }
+    .flow-item p { margin-top: 8px; color: var(--muted); font-size: 13px; }
+    .control-top { border-top: 5px solid var(--control); }
+    .media-top { border-top: 5px solid var(--media); }
+    .runtime-top { border-top: 5px solid var(--runtime); }
+    .device-top { border-top: 5px solid var(--device); }
+    .split { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 22px; }
+    .panel { padding: 22px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); }
+    .panel h3 { margin-bottom: 12px; }
+    .panel ul { margin: 0; padding-left: 20px; }
+    .panel li + li { margin-top: 7px; }
+    table { width: 100%; border-collapse: collapse; background: var(--surface); }
+    th, td { padding: 12px 14px; border: 1px solid var(--line); text-align: left; vertical-align: top; }
+    th { background: #e9eeec; font: 700 12px var(--font-mono); }
+    td:first-child { font-family: var(--font-mono); }
+    .timeline { border-left: 3px solid var(--line); }
+    .event { display: grid; grid-template-columns: 170px 1fr; gap: 18px; padding: 12px 0 12px 22px; }
+    .event code { align-self: start; color: var(--control); background: var(--control-soft); }
+    .event p { color: var(--muted); }
+    .source-map { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; }
+    .source-map a { padding: 14px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); text-decoration: none; }
+    .source-map b { display: block; margin-bottom: 4px; color: var(--ink); }
+    .source-map span { color: var(--muted); font-size: 13px; }
+    footer { padding: 30px 0; color: var(--muted); font: 12px var(--font-mono); }
+    @media (max-width: 1040px) {
+      .hero { grid-template-columns: 1fr; }
+      .layout { grid-template-columns: 1fr; }
+      .toc { position: static; max-height: none; padding-right: 0; }
+      main { padding-left: 0; border-left: 0; }
+      .flow { grid-template-columns: 1fr 1fr; }
+      .flow-item { border-bottom: 1px solid var(--line); }
+      .source-map { grid-template-columns: 1fr 1fr; }
+    }
+    @media (max-width: 680px) {
+      .masthead-inner, .layout { width: min(100% - 28px, 1460px); }
+      .document-line, .section-head { grid-template-columns: 1fr; display: grid; }
+      .hero { gap: 30px; }
+      .signal-board { min-width: 0; }
+      .split, .flow, .source-map { grid-template-columns: 1fr; }
+      .flow-item { border-right: 0; }
+      .event { grid-template-columns: 1fr; gap: 6px; }
+      table { display: block; max-width: 100%; overflow-x: auto; }
+      section { padding: 42px 0; }
+    }
+    @media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
+  </style>
+</head>
+<body>
+  <a class="skip" href="#content">跳到正文</a>
+  <header class="masthead">
+    <div class="masthead-inner">
+      <div class="document-line"><span class="document-mark">RVA / ENGINEERING MANUAL</span><span>2026-07-21 · offline edition</span></div>
+      <div class="hero">
+        <div class="hero-copy">
+          <span class="eyebrow">端侧、协议、服务端的一份共同地图</span>
+          <h1>Realtime Voice Agent<br>端云开发手册</h1>
+          <p class="lede">面向 ESP32、Server 和平台开发人员，说明 native ESP-IDF endpoint、RVA 控制协议、WSS/UDP 媒体和 LiveKit Agent runtime 的职责与调试路径。</p>
+          <div class="status-row"><span class="status accepted">SERVER VERIFIED</span><span class="status accepted">FIRMWARE BUILD PASSED</span><span class="status not-run">HIL NOT RUN</span></div>
+        </div>
+        <div class="signal-board" aria-label="端云四条责任通道">
+          <div class="signal-title">SIGNAL OWNERSHIP / 从设备动作到语音输出</div>
+          <div class="lane lane-control"><b>CONTROL</b><span>bootstrap、session、cancel、close、limits</span></div>
+          <div class="lane lane-media"><b>MEDIA</b><span>Opus、generation、sequence、jitter、playout</span></div>
+          <div class="lane lane-runtime"><b>RUNTIME</b><span>AgentSession、ASR、LLM、TTS、provider isolation</span></div>
+          <div class="lane lane-device"><b>DEVICE</b><span>AFE/AEC、codec、I2S、Wi-Fi/NVS、LVGL</span></div>
+        </div>
+      </div>
+    </div>
+  </header>
+  <div class="layout">
+    <nav class="toc" aria-label="文档目录">
+      <div class="toc-title">CONTENTS</div>
+      <a href="#authority">文档权威</a><a href="#architecture">系统架构</a><a href="#server">Server</a>
+      <a href="#firmware">Firmware</a><a href="#protocol">RVA 协议</a><a href="#lifecycle">生命周期</a>
+      <a href="#workflow">开发流程</a><a href="#quality">验证矩阵</a><a href="#compatibility">兼容边界</a><a href="#sources">源码入口</a>
+    </nav>
+    <main id="content">
+      <section id="authority"><div class="section-head"><span class="section-no">00 / AUTHORITY</span><h2>先知道什么才是最终事实</h2></div>
+        <p class="section-intro">本 HTML 是非规范性图解。发生冲突时，wire 以 <code>protocol/</code> 的 registry、schema 和 fixtures 为准；架构以 Product ADR 为准；测试结果只对记录的 source/artifact identity 有效。</p>
+        <div class="notice">不要从页面示例复制新的手写协议常量。Server 与 Firmware consumer 必须由同一 machine-readable contract 校验。</div>
+      </section>
+      <section id="architecture"><div class="section-head"><span class="section-no">01 / SYSTEM</span><h2>一对一媒体单跳，控制面可水平扩展</h2></div>
+        <p class="section-intro">Director 只分配和 fencing；Worker 持有实时 session；设备直连选中的 Worker。媒体热路径不访问 Redis，也不经过 Director。</p>
+        <div class="flow"><div class="flow-item device-top"><small>ENDPOINT</small><strong>ESP32 Native</strong><p>RVA WSS/UDP、AFE、UI</p></div><div class="flow-item control-top"><small>ROUTING</small><strong>Session Director</strong><p>capacity、lease、grant</p></div><div class="flow-item media-top"><small>SESSION OWNER</small><strong>Realtime Worker</strong><p>control、media、generation</p></div><div class="flow-item runtime-top"><small>VOICE KERNEL</small><strong>AgentSession</strong><p>streaming turn lifecycle</p></div><div class="flow-item runtime-top"><small>PROVIDERS</small><strong>ASR / LLM / TTS</strong><p>bounded adapters</p></div></div>
+      </section>
+      <section id="server"><div class="section-head"><span class="section-no">02 / SERVER</span><h2>Binding 可替换，canonical runtime 不懂设备方言</h2></div>
+        <div class="split"><div class="panel"><h3>Director owns</h3><ul><li>Worker registry、capacity、drain</li><li>route lease 与 fencing token</li><li>短期、单次 connect grant</li><li>不读取音频、不创建 AgentSession</li></ul></div><div class="panel"><h3>Worker owns</h3><ul><li><code>/v1/voice</code> control 与唯一 media owner</li><li>codec、AgentSession、provider stream</li><li>playback generation 与 teardown</li><li>legacy binding 与 RVA runtime 隔离</li></ul></div></div>
+      </section>
+      <section id="firmware"><div class="section-head"><span class="section-no">03 / FIRMWARE</span><h2>ESP-IDF 是底座，不是另一个语音应用</h2></div>
+        <p class="section-intro">native target 直接组合官方 components 与项目自有 owner。核心语音代码不依赖 LVGL；板级 GPIO、I2C/I2S、codec 和 PA 只存在于 board component。</p>
+        <pre><code>apps/voice_terminal
+  -> voice_core
+  -> voice_protocol
+  -> transport_wss | transport_udp
+  -> audio_pipeline -> audio_frontend_esp_sr
+  -> board_lichuang_s3
+  -> device_config
+  -> ui_lvgl (optional)</code></pre>
+        <table><thead><tr><th>组件</th><th>唯一职责</th><th>禁止依赖</th></tr></thead><tbody><tr><td>voice_core</td><td>session、generation、cancel、close</td><td>LVGL、Wi-Fi、JSON transport</td></tr><tr><td>audio_pipeline</td><td>capture/AFE/encode/decode/playout owners</td><td>UI、Server event names</td></tr><tr><td>transport_*</td><td>连接、framing、媒体 admission</td><td>codec device、LVGL objects</td></tr><tr><td>board_lichuang_s3</td><td>bus、codec、GPIO、PA、LCD/touch facts</td><td>Agent 和 wire 语义</td></tr><tr><td>ui_lvgl</td><td>呈现状态并发送 command</td><td>直接操作 transport/audio owner</td></tr></tbody></table>
+      </section>
+      <section id="protocol"><div class="section-head"><span class="section-no">04 / PROTOCOL</span><h2>RVA control：少事件，但不删除必要语义</h2></div>
+        <div class="timeline"><div class="event"><code>session.open</code><p>设备声明版本、identity、profiles、audio parameters、capabilities 和 limits。</p></div><div class="event"><code>session.opened</code><p>Worker commit 唯一 profile，返回 epoch、heartbeat/limits；UDP 时附带短期 grant。</p></div><div class="event"><code>transcript.*</code><p>流式 ASR delta/final；文本只属于当前 session/turn。</p></div><div class="event"><code>response.*</code><p>响应开始、文本、结束和精确 cancel；所有输出绑定 playback generation。</p></div><div class="event"><code>session.close</code><p>携带稳定 close reason；断线后 fresh bootstrap，不恢复旧 key 或 generation。</p></div></div>
+        <div class="split"><div class="panel"><h3>wss-opus-v2</h3><p>WSS 同时承载 JSON control 与 typed binary Opus。实现简单，但必须限制 queue、message size 和 media age，防止 TCP HOL 扩散。</p></div><div class="panel"><h3>udp-opus-gcm-v1</h3><p>WSS 管理生命周期；UDP 只传 AEAD Opus。认证失败不推进 sequence、不进入 decoder；迟到包按 deadline 丢弃。</p></div></div>
+      </section>
+      <section id="lifecycle"><div class="section-head"><span class="section-no">05 / LIFECYCLE</span><h2>打断正确性来自 owner 与 generation</h2></div>
+        <table><thead><tr><th>不变量</th><th>失败时必须发生</th></tr></thead><tbody><tr><td>一个 session 一个 control owner</td><td>重复 open 或 split-brain 明确拒绝</td></tr><tr><td>playback generation 单调增加</td><td>旧 callback、queue、datagram 不能进入 DAC</td></tr><tr><td>cancel target 精确</td><td>未知或 stale target 不猜测相近 response</td></tr><tr><td>close 幂等且有界</td><td>先 revoke admission，再停止 task/socket，最后释放资源</td></tr><tr><td>fresh reconnect</td><td>旧 epoch、key、grant、sequence 全部失效</td></tr></tbody></table>
+      </section>
+      <section id="workflow"><div class="section-head"><span class="section-no">06 / WORKFLOW</span><h2>开发顺序围绕可运行纵向闭环</h2></div>
+        <pre><code># Server
+./scripts/bootstrap.ps1
+./scripts/verify.ps1
+./scripts/run-local.ps1
+
+# Firmware
+cd firmware/apps/voice_terminal
+idf.py set-target esp32s3
+idf.py build
+idf.py size
+
+# 只有设备与端口已确认并获授权后
+idf.py -p $env:RVA_ESPPORT flash monitor</code></pre>
+        <div class="notice notice-danger">候选构建成功不等于最终镜像或设备通过。生命周期修复后必须 fresh rebuild；没有当前 artifact 的串口、hash、端云 trace 或声学证据时，对应状态必须是 <code>not_run</code>。</div>
+      </section>
+      <section id="quality"><div class="section-head"><span class="section-no">07 / QUALITY</span><h2>把快循环和发布证据分开</h2></div>
+        <table><thead><tr><th>证据层</th><th>必须证明</th><th>不能替代</th></tr></thead><tbody><tr><td>contract_verified</td><td>schema、fixtures 与双端 parser 一致</td><td>真实网络和设备行为</td></tr><tr><td>build_passed</td><td>fresh 配置完成编译链接</td><td>外设、音频与网络可用</td></tr><tr><td>device_verified</td><td>当前固件完成 WSS/UDP、字幕、播放与打断闭环</td><td>声学和弱网指标</td></tr><tr><td>acoustic_verified</td><td>近讲、远讲、double-talk 与自回授受控</td><td>长时间稳定性</td></tr><tr><td>measured</td><td>20 轮、30 分钟、延迟、queue 与弱网 A/B 有原始证据</td><td>其他硬件和部署环境</td></tr></tbody></table>
+        <div class="notice">当前 Server 已通过完整自动化 suite、静态检查，以及独立进程 Director/Worker 的真实 provider WSS 与 UDP GCM 闭环。Firmware 已通过 ESP-IDF 5.5.2 构建与 size 门禁；无缓存 clean checkout、目标板 HIL、声学、弱网和长稳仍是独立门禁，不能由构建或 Server 证据替代。</div>
+      </section>
+      <section id="compatibility"><div class="section-head"><span class="section-no">08 / COMPATIBILITY</span><h2>兼容代码不进入新功能依赖链</h2></div>
+        <p class="section-intro">Native endpoint、<code>rva-control-v1</code> 和 <code>/v1/voice</code> 是当前开发入口。Legacy target 与 binding 只提供有界回滚能力，并在 native 达到同级真机证据后退役。</p>
+        <div class="split"><div class="panel"><h3>当前产品边界</h3><ul><li>ESP-IDF native application</li><li>RVA control + WSS/UDP Opus</li><li>AEC/VAD、Wi-Fi/NVS、LVGL</li><li>Director + Worker + provider adapters</li></ul></div><div class="panel"><h3>Legacy 隔离边界</h3><ul><li>不向 native 引入 MCP、MQTT、activation</li><li>不复用 legacy hello/listen/tts wire</li><li>不承载新功能或新协议字段</li><li>退役条件只看当前版本 parity evidence</li></ul></div></div>
+      </section>
+      <section id="sources"><div class="section-head"><span class="section-no">09 / SOURCES</span><h2>从权威入口继续阅读</h2></div>
+        <div class="source-map"><a href="../product/prd.md"><b>产品需求</b><span>范围、需求与发布条件</span></a><a href="../quality/release-readiness.md"><b>发布状态</b><span>当前证据与剩余门禁</span></a><a href="../architecture/system.md"><b>系统架构</b><span>Director、Worker、Runtime</span></a><a href="../architecture/firmware.md"><b>Firmware 架构</b><span>组件与资源 ownership</span></a><a href="../protocol/overview.md"><b>协议总览</b><span>当前 control 与 media wire</span></a><a href="../operations/troubleshooting.md"><b>故障排查</b><span>端云分层诊断入口</span></a></div>
+      </section>
+      <footer>realtime-voice-agent · Product documentation · non-normative illustrated guide</footer>
+    </main>
+  </div>
+</body>
+</html>

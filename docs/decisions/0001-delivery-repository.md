@@ -22,7 +22,7 @@
 
 ### 独立仓选择性提取
 
-选择。通过 source manifest、固定 revision、patch、lock、behavior matrix 和 artifact hash 保持 provenance，
+选择。通过 source manifest、固定 revision、patch、lock 和 behavior matrix 保持 provenance，
 同时形成干净交付面。
 
 ### 一次性按目标目录重写
@@ -31,13 +31,8 @@
 
 ## 证据
 
-- 研究仓 accepted 决策 `2026-07-19-realtime-voice-agent-delivery-repository-and-migration.md`。
 - [兼容基线](../quality/compatibility-baseline.md)。
 - `migration/baseline/source-manifest.yaml`、`behavior-matrix.yaml` 和 `third_party/sources.lock.yaml`。
-- Server 迁移 commit `fca8de8`、repair commits `259aeee`/`d2fa0ca`；固件与仓库复现门禁 commit `cf9bc69`。
-- 本决策收口时新仓根 pytest `15 passed`；Server Ruff 与 Redis-enabled pytest `179 passed`；reference firmware 在新仓
-  clean build `2215/2215`。同一 final reference artifact 随后已在 COM11 完整烧录并观察启动、Wi-Fi、唤醒、
-  WSS handshake、UDP probe 与持续 UDP 上行；真机语音闭环仍需独立门禁。
 
 ## 决定与范围
 
@@ -45,7 +40,7 @@
 - ESP32-S3 是首端，不是仓库永久边界。
 - 迁移顺序为 reference materialization -> compatibility guard -> 单 owner 模块迁移 -> 目标目录收口。
 - Direct WebRTC、AIMP、PCM DataChannel 和研究归档实现不迁移。
-- HTML 暂不创建；Markdown/schema/fixtures/实现稳定后只生成 non-normative 可视化。
+- HTML 只作为 non-normative 可视化，不能覆盖 schema、ADR 或 release evidence。
 - 已验证旧功能优先；每批只改变一个主要边界，并运行匹配的四象限/HIL。
 
 ## 后果与风险
@@ -57,10 +52,7 @@ target lane 并存，存在短期重复和更多兼容测试。风险：目录�
 ## 兼容和迁移
 
 Reference lane 在目标 lane 通过等价门禁前保持可构建；最终发布不依赖研究仓或 external checkout常驻。
-Provenance、fixtures 和 baseline 永久保留。新仓 host synthetic Chinese 已完成真实 provider media E2E，但该
-host 证据不能替代 ESP32 acoustic E2E。当前 final `0014` artifact 已完成 boot、电脑 TTS 唤醒、public WSS、
-AFE AEC、真机 ASR、流式字幕、TTS/playout 与状态往返；100 帧 playback underrun 为 0。该 scoped smoke
-不替代物理 UI/触摸、最终 artifact UDP HIL、正式声学、弱网、多轮与长稳验收。
+Provenance、fixtures 和 baseline 保留；当前构建、真机、声学、弱网和长稳状态只在 release readiness 中维护。
 
 ## 复查触发条件
 

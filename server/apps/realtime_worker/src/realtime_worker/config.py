@@ -70,6 +70,16 @@ class Settings(BaseSettings):
     xiaozhi_udp_session_lifetime_seconds: int = Field(default=600, ge=30, le=3600)
     xiaozhi_udp_queue_datagrams: int = Field(default=32, ge=4, le=256)
     xiaozhi_udp_reorder_wait_ms: int = Field(default=30, ge=5, le=100)
+    rva_enabled: bool = True
+    rva_udp_enabled: bool = False
+    rva_public_ws_url: str = "ws://127.0.0.1:8081/v1/voice"
+    rva_input_queue_packets: int = Field(default=8, ge=1, le=64)
+    rva_output_queue_items: int = Field(default=12, ge=4, le=64)
+    rva_queue_timeout_seconds: float = Field(default=0.2, gt=0, le=1)
+    rva_handshake_timeout_seconds: float = Field(default=5.0, gt=0, le=10)
+    rva_runner_timeout_seconds: float = Field(default=5.0, gt=0, le=30)
+    rva_close_timeout_seconds: float = Field(default=5.0, gt=0, le=30)
+    rva_playback_prebuffer_packets: int = Field(default=4, ge=0, le=8)
 
     runner: Literal["deterministic", "livekit"] = "deterministic"
     agent_profile: str = "default"
@@ -160,7 +170,15 @@ class Settings(BaseSettings):
             raise ValueError("VOICE_WORKER_PUBLIC_WS_URL must use the canonical /v1/xiaozhi path")
         if self.environment == "production" and public_ws_url.scheme != "wss":
             raise ValueError("production requires VOICE_WORKER_PUBLIC_WS_URL to use wss://")
-        if self.xiaozhi_udp_enabled and not self.xiaozhi_udp_advertise_host:
+        if self.rva_enabled:
+            rva_public_ws_url = urlsplit(self.rva_public_ws_url)
+            if rva_public_ws_url.scheme not in {"ws", "wss"} or not rva_public_ws_url.hostname:
+                raise ValueError("VOICE_RVA_PUBLIC_WS_URL must be an absolute ws:// or wss:// URL")
+            if rva_public_ws_url.path != "/v1/voice" or rva_public_ws_url.query or rva_public_ws_url.fragment:
+                raise ValueError("VOICE_RVA_PUBLIC_WS_URL must use the canonical /v1/voice path")
+            if self.environment == "production" and rva_public_ws_url.scheme != "wss":
+                raise ValueError("production requires VOICE_RVA_PUBLIC_WS_URL to use wss://")
+        if (self.xiaozhi_udp_enabled or self.rva_udp_enabled) and not self.xiaozhi_udp_advertise_host:
             raise ValueError("VOICE_XIAOZHI_UDP_ADVERTISE_HOST is required when UDP is enabled")
         if self.xiaozhi_transport_policy == "force_udp_for_test" and not self.xiaozhi_udp_enabled:
             raise ValueError("force_udp_for_test requires VOICE_XIAOZHI_UDP_ENABLED=true")

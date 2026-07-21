@@ -1,10 +1,15 @@
 # Firmware
 
-- `targets/lichuang-dev/`：唯一 production firmware composition；由 pinned Xiaozhi upstream、仓内 overlay、
-  managed overlay、受控 lock 与复现脚本组成；
-- `locks/`：production target 构建所需的受控 dependency lock；
-- `device/`：non-release component-extraction prototype，仅用于 contracts/core 的边界验证。
+## 正式结构
 
-目录收口只确定 production source 的唯一入口，不代表 release readiness。`device` 的 headless build 不能替代
-production target 的 clean build、LCD/touch、audio、AEC、WSS/UDP、provisioning、声学或长稳证据。当前证据与
-未运行项以 [MIGRATION_STATUS.md](MIGRATION_STATUS.md) 为准。
+- `apps/voice_terminal/`：Product 自有 ESP-IDF application composition。
+- `components/`：board、audio/AFE、RVA protocol、WSS/UDP transport、configuration、runtime 和可选 LVGL UI。
+- `targets/lichuang-dev/`：迁移期 compatibility/rollback target；完成 parity 和支持期门禁前保持可构建。
+- `locks/`：compatibility target 所需的受控 dependency lock。
+- `device/`：独立 headless contract harness，仅消费 `components/voice_contracts` 与 `components/voice_core`，
+  不提供 production runtime source，也不生成发布镜像。
+
+核心语音与 transport 不依赖 LVGL。板级引脚、codec、I2S/TDM、显示和触摸事实集中在
+`board_lichuang_s3`；应用只组合组件并拥有顶层生命周期。
+
+当前构建、真机和未运行门禁见 [Release readiness](../docs/quality/release-readiness.md)。

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import pytest
-from voice_contracts import ConnectGrantClaims, GrantCodec, GrantError, encode_route_key
+from voice_contracts import BindingAdvertisement, ConnectGrantClaims, GrantCodec, GrantError, encode_route_key
 from voice_testkit import MutableClock
 
 
@@ -53,3 +53,49 @@ def test_grant_tampering_fails_before_claims_are_accepted() -> None:
 def test_route_key_encoding_is_unambiguous_for_colon_identifiers() -> None:
     assert encode_route_key("a:b", "c") != encode_route_key("a", "b:c")
     assert encode_route_key("tenant", "aa:bb:cc:dd:ee:ff") == "tenant:aa%3Abb%3Acc%3Add%3Aee%3Aff"
+
+
+@pytest.mark.parametrize(
+    ("control_protocol", "path", "profiles"),
+    [
+        ("xiaozhi-control-v1", "/v1/xiaozhi", ("wss-opus-v1", "udp-opus-gcm-v1")),
+        ("rva-control-v1", "/v1/voice", ("wss-opus-v2", "udp-opus-gcm-v1")),
+    ],
+)
+def test_binding_accepts_routable_control_profile_combinations(
+    control_protocol: str,
+    path: str,
+    profiles: tuple[str, ...],
+) -> None:
+    binding = BindingAdvertisement(
+        control_protocol=control_protocol,
+        public_wss_url=f"wss://worker.test{path}",
+        profiles=profiles,
+    )
+    assert binding.profiles == profiles
+
+
+@pytest.mark.parametrize(
+    ("control_protocol", "path", "profiles"),
+    [
+        ("xiaozhi-control-v1", "/v1/xiaozhi", ("wss-opus-v2",)),
+        ("rva-control-v1", "/v1/voice", ("wss-opus-v1",)),
+    ],
+)
+def test_binding_rejects_unroutable_control_profile_combinations(
+    control_protocol: str,
+    path: str,
+    profiles: tuple[str, ...],
+) -> None:
+    with pytest.raises(ValueError, match="cannot route transport profiles"):
+        BindingAdvertisement(
+            control_protocol=control_protocol,
+            public_wss_url=f"wss://worker.test{path}",
+            profiles=profiles,
+        )
+
+
+def test_connect_grant_rejects_unroutable_control_profile_combination() -> None:
+    clock = MutableClock()
+    with pytest.raises(ValueError, match="rva-control-v1 cannot route.*wss-opus-v1"):
+        claims(clock, control_protocol="rva-control-v1", profiles=("wss-opus-v1",))

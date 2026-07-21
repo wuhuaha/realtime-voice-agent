@@ -1,9 +1,9 @@
 $ErrorActionPreference = "Stop"
 
 $deviceRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
-$contracts = Join-Path $deviceRoot "components/voice_contracts"
-$core = Join-Path $deviceRoot "components/voice_core"
 $repoRoot = (Resolve-Path (Join-Path $deviceRoot "../..")).Path
+$contracts = Join-Path $repoRoot "firmware/components/voice_contracts"
+$core = Join-Path $repoRoot "firmware/components/voice_core"
 $sessionTest = Join-Path $deviceRoot "host_tests/session_gate_test.cc"
 $wireTest = Join-Path $deviceRoot "host_tests/udp_wire_fixture_test.cc"
 $positive = Get-Content -Raw -LiteralPath (

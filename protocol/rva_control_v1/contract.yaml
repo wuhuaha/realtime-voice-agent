@@ -1,0 +1,179 @@
+schema_version: 1
+protocol:
+  id: rva-control-v1
+  version: 1
+  transport: websocket
+  path: /v1/voice
+  schema: messages.schema.json
+  max_control_message_bytes: 32768
+  heartbeat_interval_ms:
+    default: 15000
+    minimum: 5000
+    maximum: 60000
+  idle_timeout_ms:
+    default: 45000
+    minimum: 15000
+    maximum: 180000
+
+identifiers:
+  session_epoch:
+    type: string
+    minimum_bytes: 1
+    maximum_bytes: 128
+    semantics: Opaque Director grant identifier; changes whenever a logical session is reopened.
+  media_epoch:
+    type: uint32
+    minimum: 1
+    semantics: Changes whenever media admission is reopened; stale media epochs are rejected.
+  generation:
+    type: uint32
+    minimum: 1
+    semantics: Identifies one downlink playback generation; cancel fences the target and every older generation.
+  sequence:
+    type: uint32
+    minimum: 0
+    semantics: Monotonic within its documented stream scope; duplicates and backward values are rejected; reopen before wrap.
+  cancel_target:
+    fields: [response_id, generation]
+    semantics: Both fields must match the active response; cancellation is idempotent for the same target.
+
+messages:
+  - type: session.open
+    direction: device_to_server
+    allowed_before_open: true
+  - type: session.opened
+    direction: server_to_device
+    establishes_session: true
+  - type: transcript.delta
+    direction: server_to_device
+    sequence_scope: utterance_id
+  - type: transcript.final
+    direction: server_to_device
+    terminates_sequence_scope: utterance_id
+  - type: response.begin
+    direction: server_to_device
+    opens_generation: true
+  - type: response.text
+    direction: server_to_device
+    sequence_scope: response_id
+  - type: response.end
+    direction: server_to_device
+    closes_generation: true
+  - type: response.cancel
+    direction: device_to_server
+    requires_cancel_target: true
+  - type: response.cancelled
+    direction: server_to_device
+    requires_cancel_target: true
+    closes_generation: true
+  - type: session.error
+    direction: bidirectional
+  - type: session.close
+    direction: bidirectional
+    terminal: true
+
+state_rules:
+  - id: session_epoch_match
+    rule: Every post-open message must match the active session_id and session_epoch.
+    violation: stale_session
+  - id: sequence_monotonic
+    rule: Sequence is strictly increasing within its stream scope, starting at zero.
+    violation: invalid_sequence
+  - id: generation_monotonic
+    rule: response.begin generation is greater than every previously accepted generation in the session.
+    violation: stale_generation
+  - id: cancel_exact_target
+    rule: response.cancel target must match the active response_id and generation.
+    violation: cancel_target_mismatch
+  - id: stale_media_fence
+    rule: Media with an older generation than the active playback fence is discarded before decode or render.
+    violation: stale_generation
+  - id: media_identity_match
+    rule: Every media packet must match both media_id and media_epoch returned by session.opened.
+    violation: stale_media_identity
+  - id: single_active_transport
+    rule: Exactly one selected_media_profile is active for a session; switching requires a fresh session.open.
+    violation: transport_mismatch
+  - id: preferred_profile_supported
+    rule: preferred_media_profile must also appear in supported_media_profiles.
+    violation: unsupported_preference
+  - id: selected_profile_offered
+    rule: selected_media_profile must appear in the supported_media_profiles from the corresponding session.open.
+    violation: unsupported_selection
+  - id: response_terminal_once
+    rule: A response generation is terminated exactly once by response.end or response.cancelled, never both.
+    violation: response_already_terminal
+  - id: close_is_terminal
+    rule: No control or media input is accepted after session.close for the same session epoch.
+    violation: session_closed
+
+audio:
+  codec: opus
+  sample_rate_hz: 16000
+  channels: 1
+  frame_duration_ms: 60
+  samples_per_frame: 960
+  dtx: true
+  fec: false
+
+media_header:
+  byte_order: network
+  bytes: 32
+  authenticated_as_aad_for_udp: true
+  fields:
+    - {name: magic, offset: 0, bytes: 2, type: fixed, value_hex: "5641"}
+    - {name: wire_version, offset: 2, bytes: 1, type: uint8, value: 1}
+    - {name: flags, offset: 3, bytes: 1, type: uint8}
+    - {name: media_id, offset: 4, bytes: 8, type: opaque}
+    - {name: media_epoch, offset: 12, bytes: 4, type: uint32}
+    - {name: sequence, offset: 16, bytes: 4, type: uint32}
+    - {name: timestamp, offset: 20, bytes: 4, type: uint32, clock_rate_hz: 16000}
+    - {name: generation, offset: 24, bytes: 4, type: uint32, semantics: Profile-specific playback freshness fence.}
+    - {name: payload_length, offset: 28, bytes: 4, type: uint32}
+  flags:
+    audio: 1
+    probe: 2
+    probe_ack: 4
+
+media_profiles:
+  - id: wss-opus-v2
+    carrier: websocket-binary
+    control: rva-control-v1
+    media_header: shared
+    encrypted: false
+    authenticated: websocket_tls
+    uplink_generation: 0
+    downlink_generation: active_playback_generation
+    max_payload_bytes: 1200
+    max_frame_bytes: 1232
+  - id: udp-opus-gcm-v1
+    carrier: udp
+    control: rva-control-v1
+    media_header: shared
+    cipher: AES-128-GCM
+    directional_keys: true
+    nonce: directional_salt_8_bytes_plus_sequence_uint32
+    tag_bytes: 16
+    max_payload_bytes: 1200
+    max_datagram_bytes: 1280
+    replay_window_packets: 64
+    sequence_max_forward_jump: 1024
+    jitter_window_packets: 4
+    late_deadline_ms: 120
+    uplink_probe_generation: 0
+    uplink_audio_generation: active_playback_generation
+    downlink_generation: active_playback_generation
+    packet_loss_action: opus_plc
+    retransmission: false
+
+limits:
+  supported_media_profiles: 2
+  device_id_bytes: 128
+  session_id_bytes: 128
+  response_id_bytes: 128
+  utterance_id_bytes: 128
+  transcript_delta_bytes: 4096
+  transcript_final_bytes: 16384
+  response_text_delta_bytes: 4096
+  error_message_bytes: 512
+  close_detail_bytes: 256

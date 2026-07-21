@@ -2,7 +2,7 @@
 
 版本：1.0
 状态：accepted
-更新日期：2026-07-20
+更新日期：2026-07-21
 
 ## 1. 产品定义
 
@@ -11,7 +11,7 @@ endpoint 是立创实战派 ESP32-S3，但协议、服务端和测试体系不�
 
 首版以通用中文闲聊为评测载荷，目标不是业务知识正确性，而是证明端云语音链路、实时交互、打断、
 字幕、配置、故障恢复和水平扩展边界。Server 使用 roomless LiveKit `AgentSession` 组织 VAD、STT、LLM、
-TTS 和 interruption；ESP32 使用 `xiaozhi-control-v1`，媒体可选择 `wss-opus-v1` 或
+TTS 和 interruption；ESP32 使用 `rva-control-v1`，媒体可选择 `wss-opus-v2` 或
 `udp-opus-gcm-v1`。
 
 ## 2. 用户与场景
@@ -29,8 +29,8 @@ TTS 和 interruption；ESP32 使用 `xiaozhi-control-v1`，媒体可选择 `wss-
 
 - ESP32-S3 启动、联网、音频采集/播放、AEC 配置、触摸/唤醒、状态和流式字幕。
 - 未配置网络时的 Wi-Fi 扫描、选择、软键盘输入和持久化；LiveKit Agent 服务 endpoint 配置和持久化。
-- `xiaozhi-control-v1` 控制协议。
-- 始终可用的 `wss-opus-v1` baseline。
+- `rva-control-v1` 控制协议与 `/v1/voice` Worker endpoint。
+- 始终可用的 `wss-opus-v2` baseline。
 - 显式选择或灰度使用的 `udp-opus-gcm-v1` challenger；WSS 始终保留控制连接。
 - Session Director、可水平扩展 Realtime Worker、共享 coordination store 适配和 worker-bound grant。
 - roomless LiveKit Agent，支持流式 FunASR、DeepSeek-compatible LLM 和可配置流式 TTS provider。
@@ -45,7 +45,6 @@ TTS 和 interruption；ESP32 使用 `xiaozhi-control-v1`，媒体可选择 `wss-
 - 不把浏览器/手机标准 LiveKit Room 作为首个验收 endpoint；架构只保留未来接入边界。
 - 不承诺业务 tools、RAG、长期记忆、多租户计费或内容安全策略的产品完成度。
 - 不把默认 `max_sessions=5` 解释为容量测量、并发 SLO 或目标机器能力。
-- HTML 暂不创建；Markdown、schema、fixtures 和实现稳定后再生成非规范性可视化。
 
 ## 4. 功能需求
 
@@ -54,7 +53,7 @@ TTS 和 interruption；ESP32 使用 `xiaozhi-control-v1`，媒体可选择 `wss-
 | FR-001 | 设备配置 | 无有效 Wi-Fi 时可扫描、选择、输入并保存网络；可配置并保存服务 endpoint |
 | FR-002 | 会话 bootstrap | 设备可获得唯一 Worker endpoint、短期 connect grant、epoch、fencing token 和允许 profile |
 | FR-003 | 身份与鉴权 | Director/Worker 拒绝缺失、过期、错设备、错 Worker、重放或篡改的 grant |
-| FR-004 | 控制连接 | 客户端通过 `/v1/xiaozhi` 完成 hello、listen、STT、TTS、abort 和关闭流程 |
+| FR-004 | 控制连接 | 客户端通过 `/v1/voice` 完成 `session.open/opened`、transcript、response、精确 cancel 和 close 流程 |
 | FR-005 | WSS 媒体 | WSS 二进制帧双向承载完整 Opus packet，控制与媒体队列均有界 |
 | FR-006 | UDP 媒体 | WSS 协商短期 UDP grant，UDP 通过 AES-128-GCM、anti-replay、source pin 和小型 jitter 传输 Opus |
 | FR-007 | Profile 选择 | 设备可在 UI 显式选择 WSS/UDP；`auto` 必须遵守 server policy 和设备 capability |
@@ -96,39 +95,34 @@ TTS 和 interruption；ESP32 使用 `xiaozhi-control-v1`，媒体可选择 `wss-
 
 1. 设备向 Director bootstrap；开发模式可使用明确标记的直连 Worker 路径。
 2. Director 选择 non-draining 且有容量、支持所需 profile 的 Worker，签发短期 grant。
-3. 设备连接 Worker WSS，发送 capability hello。
-4. Worker commit 一个媒体 profile。WSS 立即可用；UDP 需完成 authenticated probe 后才 active。
+3. 设备连接 Worker `/v1/voice`，发送 `session.open`。
+4. Worker 返回 `session.opened` 并 commit 一个媒体 profile。WSS 立即可用；UDP 需完成 authenticated probe 后才 active。
 5. 设备开始上行音频，Worker 启动 roomless AgentSession。
 
 ### 6.3 对话与打断
 
-1. 用户触摸或唤醒后发送 `listen start/realtime`。
+1. 用户触摸或唤醒后进入 listening，并持续上传当前 session 的音频。
 2. 端侧持续发送 Opus；服务端发回 ASR partial/final。
 3. LLM 增量文本按中文标点切分并提前触发 TTS。
-4. 服务端发送 TTS state、字幕和音频；端侧有界预缓冲后播放。
-5. 用户再次讲话或触发 abort 时 generation 递增，旧 generation 音频在服务端和设备端均被拒绝。
+4. 服务端发送 `response.begin/text/end` 和音频；端侧有界预缓冲后播放。
+5. 用户再次讲话或点击停止时发送精确 `response.cancel`；generation fence 让旧音频在服务端和设备端均被拒绝。
 
 ## 7. 验收与发布门禁
 
-| Gate | 通过条件 | 当前状态 |
+| Gate | 通过条件 | 证据入口 |
 | --- | --- | --- |
-| A. Repository | secret/license/source lock/目录依赖检查通过 | repository tests `11 passed`；verifier、Ruff、PowerShell parse 与 source/config contracts 通过 |
-| B. Server | unit、contract、integration、host e2e 通过；Director/Worker/Redis 语义可复现 | 当前工作树 Redis-enabled full suite `189 passed`、`0 skipped`；双 Worker readiness、bootstrap 与 host synthetic real-provider media E2E 已通过 |
-| C. Firmware | 固定 revision + overlay clean build、size、artifact hash 可复现 | `0011..0014` clean build `2215/2215`，`2,970,272` bytes；当前 app SHA-256 `61542dad78a11a130263952e4148f9b7c70b1e8919e3f2ca192d21612e6716a3`，COM11 app-flash hash verified |
-| D. WSS HIL | 当前固件与新 Server 完成真实 provider、字幕、打断和播放闭环 | 当前 `61542...` 完成 public WSS/AFE AEC/ASR/流式字幕/TTS/playout smoke，100 帧 underrun 0；物理点击结束仍 `not_run` |
-| E. UDP HIL | grant/probe/GCM、上下行音频、generation、重连完成真机闭环 | 诊断镜像完成 first probe、600+ uplink、真实 provider 与 downlink/playout；最终 artifact 复验、reconnect/generation `not_run` |
-| F. 声学 | 近讲、远讲、播放中 double-talk 和回声抑制按固定方法评测 | `not_run` |
-| G. 稳定性 | 至少 20 轮对话和 30 分钟会话，无 panic/WDT/失控自问自答/持续队列增长 | `not_run` |
-| H. 弱网 | WSS/UDP 在同一 loss/burst/jitter 模型下 A/B，保留原始指标 | `not_run` |
-| I. Scale | Redis backend 下多 Director/Worker 的 lease/fencing/drain/overload 验证 | atomic lease/fence/grant 与跨实例测试已通过；真实多进程容量/故障演练 `not_run` |
+| A. Repository | secret/license/source lock/目录依赖检查通过 | `docs/quality/release-readiness.md` |
+| B. Server | unit、contract、integration、host e2e 通过；Director/Worker/Redis 语义可复现 | `docs/quality/release-readiness.md` |
+| C. Firmware | native clean build、size、artifact identity 可复现 | `docs/quality/release-readiness.md` |
+| D. WSS HIL | 当前 native firmware 与 Server 完成真实 provider、字幕、打断和播放闭环 | `docs/quality/release-readiness.md` |
+| E. UDP HIL | grant/probe/GCM、上下行音频、generation、重连完成真机闭环 | `docs/quality/release-readiness.md` |
+| F. 声学 | 近讲、远讲、播放中 double-talk 和回声抑制按固定方法评测 | `docs/quality/release-readiness.md` |
+| G. 稳定性 | 至少 20 轮对话和 30 分钟会话，无 panic/WDT/失控自问自答/持续队列增长 | `docs/quality/release-readiness.md` |
+| H. 弱网 | WSS/UDP 在同一 loss/burst/jitter 模型下 A/B，保留原始指标 | `docs/quality/release-readiness.md` |
+| I. Scale | Redis backend 下多 Director/Worker 的 lease/fencing/drain/overload 验证 | `docs/quality/release-readiness.md` |
 
-旧固件和旧 Server 的真实 provider 闭环只能作为 compatibility baseline，不能替代上述最终组合验收。
-当前公网部署与 host WSS real-provider E2E 已证明远端 FunASR/DeepSeek/CosyVoice/downlink media 链路；最终 artifact
-也已通过电脑声源唤醒完成真机 WSS 闭环。该单次观测不是正式近讲/远讲/double-talk 评测，也不替代 UI 触摸、
-人工打断、UDP HIL 或长稳复验。
-
-最终 `0014` 已通过 source contract、clean build、app-flash 与当前 `61542...` public-path smoke。“AI”文案的
-物理屏视觉和聆听按钮点击结束没有手指 HIL；单次电脑 TTS smoke 不等于正式声学或长稳。
+Compatibility baseline 只用于回归对照，不能替代 native artifact 的发布验收。当前精确状态统一见
+[Release readiness](../quality/release-readiness.md)。
 
 ## 8. 成功判定
 

@@ -47,8 +47,7 @@ coordination store 中原子单次消费。Redis-enabled tests 已覆盖重复�
 - 限制 handshake、message、queue、ping、session count 和 principal rate。
 - Origin 变化不转发旧 token；ESP32 token 与 endpoint origin 绑定。
 
-Lifecycle repair `d2fa0ca` 已在 Settings 层拒绝缺 host、错误路径及带 query/fragment 的 public endpoint，并要求
-production 使用 `wss://`；TLS 证书、
+Settings 层拒绝缺 host、错误路径及带 query/fragment 的 public endpoint，并要求 production 使用 `wss://`；TLS 证书、
 公网 gateway 和公开路径仍需部署验收。
 
 ## 5. UDP

@@ -9,6 +9,7 @@ import subprocess
 from pathlib import Path
 
 import yaml
+from jsonschema import Draft202012Validator, FormatChecker
 
 FORBIDDEN_PARTS = {
     ".env",
@@ -20,7 +21,9 @@ FORBIDDEN_PARTS = {
 }
 FORBIDDEN_SUFFIXES = {".bin", ".elf", ".map", ".wav", ".pcm", ".key", ".pem"}
 SHA256_PATTERN = re.compile(r"^[0-9a-fA-F]{64}$")
-PRODUCTION_FIRMWARE_PATH = "firmware/targets/lichuang-dev"
+NATIVE_FIRMWARE_APP = "firmware/apps/voice_terminal"
+NATIVE_COMPONENT_ROOT = "firmware/components"
+LEGACY_FIRMWARE_PATH = "firmware/targets/lichuang-dev"
 HISTORICAL_FIRMWARE_PATH = "firmware/reference/xiaozhi-overlay"
 FIRMWARE_DEPENDENCY_LOCK = "firmware/locks/xiaozhi-esp32.dependencies.lock"
 RESEARCH_REPOSITORY_NAMES = ("voice-agent-research", "realtime-voice-agent-research")
@@ -70,14 +73,15 @@ def sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def tracked_files(root: Path) -> tuple[str, ...]:
+def repository_files(root: Path) -> tuple[str, ...]:
     result = subprocess.run(
-        ["git", "ls-files", "-z"],
+        ["git", "ls-files", "--cached", "--others", "--exclude-standard", "-z"],
         cwd=root,
         check=True,
         capture_output=True,
     )
-    return tuple(item.decode("utf-8") for item in result.stdout.split(b"\0") if item)
+    paths = tuple(item.decode("utf-8") for item in result.stdout.split(b"\0") if item)
+    return tuple(path for path in paths if (root / path).is_file())
 
 
 def validate_tracked_paths(paths: tuple[str, ...]) -> list[str]:
@@ -97,7 +101,7 @@ def validate_tracked_paths(paths: tuple[str, ...]) -> list[str]:
 def validate_manifest(root: Path) -> list[str]:
     manifest_path = root / "migration" / "baseline" / "source-manifest.yaml"
     if not manifest_path.is_file():
-        return [f"missing manifest: {manifest_path.relative_to(root)}"]
+        return [f"missing manifest: {manifest_path.relative_to(root).as_posix()}"]
     payload = yaml.safe_load(manifest_path.read_text(encoding="utf-8"))
     if not isinstance(payload, dict):
         return ["source manifest must be a mapping"]
@@ -118,8 +122,8 @@ def validate_manifest(root: Path) -> list[str]:
         source_path = entry.get("source_path")
         if source_path is not None and not isinstance(source_path, str):
             errors.append(f"invalid manifest source_path: {normalized_path}")
-        if normalized_path.startswith(f"{PRODUCTION_FIRMWARE_PATH}/"):
-            suffix = normalized_path.removeprefix(PRODUCTION_FIRMWARE_PATH)
+        if normalized_path.startswith(f"{LEGACY_FIRMWARE_PATH}/"):
+            suffix = normalized_path.removeprefix(LEGACY_FIRMWARE_PATH)
             expected_source = f"{HISTORICAL_FIRMWARE_PATH}{suffix}"
             if source_path != expected_source:
                 errors.append(f"firmware provenance path mismatch: {normalized_path}")
@@ -176,35 +180,62 @@ def validate_firmware_source_lock(root: Path) -> list[str]:
     return errors
 
 
+def validate_optional_legacy_rollback(root: Path) -> list[str]:
+    """Validate pinned rollback provenance only while the legacy target is retained."""
+    if not (root / LEGACY_FIRMWARE_PATH).exists():
+        return []
+    return [*validate_manifest(root), *validate_firmware_source_lock(root)]
+
+
 def validate_firmware_composition(root: Path) -> list[str]:
     errors: list[str] = []
-    production = root / PRODUCTION_FIRMWARE_PATH
+    production = root / NATIVE_FIRMWARE_APP
     legacy = root / HISTORICAL_FIRMWARE_PATH
     if legacy.exists():
         errors.append(f"legacy firmware runtime path still exists: {HISTORICAL_FIRMWARE_PATH}")
     for relative in (
         "README.md",
+        "CMakeLists.txt",
+        "partitions.csv",
         "sdkconfig.defaults",
-        "scripts/materialize-upstream.ps1",
-        "scripts/verify-source-contract.ps1",
-        "scripts/build.ps1",
+        "main/CMakeLists.txt",
+        "main/app_main.cc",
     ):
         if not (production / relative).is_file():
-            errors.append(f"production firmware source missing: {PRODUCTION_FIRMWARE_PATH}/{relative}")
+            errors.append(f"native firmware source missing: {NATIVE_FIRMWARE_APP}/{relative}")
+
+    required_components = (
+        "audio_frontend_esp_sr",
+        "audio_pipeline",
+        "board_lichuang_s3",
+        "device_config",
+        "native_runtime",
+        "transport_udp",
+        "transport_wss",
+        "ui_lvgl",
+        "voice_contracts",
+        "voice_core",
+        "voice_protocol",
+    )
+    for component in required_components:
+        cmake = root / NATIVE_COMPONENT_ROOT / component / "CMakeLists.txt"
+        if not cmake.is_file():
+            errors.append(f"native firmware component missing: {NATIVE_COMPONENT_ROOT}/{component}/CMakeLists.txt")
 
     required_markers = {
-        root / "firmware" / "MIGRATION_STATUS.md": (
-            "唯一 production firmware composition",
-            "non-release component-extraction prototype",
-            "全量 clean build 完成 `2215/2215`",
+        root / "docs" / "quality" / "release-readiness.md": (
+            "状态：not ready",
+            "Native clean build + size",
+            "WSS voice loop",
+            "UDP voice loop",
         ),
-        root / "firmware" / "device" / "README.md": (
-            "non-release component-extraction prototype",
-            PRODUCTION_FIRMWARE_PATH,
+        root / "firmware" / "apps" / "voice_terminal" / "README.md": (
+            "Product native ESP-IDF endpoint",
+            LEGACY_FIRMWARE_PATH,
         ),
         root / ".github" / "workflows" / "ci.yml": (
-            "production-source-contract:",
-            f"./{PRODUCTION_FIRMWARE_PATH}/scripts/materialize-upstream.ps1",
+            "native-firmware-host-contracts:",
+            NATIVE_FIRMWARE_APP,
         ),
     }
     for path, markers in required_markers.items():
@@ -288,9 +319,26 @@ def validate_research_boundary(root: Path, paths: tuple[str, ...]) -> list[str]:
 def validate_protocol(root: Path) -> list[str]:
     errors: list[str] = []
     registry = yaml.safe_load((root / "protocol" / "registry.yaml").read_text(encoding="utf-8"))
+    control_ids = {protocol["id"] for protocol in registry["control_protocols"]}
+    if registry.get("schema_version") != 2:
+        errors.append("protocol registry must use schema_version 2")
+    for section in ("control_protocols", "media_profiles"):
+        for entry in registry.get(section, ()):
+            for field in ("contract", "schema", "wire"):
+                reference = entry.get(field)
+                if isinstance(reference, str) and not (root / "protocol" / reference).is_file():
+                    errors.append(
+                        f"protocol registry reference missing: {entry.get('id')}:{field}: {reference}"
+                    )
+    if control_ids != {"xiaozhi-control-v1", "rva-control-v1"}:
+        errors.append(f"unexpected control protocols: {sorted(control_ids)}")
     profile_ids = {profile["id"] for profile in registry["media_profiles"]}
-    if profile_ids != {"wss-opus-v1", "udp-opus-gcm-v1"}:
+    if profile_ids != {"wss-opus-v1", "wss-opus-v2", "udp-opus-gcm-v1"}:
         errors.append(f"unexpected media profiles: {sorted(profile_ids)}")
+    for profile in registry["media_profiles"]:
+        controls = set(profile.get("controls", ()))
+        if not controls or not controls <= control_ids:
+            errors.append(f"media profile has invalid controls: {profile.get('id')}")
     positive_path = root / "protocol" / "xiaozhi_udp_v1" / "fixtures" / "positive.json"
     positive = json.loads(positive_path.read_text(encoding="utf-8"))
     for vector in positive["vectors"]:
@@ -303,6 +351,29 @@ def validate_protocol(root: Path) -> list[str]:
             errors.append(f"UDP fixture header length mismatch: {vector['id']}")
         if len(datagram) > positive["max_datagram_bytes"]:
             errors.append(f"UDP fixture exceeds MTU: {vector['id']}")
+
+    rva_root = root / "protocol" / "rva_control_v1"
+    schema = json.loads((rva_root / "messages.schema.json").read_text(encoding="utf-8"))
+    try:
+        Draft202012Validator.check_schema(schema)
+    except Exception as error:
+        errors.append(f"invalid RVA control schema: {error}")
+        return errors
+    validator = Draft202012Validator(schema, format_checker=FormatChecker())
+    rva_positive = json.loads((rva_root / "fixtures" / "positive.json").read_text(encoding="utf-8"))
+    for vector in rva_positive["vectors"]:
+        validation_errors = list(validator.iter_errors(vector["message"]))
+        if validation_errors:
+            errors.append(f"RVA positive fixture rejected: {vector['id']}")
+    rva_negative = json.loads((rva_root / "fixtures" / "negative.json").read_text(encoding="utf-8"))
+    for vector in rva_negative["schema_vectors"]:
+        if not list(validator.iter_errors(vector["message"])):
+            errors.append(f"RVA negative fixture accepted: {vector['id']}")
+    contract = yaml.safe_load((rva_root / "contract.yaml").read_text(encoding="utf-8"))
+    state_rules = {rule["id"] for rule in contract["state_rules"]}
+    covered_rules = {vector["rule"] for vector in rva_negative["semantic_vectors"]}
+    if covered_rules != state_rules:
+        errors.append("RVA semantic fixtures do not cover every state rule")
     return errors
 
 
@@ -311,11 +382,10 @@ def main() -> int:
     parser.add_argument("--root", type=Path, default=Path(__file__).resolve().parents[1])
     args = parser.parse_args()
     root = args.root.resolve()
-    paths = tracked_files(root)
+    paths = repository_files(root)
     errors = [
         *validate_tracked_paths(paths),
-        *validate_manifest(root),
-        *validate_firmware_source_lock(root),
+        *validate_optional_legacy_rollback(root),
         *validate_protocol(root),
         *validate_firmware_composition(root),
         *validate_research_boundary(root, paths),

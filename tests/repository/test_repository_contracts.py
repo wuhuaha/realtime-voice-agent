@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import subprocess
 from pathlib import Path
 
 import yaml
@@ -111,6 +112,29 @@ def test_manifest_requires_historical_source_path_for_production_firmware(tmp_pa
 
 def test_repository_firmware_composition_is_explicit() -> None:
     assert VERIFY.validate_firmware_composition(ROOT) == []
+
+
+def test_legacy_rollback_provenance_is_optional(tmp_path: Path) -> None:
+    assert VERIFY.validate_optional_legacy_rollback(tmp_path) == []
+
+
+def test_retained_legacy_rollback_requires_complete_provenance(tmp_path: Path) -> None:
+    (tmp_path / VERIFY.LEGACY_FIRMWARE_PATH).mkdir(parents=True)
+    assert VERIFY.validate_optional_legacy_rollback(tmp_path) == [
+        "missing manifest: migration/baseline/source-manifest.yaml",
+        "firmware dependency lock identity inputs are incomplete",
+    ]
+
+
+def test_repository_files_include_untracked_but_not_ignored_sources(tmp_path: Path) -> None:
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    (tmp_path / ".gitignore").write_text("ignored.py\n", encoding="utf-8")
+    (tmp_path / "tracked.py").write_text("tracked\n", encoding="utf-8")
+    (tmp_path / "untracked.cc").write_text("untracked\n", encoding="utf-8")
+    (tmp_path / "ignored.py").write_text("ignored\n", encoding="utf-8")
+    subprocess.run(["git", "add", ".gitignore", "tracked.py"], cwd=tmp_path, check=True)
+
+    assert set(VERIFY.repository_files(tmp_path)) == {".gitignore", "tracked.py", "untracked.cc"}
 
 
 def test_research_boundary_rejects_yaml_reference(tmp_path: Path) -> None:

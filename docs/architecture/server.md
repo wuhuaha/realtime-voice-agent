@@ -111,6 +111,8 @@ LiveKit `AgentSession` 是 VAD、STT、EOU、interruption、turn 和 response �
 
 - `xiaozhi` binding：headers、hello/control JSON、session state、profile commit 和 close mapping。
 - `wss-opus-v1`：WebSocket binary framing、Opus decode/encode、队列和 media age。
+- `rva` binding：`session.open/opened`、typed WSS media、transcript/response、exact cancel 和 generation fence。
+- `wss-opus-v2`：共享 32-byte media header、session/media identity、directional sequence 和 generation admission。
 - `udp-opus-gcm-v1`：grant、socket/session map、AEAD、replay、source pin、reorder、expiry 和 stats。
 - 所有 profile 对上暴露一致的 bounded audio/control port；不得把 WebSocket 或 `asyncio.DatagramTransport`
   泄漏到 Agent application。
@@ -147,29 +149,11 @@ LiveKit `AgentSession` 是 VAD、STT、EOU、interruption、turn 和 response �
 device playout proxy、interrupt tail、queue depth/drop、UDP auth/replay/loss/late、event-loop lag、CPU、RSS、
 provider error/429/timeout。日志不得替代 metrics，也不得记录 token、key、原始音频或 provider 原始错误体。
 
-## 8. 现状声明
+## 8. 实现状态
 
-Server 主实现 commit 为 `fca8de8`，readiness repair 为 `259aeee`，lifecycle repair 为 `d2fa0ca`。该历史快照启用
-Redis 的完整 pytest 基线为 `179 passed`。当前工作树 Server Ruff 通过；使用 WSL Redis
-`127.0.0.1:6379/15` 的完整 suite 为 `189 passed`、`0 skipped`，覆盖 atomic lease/fencing、heartbeat/drain 并发、
-跨 Director 实例、Redis-backed `jti` 单次消费（含重建 service/store 后 replay 拒绝）及 Windows 双 Worker Redis
-进程用例。该完整 suite 曾有一次 Worker 2 readiness 15 秒超时；单项复跑与后续完整 suite 均通过，不据此提升
-容量或长稳等级。
+Director 已支持按 `control_protocol` 选择 Xiaozhi 或 RVA binding；grant 绑定 Worker、device、session epoch、
+fencing token、profiles、control protocol、expiry 和单次 `jti`。Worker 的 legacy/RVA registry 共用 process
+admission，并聚合 active lease、release、revoke 和 heartbeat。
 
-`259aeee` 新增 coordination heartbeat readiness 和单向 drain contract；`d2fa0ca` 将 public Worker endpoint
-收紧为绝对 `ws(s)://host/v1/xiaozhi`（production 仅 `wss://`），并修复 launcher process identity、停止确认与
-失败 manifest 保留；launcher 精确 tick 路径 stop/start 已实测通过。Ignored `.env` 下真实进程保持 Director
-`0.0.0.0:8079`、Worker `0.0.0.0:8080`、UDP `0.0.0.0:8092`，Redis 与 provider TCP readiness 通过。
-
-Host synthetic Chinese 经真实 Director grant、WSS control 和 UDP Opus/GCM 完成 real-provider media E2E：
-FunASR 返回 final（STT duration 约 480 ms），DeepSeek HTTP 200（单次 TTFT 约 9876 ms），remote CosyVoice
-HTTP 200（单次 TTFB 约 594 ms），并产生 downlink audio。以上为单次 host 测量，不能外推为 SLO，也不是
-ESP32 acoustic E2E。
-
-公网评测部署使用 Director `http://182.254.219.7:8079`、Worker `ws://182.254.219.7:8082/v1/xiaozhi`、UDP
-`182.254.219.7:8093`、Redis `127.0.0.1:6380` 和可配置 capacity `5`。公网 readiness/bootstrap、host WSS
-real-provider E2E 和 host UDP authenticated probe 均通过；WSS host 轮次得到 ASR“你好，请用一句话介绍一下你自己。”、
-字幕、105 个下行包，整轮 12.701 秒。`0014` 前 `cb544...` 固件也经该 Director 完成 WSS 真机闭环：handshake
-约 160 ms，ASR/字幕/TTS/playout 成功，350 playback frames underrun 为 0。当前 `61542...` 又独立完成电脑
-TTS 唤醒、Director/WSS、AFE AEC、ASR/字幕/TTS/playout 与状态往返，100 帧 underrun 0、max write 62.3 ms，
-无 ERROR/panic/WDT。上述单轮值不外推为 SLO；当前 artifact UDP HIL、正式声学、20 轮和 30 分钟仍为 `not_run`。
+`/v1/voice`、RVA WSS binding/runtime、strict parser、Opus、bounded queues、transcript/response 和 exact cancel 已有
+unit/contract evidence。真实 provider、部署和设备结论只在 [Release readiness](../quality/release-readiness.md) 更新。

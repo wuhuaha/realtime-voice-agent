@@ -93,7 +93,70 @@ jobs:
           tests/e2e/test_horizontal_scale_processes.py
           -k "run_local or windows_job_supervisor"
 
-  production-source-contract:
+  native-firmware-host-contracts:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify native firmware composition
+        run: test -f firmware/apps/voice_terminal/main/app_main.cc
+      - name: Install native host contract dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libcjson-dev
+      - name: Build and run native host contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          out="$(mktemp -d)"
+          trap 'rm -rf "$out"' EXIT
+          g++ -std=c++17 -Wall -Wextra -Werror -O2 \
+            -I firmware/components/device_config/include \
+            firmware/components/device_config/device_config.cc \
+            firmware/components/device_config/host_tests/device_config_test.cc \
+            -o "$out/device_config_test"
+          "$out/device_config_test"
+          g++ -std=c++17 -Wall -Wextra -Werror -O2 \
+            -I firmware/components/audio_pipeline/include \
+            firmware/components/audio_pipeline/audio_pipeline.cc \
+            firmware/components/audio_pipeline/host_tests/audio_pipeline_test.cc \
+            -o "$out/audio_pipeline_test"
+          "$out/audio_pipeline_test"
+          g++ -std=c++17 -Wall -Wextra -Werror -O2 \
+            -I firmware/components/ui_lvgl/include \
+            firmware/components/ui_lvgl/ui_reducer.cc \
+            firmware/components/ui_lvgl/host_tests/ui_reducer_test.cc \
+            -o "$out/ui_reducer_test"
+          "$out/ui_reducer_test"
+          g++ -std=c++17 -fno-exceptions -Wall -Wextra -Werror -O2 -pthread \
+            -I firmware/components/voice_protocol/include \
+            -I firmware/components/transport_wss/include \
+            -I /usr/include/cjson \
+            firmware/components/voice_protocol/control.cc \
+            firmware/components/voice_protocol/media_header.cc \
+            firmware/components/transport_wss/wss_owner.cc \
+            firmware/components/transport_wss/wss_session.cc \
+            firmware/components/transport_wss/host_tests/wss_contract_test.cc \
+            -lcjson -o "$out/wss_contract_test"
+          "$out/wss_contract_test"
+          g++ -std=c++20 -Wall -Wextra -Werror -O2 -pthread \
+            -I firmware/components/transport_udp/include \
+            -I firmware/components/voice_contracts/include \
+            firmware/components/voice_contracts/udp_wire.cc \
+            firmware/components/transport_udp/replay_window.cc \
+            firmware/components/transport_udp/jitter_buffer.cc \
+            firmware/components/transport_udp/playout_queue.cc \
+            firmware/components/transport_udp/udp_session.cc \
+            firmware/components/transport_udp/host_tests/udp_session_test.cc \
+            -o "$out/udp_session_test"
+          "$out/udp_session_test"
+          g++ -std=c++20 -Wall -Wextra -Werror -O2 -pthread \
+            -I firmware/components/transport_udp/include \
+            firmware/components/transport_udp/playout_queue.cc \
+            firmware/components/transport_udp/host_tests/playout_queue_test.cc \
+            -o "$out/playout_queue_test"
+          "$out/playout_queue_test"
+
+  legacy-firmware-rollback-contracts:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -101,20 +164,17 @@ jobs:
         with:
           enable-cache: true
       - run: uv sync --locked --dev
-      - name: Parse PowerShell scripts
+      - name: Parse rollback PowerShell scripts
         shell: pwsh
         run: |
           $errors = @()
-          Get-ChildItem firmware -Recurse -Filter *.ps1 | ForEach-Object {
+          Get-ChildItem firmware/targets/lichuang-dev -Recurse -Filter *.ps1 | ForEach-Object {
             [void][Management.Automation.Language.Parser]::ParseFile($_.FullName, [ref]$null, [ref]$errors)
           }
           if ($errors.Count -gt 0) { $errors | Format-List; exit 1 }
-      - name: Run firmware host contracts
-        shell: pwsh
-        run: ./firmware/device/scripts/verify-component-boundaries.ps1
-      - name: Verify pinned production firmware inputs (not a clean firmware build)
+      - name: Verify optional Xiaozhi rollback inputs
         shell: pwsh
         run: ./firmware/targets/lichuang-dev/scripts/materialize-upstream.ps1 -VerifyInputsOnly
-      - name: Verify ignored production firmware configuration handling
+      - name: Verify ignored rollback configuration handling
         shell: pwsh
         run: ./firmware/targets/lichuang-dev/scripts/test-assert-generated-config-contract.ps1

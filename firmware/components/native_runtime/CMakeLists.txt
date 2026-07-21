@@ -1,0 +1,29 @@
+idf_component_register(
+    SRCS
+        "config_adapters.cc"
+        "director_bootstrap.cc"
+        "opus_codec.cc"
+        "udp_socket_port.cc"
+        "voice_runtime.cc"
+    INCLUDE_DIRS "include"
+    REQUIRES
+        audio_frontend_esp_sr
+        audio_pipeline
+        device_config
+        esp_event
+        esp_http_client
+        esp_netif
+        esp_wifi
+        espressif__esp-sr
+        json
+        lwip
+        nvs_flash
+        transport_udp
+        transport_wss
+        voice_contracts
+        voice_core
+    PRIV_REQUIRES
+        espressif__esp_audio_codec
+        espressif__esp_audio_effects
+        mbedtls
+)

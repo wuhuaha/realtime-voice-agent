@@ -76,7 +76,7 @@ async def test_funasr_maps_online_replacement_and_offline_final() -> None:
     config = FunASRStreamConfig(
         url="ws://funasr.test",
         queue_max_chunks=2,
-        hotwords=("LiveKit", "小智"),
+        hotwords=("LiveKit", "语音助手"),
     )
     stream = FunASRStream(config, websocket_factory=lambda url, timeout: fake_factory(socket, url, timeout))
     await stream.start()
@@ -88,7 +88,7 @@ async def test_funasr_maps_online_replacement_and_offline_final() -> None:
     assert initial["encoder_chunk_look_back"] == 4
     assert initial["decoder_chunk_look_back"] == 0
     assert initial["itn"] is True
-    assert initial["hotwords"] == "LiveKit 小智"
+    assert initial["hotwords"] == "LiveKit 语音助手"
 
     stream.push_audio(b"\x01\x00")
     await socket.incoming.put(json.dumps({"mode": "2pass-online", "text": "我想问"}))
@@ -246,7 +246,7 @@ async def test_standalone_funasr_pads_tail_and_maps_cumulative_interim_and_full_
     config = FunASRStreamConfig(
         url="ws://standalone-funasr.test/v1/asr/stream",
         protocol=FunASRProtocol.STANDALONE,
-        hotwords=("LiveKit", "小智"),
+        hotwords=("LiveKit", "语音助手"),
     )
     stream = StandaloneFunASRStream(
         config,
@@ -282,7 +282,7 @@ async def test_standalone_funasr_pads_tail_and_maps_cumulative_interim_and_full_
         "channels": 1,
         "codec": "pcm16le",
         "language": "zh",
-        "hotwords": ["LiveKit", "小智"],
+        "hotwords": ["LiveKit", "语音助手"],
     }
     assert socket.sent[1] == b"a" * 1600 + bytes(320)
     assert json.loads(str(socket.sent[2])) == {"type": "finish"}

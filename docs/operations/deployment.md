@@ -99,17 +99,6 @@ Active turn 不迁移。设备在关闭后 fresh bootstrap，新 Worker 使用�
 
 ## 9. 当前发布状态
 
-`ol` 公网评测机已使用 user systemd 启动 Director `0.0.0.0:8079`、Worker `0.0.0.0:8082` 和 UDP
-`0.0.0.0:8093`；Redis `7.4.2-alpine` 仅绑定 `127.0.0.1:6380`，Worker capacity 为可配置值 `5`。当前入口为
-`http://182.254.219.7:8079` 与 `ws://182.254.219.7:8082/v1/xiaozhi`，没有域名和受信 TLS，只能作为公网
-评测环境，不能标记 production ready。部署私密 `.env`、远端覆盖文件和 systemd unit 均不进入 Git。
-
-远端 localhost 与外部网络均通过 Director/Worker readiness；Director 使用 Redis 并成功签发 WSS/UDP grant。
-Host synthetic Chinese 经公网 WSS 完成 FunASR final、DeepSeek、CosyVoice 和 105 个 downlink Opus packet，
-总观察约 12.701 秒；公网 `8093/udp` authenticated probe/ACK 也已通过。`0014` 前 `cb544...` 固件曾完成真机
-ASR、流式字幕、TTS 与播放，350 帧播放窗口 underrun 为 0。历史 initial-0014 `070cc...` 固件曾复验公网
-Director/WSS、真机 ASR 与流式字幕。当前 `61542...` 已独立完成电脑 TTS 唤醒、public Director/WSS、AFE AEC、
-ASR、字幕、TTS/playout 与状态往返，100 帧 underrun 0，无 ERROR/panic/WDT。
-
-当前固件 UI/触摸人工验收、最终固件 UDP provider 闭环、弱网、正式声学、20 轮、30 分钟、容量和 Redis HA/故障演练
-仍为 `not_run`。生产发布仍需 HTTPS/WSS、证书/域名、secret manager、入口限流和正式 release gate。
+当前版本尚未通过正式 release gate。目标环境必须提供 HTTPS/WSS、受信域名/证书、secret manager、入口限流、
+Redis durability/HA 策略和可观测性；临时主机地址、端口和本地 `.env` 不进入 Product 文档或 Git。精确门禁见
+[Release readiness](../quality/release-readiness.md)。

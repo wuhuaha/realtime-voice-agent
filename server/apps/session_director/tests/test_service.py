@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 from session_director.service import DirectorService, GrantConsumeError, NoCapacityError
 from session_director.store import InMemoryCoordinationStore, LeaseConflictError
-from voice_contracts import BootstrapRequest, GrantCodec, LeaseRenewal, WorkerHeartbeat
+from voice_contracts import BindingAdvertisement, BootstrapRequest, GrantCodec, LeaseRenewal, WorkerHeartbeat
 from voice_testkit import MutableClock
 
 
@@ -22,9 +22,10 @@ def heartbeat(worker_id: str, active: int, *, maximum: int = 5, draining: bool =
 async def test_two_workers_select_capacity_and_respect_drain() -> None:
     clock = MutableClock()
     store = InMemoryCoordinationStore()
+    codec = GrantCodec("test-signing-key-with-32-bytes", clock=clock)
     service = DirectorService(
         store,
-        GrantCodec("test-signing-key-with-32-bytes", clock=clock),
+        codec,
         heartbeat_ttl_seconds=30,
         lease_ttl_seconds=20,
         clock=clock,
@@ -38,6 +39,58 @@ async def test_two_workers_select_capacity_and_respect_drain() -> None:
     await service.set_draining("worker-b", True)
     with pytest.raises(NoCapacityError):
         await service.bootstrap(BootstrapRequest(device_id="device-2"))
+
+
+@pytest.mark.asyncio
+async def test_bootstrap_selects_endpoint_for_requested_control_binding() -> None:
+    clock = MutableClock()
+    store = InMemoryCoordinationStore()
+    codec = GrantCodec("test-signing-key-with-32-bytes", clock=clock)
+    service = DirectorService(
+        store,
+        codec,
+        heartbeat_ttl_seconds=30,
+        lease_ttl_seconds=20,
+        clock=clock,
+    )
+    await service.heartbeat(
+        WorkerHeartbeat(
+            worker_id="worker-a",
+            public_wss_url="ws://worker-a.test/v1/xiaozhi",
+            active_sessions=0,
+            profiles=("wss-opus-v1", "wss-opus-v2", "udp-opus-gcm-v1"),
+            bindings=(
+                BindingAdvertisement(
+                    control_protocol="xiaozhi-control-v1",
+                    public_wss_url="ws://worker-a.test/v1/xiaozhi",
+                    profiles=("wss-opus-v1", "udp-opus-gcm-v1"),
+                ),
+                BindingAdvertisement(
+                    control_protocol="rva-control-v1",
+                    public_wss_url="ws://worker-a.test/v1/voice",
+                    profiles=("wss-opus-v2", "udp-opus-gcm-v1"),
+                ),
+            ),
+        )
+    )
+
+    opened = await service.bootstrap(
+        BootstrapRequest(
+            device_id="device-rva",
+            control_protocol="rva-control-v1",
+            supported_profiles=("wss-opus-v2", "udp-opus-gcm-v1"),
+        )
+    )
+    claims = codec.verify(
+        opened.connect_grant,
+        worker_id="worker-a",
+        device_id="device-rva",
+    )
+
+    assert opened.worker_wss_url == "ws://worker-a.test/v1/voice"
+    assert opened.control_protocol == "rva-control-v1"
+    assert opened.allowed_profiles == ("wss-opus-v2", "udp-opus-gcm-v1")
+    assert claims.control_protocol == "rva-control-v1"
 
 
 @pytest.mark.asyncio

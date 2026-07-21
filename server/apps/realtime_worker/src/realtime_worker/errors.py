@@ -2,7 +2,7 @@
 
 
 class ConfigurationError(ValueError):
-    """A required local setting is absent or incompatible with the locked prototype."""
+    """A required runtime setting is absent or incompatible."""
 
 
 class ProviderError(RuntimeError):

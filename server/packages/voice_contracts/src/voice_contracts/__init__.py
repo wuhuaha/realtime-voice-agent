@@ -1,5 +1,6 @@
 from .grants import GrantCodec, GrantError
 from .models import (
+    BindingAdvertisement,
     BootstrapRequest,
     BootstrapResponse,
     ConnectGrantClaims,
@@ -17,6 +18,7 @@ from .models import (
 __all__ = [
     "BootstrapRequest",
     "BootstrapResponse",
+    "BindingAdvertisement",
     "ConnectGrantClaims",
     "DrainRequest",
     "GrantCodec",

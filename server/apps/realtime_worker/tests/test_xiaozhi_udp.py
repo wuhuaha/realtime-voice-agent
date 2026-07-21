@@ -21,6 +21,7 @@ from realtime_worker.bindings.xiaozhi_udp import (
     UDP_FLAG_PROBE_ACK,
     UDP_HEADER_BYTES,
     UDP_MAX_PAYLOAD_BYTES,
+    UDP_MAX_SEQUENCE_FORWARD_JUMP,
     ReplayWindow,
     UdpMediaError,
     UdpMediaGateway,
@@ -93,6 +94,43 @@ def test_replay_window_accepts_bounded_reorder_and_rejects_duplicates() -> None:
     assert not window.can_accept(4)
     window.commit(70)
     assert not window.can_accept(2)
+
+
+def test_replay_window_enforces_canonical_maximum_forward_jump() -> None:
+    window = ReplayWindow()
+    window.commit(0)
+    assert window.can_accept(UDP_MAX_SEQUENCE_FORWARD_JUMP)
+    assert not window.can_accept(UDP_MAX_SEQUENCE_FORWARD_JUMP + 1)
+
+
+@pytest.mark.asyncio
+async def test_udp_gateway_rejects_nonzero_initial_probe_without_binding_source() -> None:
+    gateway = UdpMediaGateway(
+        bind_host="127.0.0.1",
+        bind_port=0,
+        advertised_host="127.0.0.1",
+        lifetime_seconds=60,
+        probe_timeout_seconds=1,
+        queue_size=8,
+        reorder_wait_seconds=0.05,
+    )
+    await gateway.start()
+    session = gateway.create_session(lambda *_: asyncio.sleep(0), lambda exc: None)
+    grant = session.grant.as_control_payload()
+    endpoint = (str(grant["server"]), int(grant["port"]))
+    loop = asyncio.get_running_loop()
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as udp:
+        udp.setblocking(False)
+        await loop.sock_sendto(
+            udp,
+            _packet(grant, flags=UDP_FLAG_PROBE, sequence=1, payload=b""),
+            endpoint,
+        )
+        with pytest.raises(TimeoutError):
+            await asyncio.wait_for(loop.sock_recvfrom(udp, 1500), timeout=0.05)
+    assert session._source is None  # noqa: SLF001
+    assert session.stats.invalid == 1
+    await gateway.close()
 
 
 def test_packet_header_rejects_length_mismatch_before_aead() -> None:

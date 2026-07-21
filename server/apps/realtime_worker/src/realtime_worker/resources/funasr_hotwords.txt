@@ -3,4 +3,4 @@ FunASR
 CosyVoice
 DeepSeek
 ESP32
-小智
+语音助手

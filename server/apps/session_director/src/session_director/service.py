@@ -78,10 +78,14 @@ class DirectorService:
         now = self._clock()
         workers = await self._store.list_workers(now=now)
         expires_at = now + self._lease_ttl_seconds
-        candidates = self._candidate_workers(workers, request.supported_profiles)
+        candidates = self._candidate_workers(
+            workers,
+            request.supported_profiles,
+            request.control_protocol,
+        )
         lease = None
-        selected: tuple[WorkerSnapshot, tuple[str, ...]] | None = None
-        for worker, profiles in candidates:
+        selected: tuple[WorkerSnapshot, str, tuple[str, ...]] | None = None
+        for worker, public_wss_url, profiles in candidates:
             try:
                 lease = await self._store.acquire_route(
                     tenant_id=request.tenant_id,
@@ -95,11 +99,11 @@ class DirectorService:
                 )
             except WorkerCapacityError:
                 continue
-            selected = (worker, profiles)
+            selected = (worker, public_wss_url, profiles)
             break
         if lease is None or selected is None:
             raise NoCapacityError("all matching workers reached their admission limit")
-        worker, profiles = selected
+        worker, public_wss_url, profiles = selected
         claims = ConnectGrantClaims(
             tenant_id=request.tenant_id,
             device_id=request.device_id,
@@ -107,17 +111,19 @@ class DirectorService:
             session_epoch=lease.session_epoch,
             fencing_token=lease.fencing_token,
             profiles=profiles,
+            control_protocol=request.control_protocol,
             iat=now,
             exp=expires_at,
             jti=f"jti-{secrets.token_hex(16)}",
         )
         return BootstrapResponse(
             worker_id=worker.worker_id,
-            worker_wss_url=worker.public_wss_url,
+            worker_wss_url=public_wss_url,
             connect_grant=self._grant_codec.issue(claims),
             session_epoch=lease.session_epoch,
             fencing_token=lease.fencing_token,
             allowed_profiles=profiles,
+            control_protocol=request.control_protocol,
             expires_at=expires_at,
         )
 
@@ -126,13 +132,20 @@ class DirectorService:
 
     @staticmethod
     def _candidate_workers(
-        workers: tuple[WorkerSnapshot, ...], requested_profiles: tuple[str, ...]
-    ) -> tuple[tuple[WorkerSnapshot, tuple[str, ...]], ...]:
-        candidates: list[tuple[WorkerSnapshot, tuple[str, ...]]] = []
+        workers: tuple[WorkerSnapshot, ...], requested_profiles: tuple[str, ...],
+        control_protocol: str,
+    ) -> tuple[tuple[WorkerSnapshot, str, tuple[str, ...]], ...]:
+        candidates: list[tuple[WorkerSnapshot, str, tuple[str, ...]]] = []
         for worker in workers:
-            allowed = tuple(profile for profile in requested_profiles if profile in worker.profiles)
+            binding = next(
+                (item for item in worker.resolved_bindings() if item.control_protocol == control_protocol),
+                None,
+            )
+            if binding is None:
+                continue
+            allowed = tuple(profile for profile in requested_profiles if profile in binding.profiles)
             if worker.healthy and not worker.draining and worker.available_slots > 0 and allowed:
-                candidates.append((worker, allowed))
+                candidates.append((worker, binding.public_wss_url, allowed))
         if not candidates:
             raise NoCapacityError("no ready worker supports the requested profiles")
         return tuple(

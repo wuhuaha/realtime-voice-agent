@@ -4,7 +4,7 @@
 
 ```text
 apps/session_director   稳定 bootstrap、worker registry、capacity、lease/fencing、grant、drain
-apps/realtime_worker   Xiaozhi WSS/UDP、roomless LiveKit Agent、FunASR/DeepSeek/TTS
+apps/realtime_worker   RVA WSS/UDP、roomless LiveKit Agent、FunASR/DeepSeek/TTS
 packages/voice_contracts  Director/Worker 边界模型与 HMAC grant
 packages/voice_testkit    确定性测试时钟和后续 host fake
 ```
@@ -58,7 +58,8 @@ GET  /health/ready
 Worker API：
 
 ```text
-WS   /v1/xiaozhi
+WS   /v1/voice
+WS   /v1/xiaozhi  (legacy compatibility only)
 POST /internal/v1/drain
 GET  /health/live
 GET  /health/ready
@@ -71,4 +72,5 @@ Worker兼容实验室共享 token，也接受 Director 签发的 worker/device/s
 绑定 grant。Worker 连接前通过 Director 在 shared coordination store 原子消费 grant；WSS和所选 UDP media
 始终由同一 worker持有。
 
-真实 provider、真机、声学、弱网、公网和长稳不属于默认 pytest，未显式运行时均为 `not_run`。
+真实 provider、真机、声学、弱网、公网和长稳不属于默认 pytest，未显式运行时均为 `not_run`。当前 Server
+完整 suite 与集成状态见 [Release readiness](../docs/quality/release-readiness.md)。

@@ -1,18 +1,15 @@
-# Firmware target components
+# Firmware headless contract harness
 
-本目录是 non-release component-extraction prototype，不是当前可发布固件。唯一 production composition 位于
-`firmware/targets/lichuang-dev/`，由固定 Xiaozhi upstream 与仓内 overlay 组成。
+本目录是独立的 ESP-IDF headless 验证工程，不是 production firmware composition。正式应用入口位于
+`firmware/apps/voice_terminal`，共享的 production components 位于 `firmware/components`。
 
-现有两个 component 有实际 contract 用途：
+该 harness 只链接：
 
-- `voice_contracts`：严格解析 profile 名称，并提供 `udp-opus-gcm-v1` 的 typed v1 header、
-  datagram framing 与 nonce contract；
-- `voice_core`：约束 fresh session generation、单 active media owner、profile/owner 匹配、
-  playback generation 单调推进，以及 generation-bound callback/send 和 close 时立即撤销 owner。
+- `voice_contracts`：transport profile、typed UDP header、datagram framing 与 nonce contract；
+- `voice_core`：session、media owner、playback generation、cancel 与 close lifecycle。
 
-`TransportPort`、`AudioPort` 与 `EventSink` 只定义 session orchestration 所需的最小 port；当前没有
-concrete audio 或 transport。二者均为纯 C++17，不依赖 ESP-IDF、board、audio runtime、network 或
-LVGL。`main/` 只用于 ESP-IDF headless compile smoke，不做设备 bring-up。
+它用于验证核心组件不依赖 board、audio、network、LVGL 或具体 transport runtime。`main/` 仅提供 ESP-IDF
+compile/link smoke，不能作为设备固件烧录，也不能证明显示、触摸、网络、音频或声学能力。
 
 验证：
 
@@ -21,6 +18,4 @@ LVGL。`main/` 只用于 ESP-IDF headless compile smoke，不做设备 bring-up�
 ./scripts/build-headless.ps1 -Clean
 ```
 
-第一条是 host/source contract；第二条只证明 ESP-IDF `esp32s3` 编译链接和 image size，
-不证明 production target 功能、开发板启动或外设可用。仓级状态见
-[../MIGRATION_STATUS.md](../MIGRATION_STATUS.md)。
+当前发布证据与未运行门禁统一见 [Release readiness](../../docs/quality/release-readiness.md)。

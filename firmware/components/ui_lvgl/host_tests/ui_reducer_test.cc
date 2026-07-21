@@ -1,0 +1,57 @@
+#include <cassert>
+#include <string>
+
+#include "ui_lvgl/ui_state.h"
+
+using namespace rva::ui;
+
+int main() {
+    UiState state;
+    state.connection = ConnectionState::kOnline;
+
+    auto event = Reduce(&state, {.kind = CommandKind::kMicPressed, .value = 0, .text = {}});
+    assert(event.has_value() && event->kind == EventKind::kStartConversation);
+
+    state.connection = ConnectionState::kOffline;
+    event = Reduce(&state, {.kind = CommandKind::kMicPressed, .value = 0, .text = {}});
+    assert(event.has_value() && event->kind == EventKind::kStartConversation);
+
+    state.conversation = ConversationState::kListening;
+    event = Reduce(&state, {.kind = CommandKind::kMicPressed, .value = 0, .text = {}});
+    assert(event.has_value() && event->kind == EventKind::kStopConversation);
+
+    event = Reduce(&state, {.kind = CommandKind::kTransportPressed, .value = 0, .text = {}});
+    assert(!event.has_value());
+    assert(state.preferred_transport == Transport::kWss);
+
+    state.conversation = ConversationState::kIdle;
+    event = Reduce(&state, {.kind = CommandKind::kTransportPressed, .value = 0, .text = {}});
+    assert(event.has_value() && event->kind == EventKind::kSelectTransport);
+    assert(event->transport == Transport::kUdp);
+
+    const std::string chinese = "中文语音";
+    assert(TruncateUtf8(chinese, 4) == "中");
+
+    Reduce(&state, {.kind = CommandKind::kAppendAsrText, .value = 0,
+                    .text = std::string(kMaxTranscriptBytes, 'a') + chinese});
+    assert(state.asr_text.size() <= kMaxTranscriptBytes);
+
+    event = Reduce(&state, {.kind = CommandKind::kSettingsPressed, .value = 0, .text = {}});
+    assert(event.has_value() && event->kind == EventKind::kRequestWifiScan);
+    assert(state.page == Page::kWifi);
+    Reduce(&state, {.kind = CommandKind::kAddWifiNetwork,
+                    .value = static_cast<uint8_t>(-42) | 0x100U,
+                    .text = "office"});
+    Reduce(&state, {.kind = CommandKind::kAddWifiNetwork,
+                    .value = static_cast<uint8_t>(-70),
+                    .text = "guest"});
+    Reduce(&state, {.kind = CommandKind::kAddWifiNetwork,
+                    .value = static_cast<uint8_t>(-20),
+                    .text = "office"});
+    assert(state.wifi_networks.size() == 2);
+    assert(state.wifi_networks.front().ssid == "office");
+    assert(state.wifi_networks.front().secured);
+    assert(state.wifi_networks.back().ssid == "guest");
+    assert(!state.wifi_networks.back().secured);
+    return 0;
+}

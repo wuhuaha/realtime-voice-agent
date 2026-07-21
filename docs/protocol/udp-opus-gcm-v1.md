@@ -85,11 +85,6 @@ max media age、probe time 和 generation drops。不得记录 key、完整 data
 
 ## 9. 验证边界
 
-Python/C++ canonical fixtures、non-zero KEEPALIVE timestamp 和 source/lifecycle contract 已有 host 证据。Server
-`fca8de8` + repair `259aeee` 在真实 Worker UDP socket `0.0.0.0:8092` 上以 synthetic Chinese 完成 AES-GCM
-probe、Opus uplink、真实 provider 链路和 downlink audio。
-
-历史 firmware 的 UDP GCM probe、600+ Opus uplink 和诊断 provider/downlink 路径已有 HIL。当前公网 Worker
-`182.254.219.7:8093` 已从外部网络完成 authenticated probe/ACK，证明公网 UDP endpoint 可达；这不替代当前
-final artifact 的 UDP provider HIL。弱网收益、正式声学、20 轮和 30 分钟均为 `not_run`，因此 `auto` 仍保守
-选择 WSS，UDP 不成为无条件默认 profile。
+必须覆盖 canonical fixtures、tamper、replay、forward jump、wrong source、probe、generation、late/loss/PLC、
+teardown 和重连。Host/contract 不能替代当前 native artifact 的双向媒体、弱网、声学和长稳 HIL；状态见
+[Release readiness](../quality/release-readiness.md)。门禁通过前 UDP 不成为无条件默认 profile。

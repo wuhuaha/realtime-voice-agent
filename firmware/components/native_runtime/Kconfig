@@ -1,0 +1,43 @@
+menu "RVA native runtime"
+
+config RVA_DIRECTOR_BOOTSTRAP_URL
+    string "Director bootstrap URL"
+    default ""
+    help
+        Provision the full http(s) URL ending in /v1/session/bootstrap.
+
+config RVA_TENANT_ID
+    string "Tenant identifier"
+    default "default"
+
+config RVA_DEVICE_BOOTSTRAP_TOKEN
+    string "Director device bootstrap token"
+    default ""
+    help
+        Keep empty in tracked sdkconfig.defaults; inject during provisioning.
+
+config RVA_SNTP_SERVER
+    string "SNTP server used for TLS and UDP grant expiry"
+    default "pool.ntp.org"
+
+config RVA_WIFI_PRIMARY_SSID
+    string "Provisioned primary Wi-Fi SSID"
+    default ""
+
+config RVA_WIFI_PRIMARY_PASSWORD
+    string "Provisioned primary Wi-Fi password"
+    default ""
+
+config RVA_WIFI_FALLBACK_SSID
+    string "Provisioned fallback Wi-Fi SSID"
+    default ""
+
+config RVA_WIFI_FALLBACK_PASSWORD
+    string "Provisioned fallback Wi-Fi password"
+    default ""
+
+config RVA_ENABLE_UI
+    bool "Start the optional LVGL UI hook"
+    default n
+
+endmenu

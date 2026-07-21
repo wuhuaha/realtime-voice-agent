@@ -27,6 +27,8 @@ def grant(
     jti: str = "jti-1",
     fencing_token: int = 3,
     session_epoch: str = "epoch-1",
+    control_protocol: str = "xiaozhi-control-v1",
+    profiles: tuple[str, ...] = ("wss-opus-v1",),
 ) -> str:
     now = time.time()
     claims = ConnectGrantClaims(
@@ -35,7 +37,8 @@ def grant(
         worker_id=worker_id,
         session_epoch=session_epoch,
         fencing_token=fencing_token,
-        profiles=("wss-opus-v1",),
+        profiles=profiles,
+        control_protocol=control_protocol,
         iat=now,
         exp=exp if exp is not None else now + 30,
         jti=jti,
@@ -117,6 +120,36 @@ def test_lab_compatibility_does_not_require_director_consumption() -> None:
     assert accepted.context.expires_at is None
 
 
+def test_control_protocol_and_profile_are_bound_before_grant_consumption() -> None:
+    auth = WorkerAuthenticator(worker_settings())
+    token = grant(control_protocol="rva-control-v1", profiles=("wss-opus-v2",))
+
+    accepted = auth.verify(f"Bearer {token}", "device-1", control_protocol="rva-control-v1")
+
+    assert accepted is not None
+    assert accepted.context.control_protocol == "rva-control-v1"
+    assert accepted.context.allowed_profiles == ("wss-opus-v2",)
+    assert auth.verify(f"Bearer {token}", "device-1", control_protocol="xiaozhi-control-v1") is None
+
+
+def test_rva_lab_auth_only_grants_rva_wss_profile() -> None:
+    accepted = WorkerAuthenticator(worker_settings()).verify(
+        "Bearer lab-test-token",
+        "device-1",
+        control_protocol="rva-control-v1",
+    )
+
+    assert accepted is not None
+    assert accepted.context.allowed_profiles == ("wss-opus-v2",)
+
+
+def test_native_device_identity_rejects_non_ascii_principals() -> None:
+    from realtime_worker.auth import resolve_device_id
+
+    assert resolve_device_id("device-1", None) == "device-1"
+    assert resolve_device_id("device-一", None) is None
+
+
 def test_lab_compatibility_can_be_disabled() -> None:
     auth = WorkerAuthenticator(worker_settings().model_copy(update={"allow_lab_auth": False}))
     assert auth.verify("Bearer lab-test-token", "device-1") is None
@@ -147,6 +180,15 @@ def test_production_and_director_lifecycle_settings_fail_closed() -> None:
 def test_worker_public_url_rejects_invalid_wire_endpoint(public_url: str) -> None:
     with pytest.raises(ValueError, match="VOICE_WORKER_PUBLIC_WS_URL"):
         worker_settings().model_copy(update={"worker_public_ws_url": public_url}).validate_runtime()
+
+
+@pytest.mark.parametrize(
+    "public_url",
+    ["wss:not-an-authority", "https://worker.test/v1/voice", "wss://worker.test/wrong"],
+)
+def test_rva_public_url_rejects_invalid_wire_endpoint(public_url: str) -> None:
+    with pytest.raises(ValueError, match="VOICE_RVA_PUBLIC_WS_URL"):
+        worker_settings().model_copy(update={"rva_public_ws_url": public_url}).validate_runtime()
 
 
 @pytest.mark.asyncio
