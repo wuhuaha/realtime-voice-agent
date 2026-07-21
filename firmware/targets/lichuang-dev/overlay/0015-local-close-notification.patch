@@ -1,0 +1,131 @@
+diff --git a/main/protocols/websocket_protocol.cc b/main/protocols/websocket_protocol.cc
+index f50ccb1..fb139ea 100644
+--- a/main/protocols/websocket_protocol.cc
++++ b/main/protocols/websocket_protocol.cc
+@@ -347,12 +347,43 @@ void WebsocketProtocol::ResetUdpStateLocked() {
+     StoreSessionSnapshot(SessionSnapshot{});
+ }
+ 
++void WebsocketProtocol::NotifyAudioChannelClosed(uint32_t connection_generation) {
++    uint32_t notified_generation =
++        closed_notification_generation_.load(std::memory_order_acquire);
++    while (connection_generation > notified_generation) {
++        if (closed_notification_generation_.compare_exchange_weak(
++                notified_generation, connection_generation,
++                std::memory_order_acq_rel, std::memory_order_acquire)) {
++            ESP_LOGI(TAG, "Audio channel closed generation=%lu",
++                     static_cast<unsigned long>(connection_generation));
++            const auto channel_closed_callback = on_audio_channel_closed_;
++            if (channel_closed_callback != nullptr) {
++                channel_closed_callback();
++            }
++            return;
++        }
++    }
++}
++
+ void WebsocketProtocol::CloseAudioChannel(bool send_goodbye) {
+     (void)send_goodbye;  // Websocket doesn't need to send goodbye message
++    {
++        std::lock_guard<std::mutex> lock(control_owner_mutex_);
++        const auto websocket_owner = websocket_;
++        if (websocket_owner != nullptr && websocket_owner->IsReceiveTask()) {
++            Application::GetInstance().Schedule([this]() {
++                CloseAudioChannel(false);
++            });
++            return;
++        }
++    }
++
+     std::shared_ptr<VoiceUdpMedia> old_udp_media;
++    uint32_t closing_generation = 0;
+     {
+         std::lock_guard<std::mutex> lock(udp_media_mutex_);
+-        connection_generation_.fetch_add(1, std::memory_order_acq_rel);
++        closing_generation =
++            connection_generation_.fetch_add(1, std::memory_order_acq_rel);
+         old_udp_media = std::move(udp_media_);
+         ResetUdpStateLocked();
+     }
+@@ -360,28 +391,22 @@ void WebsocketProtocol::CloseAudioChannel(bool send_goodbye) {
+         old_udp_media->RequestStop();
+     }
+     std::shared_ptr<WebSocket> old_websocket;
+-    bool defer_websocket_close = false;
++    bool notify_channel_closed = false;
+     {
+         std::lock_guard<std::mutex> lock(control_owner_mutex_);
+-        const auto websocket_owner = websocket_;
+-        if (websocket_owner != nullptr && websocket_owner->IsReceiveTask()) {
+-            defer_websocket_close = true;
+-        } else {
+-            old_websocket = std::move(websocket_);
+-            websocket_generation_ = 0;
+-        }
++        notify_channel_closed =
++            websocket_ != nullptr && websocket_generation_ == closing_generation;
++        old_websocket = std::move(websocket_);
++        websocket_generation_ = 0;
+     }
+     old_udp_media.reset();
+-    if (defer_websocket_close) {
+-        Application::GetInstance().Schedule([this]() {
+-            CloseAudioChannel(false);
+-        });
+-        return;
+-    }
+     if (old_websocket != nullptr) {
+         old_websocket->Disconnect();
+     }
+     old_websocket.reset();
++    if (notify_channel_closed) {
++        NotifyAudioChannelClosed(closing_generation);
++    }
+ }
+ 
+ bool WebsocketProtocol::OpenAudioChannel() {
+@@ -573,7 +598,6 @@ bool WebsocketProtocol::OpenAudioChannel() {
+             return;
+         }
+         std::shared_ptr<VoiceUdpMedia> old_udp_media;
+-        std::function<void()> channel_closed_callback;
+         {
+             std::lock_guard<std::mutex> lock(udp_media_mutex_);
+             if (!IsCurrentConnectionLocked(connection_generation)) {
+@@ -584,15 +608,12 @@ bool WebsocketProtocol::OpenAudioChannel() {
+             old_udp_media = std::move(udp_media_);
+             ResetUdpStateLocked();
+             xEventGroupSetBits(event_group_handle_, WEBSOCKET_PROTOCOL_DISCONNECTED_EVENT);
+-            channel_closed_callback = on_audio_channel_closed_;
+         }
+         if (old_udp_media != nullptr) {
+             old_udp_media->RequestStop();
+         }
+         old_udp_media.reset();
+-        if (channel_closed_callback != nullptr) {
+-            channel_closed_callback();
+-        }
++        NotifyAudioChannelClosed(connection_generation);
+     });
+ 
+     {
+diff --git a/main/protocols/websocket_protocol.h b/main/protocols/websocket_protocol.h
+index f8bb052..764dccf 100644
+--- a/main/protocols/websocket_protocol.h
++++ b/main/protocols/websocket_protocol.h
+@@ -39,6 +39,7 @@ private:
+     bool udp_media_started_ = false;
+     uint32_t playback_generation_ = 1;
+     std::atomic<uint32_t> connection_generation_{0};
++    std::atomic<uint32_t> closed_notification_generation_{0};
+     mutable std::mutex control_owner_mutex_;
+     mutable std::mutex udp_media_mutex_;
+     int version_ = 1;
+@@ -50,6 +51,7 @@ private:
+     std::shared_ptr<WebSocket> LoadWebsocketOwner(
+         uint32_t connection_generation) const;
+     bool IsCurrentConnectionLocked(uint32_t connection_generation) const;
++    void NotifyAudioChannelClosed(uint32_t connection_generation);
+     void ResetUdpStateLocked();
+     static bool ParseExactUint32(const cJSON* value, uint32_t& output);
+     static std::string GetTransportMode();

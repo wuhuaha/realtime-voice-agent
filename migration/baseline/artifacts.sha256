@@ -27,6 +27,9 @@ cb5449fbf824ac5bae0041df774daf257d22e3193a3998b5fa567a04492719a4  public-directo
 070cc58f210fc9abbf6d8614c1404522f77c2572e8683aa4dcc9c8fed33ad739  ui-control-responsiveness-xiaozhi-local-config.bin@0x20000
 # Historical intermediate 0014 artifact superseded by the final graceful-stop semantics.
 9026f000a3603a5d5045a2a197cedb07e0fe23762ecfbf4c8884fcc170f3abf8  final-ui-control-lifecycle-xiaozhi-local-config.bin@0x20000
-# Current final 0014 graceful-stop artifact; app-only flashed to COM11 and hash verified on 2026-07-20.
+# Historical final 0014 graceful-stop artifact; app-only flashed to COM11 and hash verified on 2026-07-20.
 # The digest identifies an ignored local-configuration build and does not claim bit-level reproducibility.
 61542dad78a11a130263952e4148f9b7c70b1e8919e3f2ca192d21612e6716a3  final-graceful-stop-xiaozhi-local-config.bin@0x20000
+# Current 0015 local-close-notification artifact; app-only flashed to COM11 and hash verified on 2026-07-20.
+# The digest identifies an ignored local-configuration build and does not claim bit-level reproducibility.
+394fc4b380a3269aef424b5836d46d806457fa40c38249d3d8c57e3c45562aed  local-close-notification-xiaozhi-local-config.bin@0x20000

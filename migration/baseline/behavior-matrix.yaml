@@ -138,8 +138,20 @@ baseline:
     result: 2215/2215; 2970272 bytes; app remaining 28%; DIRAM 170991/341760; COM11 app hash verified; Director/WSS/AFE AEC/ASR/streaming subtitles passed; no panic/WDT
     note: Superseded by the final graceful-stop source semantics. Server observed FunASR, DeepSeek, remote CosyVoice and session_closed reason=user_initiated, but the close origin was not proven to be physical touch.
   - id: graceful-stop-final-firmware-build-flash
-    behavior: Current final 0014 graceful-stop clean build, app flash and public-path device smoke
+    behavior: Historical final 0014 graceful-stop clean build, app flash and public-path device smoke
     evidence: device_verified
     applies_to: 61542dad78a11a130263952e4148f9b7c70b1e8919e3f2ca192d21612e6716a3
     result: 2215/2215; 2970272 bytes; app remaining 28%; DIRAM 170991/341760; COM11 app hash verified; TTS wake; public Director/WSS; AFE AEC; ASR; streaming subtitles; listening-speaking-listening; 100 playback frames with 0 underruns; no ERROR/panic/WDT
-    note: The smoke is device_verified and public_path_verified for its stated scope. Physical AI visual, listening-button click, UDP HIL, formal acoustics, weak network, 20 turns and 30 minutes remain not_run.
+    note: The smoke is device_verified and public_path_verified for its stated scope. It exposed a missing local-close notification and is superseded by the 0015 artifact for listening-button stop behavior.
+  - id: local-close-notification-source-contract
+    behavior: 0015 local and remote WebSocket close paths share a generation-deduplicated Application notification after owner teardown
+    evidence: contract_verified
+    applies_to: a08c68f5f2d203fe40298e90535fb23a87e7dd76ab2ad2dbb045c7da91f702fe
+    result: receive-task close is deferred; local close revokes generation, stops media, disconnects and releases the WebSocket owner, then invokes channel_closed outside locks; duplicate local/remote notifications are fenced by generation
+    note: The focused source contract passed before the clean build.
+  - id: local-close-notification-current-firmware
+    behavior: Current 0015 firmware clean build, app flash and physical listening-button stop
+    evidence: device_verified
+    applies_to: 394fc4b380a3269aef424b5836d46d806457fa40c38249d3d8c57e3c45562aed
+    result: 2215/2215; 2970512 bytes; app remaining 28%; DIRAM 170991/341760; COM11 app hash verified; physical click logged Audio channel closed generation=8 followed by listening to idle
+    note: The ignored HIL log is .runtime/logs/firmware-394fc4b3-toggle-hil.log. Server interruption cleanup emitted non-blocking warnings (speech not done in time after interruption; Xiaozhi runner cleanup failed), so warning-free teardown is not claimed. AI visual, UDP HIL, formal acoustics, weak network, 20 turns and 30 minutes remain not_run.

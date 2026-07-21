@@ -107,6 +107,9 @@ files:
   - source_path: firmware/reference/xiaozhi-overlay/overlay/0014-ui-control-responsiveness.patch
     production_path: firmware/targets/lichuang-dev/overlay/0014-ui-control-responsiveness.patch
     sha256: ae8913666f6004d46af59e9cedcfb64956c7ee424af6a93bda51f77a4c1d0b92
+  - source_path: firmware/reference/xiaozhi-overlay/overlay/0015-local-close-notification.patch
+    production_path: firmware/targets/lichuang-dev/overlay/0015-local-close-notification.patch
+    sha256: a08c68f5f2d203fe40298e90535fb23a87e7dd76ab2ad2dbb045c7da91f702fe
   - source_path: firmware/reference/xiaozhi-overlay/overlay-managed/0003-http-request-header-redaction.patch
     production_path: firmware/targets/lichuang-dev/overlay-managed/0003-http-request-header-redaction.patch
     sha256: a8ed3b48c589ec12da1835fa4e320fd277e68ad632b162230a535b183a5185db
@@ -139,7 +142,7 @@ files:
     sha256: 0b4731cd39bfe91ecdf8918dd6e821cd9c845f206eb2cc825c08949b7fa0e41a
   - source_path: firmware/reference/xiaozhi-overlay/scripts/test-director-bootstrap-contract.ps1
     production_path: firmware/targets/lichuang-dev/scripts/test-director-bootstrap-contract.ps1
-    sha256: 5482e4cf61e856d782c0a6aebc4966d0222560ac51ecbe9fc8876a1ae2d952d6
+    sha256: b54b2086eedb956f045f2cc535c143e32482a1af5df08eeec69691c1b96efa50
   - source_path: firmware/reference/xiaozhi-overlay/scripts/test-ui-control-contract.ps1
     production_path: firmware/targets/lichuang-dev/scripts/test-ui-control-contract.ps1
     sha256: c874c25757b4a059aa0fa9e2fdf8440128f5f44f4345e860363d864ea7501104
@@ -161,6 +164,7 @@ traceability:
     - firmware/targets/lichuang-dev/scripts/test-director-bootstrap-contract.ps1
   websocket_owner_teardown:
     - firmware/targets/lichuang-dev/overlay/0013-websocket-owner-teardown.patch
+    - firmware/targets/lichuang-dev/overlay/0015-local-close-notification.patch
     - firmware/targets/lichuang-dev/overlay-managed/0008-websocket-disconnect-join.patch
   ui_control_responsiveness:
     - firmware/targets/lichuang-dev/overlay/0014-ui-control-responsiveness.patch

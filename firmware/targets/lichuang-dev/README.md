@@ -96,7 +96,7 @@ cold boot 后连接 Wi-Fi“广告位招租”并获得 `192.168.1.105`；displa
 wake model 初始化完成，观察窗口内无 panic/WDT。唤醒成功，WSS 握手约 20 ms；UDP GCM 首个
 authenticated probe 成功并进入 ready，随后观察到 600+ UDP Opus uplink packets，AEC 为 `VOIP_HIGH_PERF`。
 
-上述 HIL 只证明该历史 artifact 的烧录、bring-up、唤醒和上行 transport。当前 `0011..0014` 与 managed
+上述 HIL 只证明该历史 artifact 的烧录、bring-up、唤醒和上行 transport。历史 `0011..0014` 与 managed
 `0003..0008` composition 使用固定公网 Director 配置完成 ESP-IDF 5.5.2 clean build，app SHA-256 为
 `61542dad78a11a130263952e4148f9b7c70b1e8919e3f2ca192d21612e6716a3`，并完成 COM11 app-only 烧录与 hash
 verified。app 为 `2,970,272` bytes、partition 余量 28%，DIRAM 为 `170,991 / 341,760`（50.03%）。该精确
@@ -106,7 +106,16 @@ artifact 已由电脑 TTS 唤醒，完成公网 Director/WSS、AFE AEC、ASR“�
 `0014` 前 `cb544...` artifact 曾完成公网 TTS/playout 和 350 帧零 underrun。superseded `9026...` artifact 已完成
 公网 Director/WSS、AFE AEC、真机 ASR 与流式字幕，无 panic/WDT；Server 观察到 FunASR、DeepSeek、remote
 CosyVoice 和 `session_closed reason=user_initiated`，但无法确认关闭来源是物理触屏。这些证据不继承给当前
-`61542...`。当前 artifact 的屏上 Wi-Fi/endpoint 保存重启回读、UDP provider 闭环、UI/触摸人工验收、真人近讲
+`61542...`。该 artifact 暴露了本地主动关闭未通知 Application 的 lifecycle 缺口，不再代表当前点击关闭行为。
+
+当前 `0011..0015` composition 的 clean build 完成 `2215/2215`，app 为 `2,970,512` bytes，SHA-256 为
+`394fc4b380a3269aef424b5836d46d806457fa40c38249d3d8c57e3c45562aed`，partition 余量 28%，DIRAM 为
+`170,991 / 341,760`（50.03%）；已 app-only 烧录到 COM11 并 hash verified。物理点击聆听中的麦克风后，串口
+记录 `Audio channel closed generation=8`，随后状态机从 `listening` 进入 `idle`。对应忽略日志为
+`.runtime/logs/firmware-394fc4b3-toggle-hil.log`，该交互达到 `device_verified`。服务端仍有中断清理 warning，
+因此不能声明整个 teardown 无 warning。
+
+当前 artifact 的屏上 Wi-Fi/endpoint 保存重启回读、UDP provider 闭环、完整 UI 视觉验收、真人近讲
 20 轮、不同距离/
 double-talk 声学测试、弱网和 30 分钟长稳仍为 `not_run`。
 
@@ -114,5 +123,9 @@ double-talk 声学测试、弱网和 30 分钟长稳仍为 `not_run`。
 drain 改成每轮最多 4 包；toggle 先执行，停止时同轮跳过发送并清空/隔离旧 generation 上行。
 `test-ui-control-contract.ps1` 在 `idf build` 前验证具体函数块、文案、事件顺序、有界批处理、旧上行 fence 与
 禁止 unbounded `while`。当前
-clean build、boot 和 WSS 链路均包含该 patch，但物理触屏“AI”视觉与聆听按钮点击结束尚未由手指 HIL，仍为
-`not_run`，不得升级为 UI `device_verified`。
+clean build、boot 和 WSS 链路均包含该 patch；物理屏“AI”视觉仍为 `not_run`。
+
+`0015-local-close-notification.patch` 修复本地主动关闭先使 connection generation 失效、继而让远端 disconnect
+callback 被旧 generation fence 拒绝的问题。本地关闭在 WebSocket owner disconnect/release 后、锁外显式通知
+Application；本地与远端关闭共用 generation 去重入口，receive task 内关闭仍调度到主任务。focused contract、
+clean build 与物理点击 HIL 已通过。

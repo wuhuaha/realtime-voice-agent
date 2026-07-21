@@ -7,6 +7,7 @@ if (-not $Checkout) { $Checkout = Join-Path $repoRoot "external/xiaozhi-esp32" }
 
 $bootstrapPath = Join-Path $Checkout "main/protocols/voice_director_bootstrap.h"
 $websocketPath = Join-Path $Checkout "main/protocols/websocket_protocol.cc"
+$protocolHeaderPath = Join-Path $Checkout "main/protocols/websocket_protocol.h"
 $httpClientPath = Join-Path $Checkout "managed_components/78__esp-ml307/src/http_client.cc"
 $httpInterfacePath = Join-Path $Checkout "managed_components/78__esp-ml307/include/http.h"
 $tcpInterfacePath = Join-Path $Checkout "managed_components/78__esp-ml307/include/tcp.h"
@@ -23,6 +24,7 @@ $wifiStationPath = Join-Path $Checkout "managed_components/78__esp-wifi-connect/
 $wifiBoardPath = Join-Path $Checkout "main/boards/common/wifi_board.cc"
 $bootstrap = Get-Content -Raw -LiteralPath $bootstrapPath
 $websocket = Get-Content -Raw -LiteralPath $websocketPath
+$protocolHeader = Get-Content -Raw -LiteralPath $protocolHeaderPath
 $httpClient = Get-Content -Raw -LiteralPath $httpClientPath
 $httpInterface = Get-Content -Raw -LiteralPath $httpInterfacePath
 $tcpInterface = Get-Content -Raw -LiteralPath $tcpInterfacePath
@@ -133,7 +135,11 @@ foreach ($marker in @(
     'const auto websocket_owner = websocket_;',
     'websocket_owner->IsReceiveTask()',
     'Application::GetInstance().Schedule([this]()',
-    'old_websocket->Disconnect()'
+    'old_websocket->Disconnect()',
+    'void WebsocketProtocol::NotifyAudioChannelClosed(uint32_t connection_generation)',
+    'closed_notification_generation_.compare_exchange_weak(',
+    'NotifyAudioChannelClosed(closing_generation)',
+    'NotifyAudioChannelClosed(connection_generation)'
 )) {
     if (-not $websocket.Contains($marker)) {
         throw "WebSocket owner-task teardown contract missing: $marker"
@@ -153,8 +159,31 @@ $disconnectIndex = $closeSource.IndexOf(
     'old_websocket->Disconnect()', [StringComparison]::Ordinal)
 $releaseIndex = $closeSource.IndexOf(
     'old_websocket.reset()', [StringComparison]::Ordinal)
-if ($disconnectIndex -lt 0 -or $releaseIndex -le $disconnectIndex) {
-    throw "WebSocket owner must disconnect/join before releasing its final shared owner"
+$deferIndex = $closeSource.IndexOf(
+    'websocket_owner->IsReceiveTask()', [StringComparison]::Ordinal)
+$invalidateIndex = $closeSource.IndexOf(
+    'closing_generation =', [StringComparison]::Ordinal)
+$notifyIndex = $closeSource.IndexOf(
+    'NotifyAudioChannelClosed(closing_generation)', [StringComparison]::Ordinal)
+if ($deferIndex -lt 0 -or $invalidateIndex -le $deferIndex -or
+    $disconnectIndex -le $invalidateIndex -or $releaseIndex -le $disconnectIndex -or
+    $notifyIndex -le $releaseIndex) {
+    throw "WebSocket local close must defer receive-task teardown, revoke the generation, join/release the owner, then notify"
+}
+if (-not $protocolHeader.Contains('std::atomic<uint32_t> closed_notification_generation_{0};') -or
+    -not $protocolHeader.Contains('void NotifyAudioChannelClosed(uint32_t connection_generation);')) {
+    throw "WebSocket close notification generation fence is missing from the owner"
+}
+$notifyStart = $websocket.IndexOf(
+    'void WebsocketProtocol::NotifyAudioChannelClosed(uint32_t connection_generation)',
+    [StringComparison]::Ordinal)
+if ($notifyStart -lt 0 -or $notifyStart -ge $closeStart) {
+    throw "WebSocket close notification helper boundary is invalid"
+}
+$notifySource = $websocket.Substring($notifyStart, $closeStart - $notifyStart)
+if (-not $notifySource.Contains('closed_notification_generation_.compare_exchange_weak(') -or
+    -not $notifySource.Contains('channel_closed_callback();')) {
+    throw "WebSocket close notification must be generation-deduplicated and invoke the application callback"
 }
 if ($atUart.Contains('ESP_LOGI(TAG, ">> %.64s') -and
     -not $atUart.Contains('command.compare(0, 15, "AT+MHTTPHEADER=")')) {
