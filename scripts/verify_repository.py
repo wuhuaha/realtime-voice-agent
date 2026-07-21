@@ -157,6 +157,41 @@ def validate_firmware_composition(root: Path) -> list[str]:
     return errors
 
 
+def validate_research_boundary(root: Path, paths: tuple[str, ...]) -> list[str]:
+    errors: list[str] = []
+    decision = root / "docs" / "decisions" / "0004-research-production-boundary.md"
+    required_markers = (
+        "唯一 authoring source",
+        "不得读取 `voice-agent-research`",
+        "manifest不是运行配置",
+    )
+    if not decision.is_file():
+        errors.append("missing Product/Research boundary decision")
+    else:
+        content = decision.read_text(encoding="utf-8")
+        for marker in required_markers:
+            if marker not in content:
+                errors.append(f"Product/Research boundary marker missing: {marker}")
+
+    executable_suffixes = {".cmake", ".ps1", ".py", ".toml"}
+    for raw_path in paths:
+        normalized = raw_path.replace("\\", "/")
+        path = root / raw_path
+        if not path.is_file():
+            continue
+        if path.suffix.lower() not in executable_suffixes and path.name != "CMakeLists.txt":
+            continue
+        if normalized == "scripts/verify_repository.py":
+            continue
+        try:
+            content = path.read_text(encoding="utf-8").lower()
+        except UnicodeDecodeError:
+            continue
+        if "voice-agent-research" in content or "realtime-voice-agent-research" in content:
+            errors.append(f"Product executable/config references Research repository: {normalized}")
+    return errors
+
+
 def validate_protocol(root: Path) -> list[str]:
     errors: list[str] = []
     registry = yaml.safe_load((root / "protocol" / "registry.yaml").read_text(encoding="utf-8"))
@@ -183,11 +218,13 @@ def main() -> int:
     parser.add_argument("--root", type=Path, default=Path(__file__).resolve().parents[1])
     args = parser.parse_args()
     root = args.root.resolve()
+    paths = tracked_files(root)
     errors = [
-        *validate_tracked_paths(tracked_files(root)),
+        *validate_tracked_paths(paths),
         *validate_manifest(root),
         *validate_protocol(root),
         *validate_firmware_composition(root),
+        *validate_research_boundary(root, paths),
     ]
     if errors:
         for error in errors:

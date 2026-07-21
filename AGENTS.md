@@ -14,6 +14,14 @@
 - 固件保持 transport、audio、board、presentation 依赖方向；核心语音代码不得依赖 LVGL。
 - 不迁移或恢复 Direct WebRTC、AIMP、PCM DataChannel 和研究仓归档实现。
 
+## Product 与 Research 边界
+
+- 本仓是 production source、current wire、正式测试、部署和发布资产的唯一 authoring source。
+- Research 实验修改必须发生在本仓 Git worktree branch；禁止通过复制文件在两个仓库同时维护产品实现。
+- 本仓 CI、build、runtime和deployment不得读取 `voice-agent-research`、`realtime-voice-agent-research` 或其相对路径。
+- 候选被接受后，只把结论版ADR/schema/test提升到本仓；失败讨论、原始评测和大型artifact保留在Research/外部存储。
+- 跨仓 manifest只用于证据关联，不能成为应用配置、协议输入或运行时依赖。
+
 ## 安全
 
 - 不提交 `.env`、`.env.local`、Wi-Fi、token、API key、生成配置头、音频、日志、模型或固件制品。
@@ -37,3 +45,4 @@ device_verified | acoustic_verified | public_path_verified | measured | not_run`
 
 - 选择性暂存，提交保持单一意图；禁止把 external checkout、build、secret 或未知改动吞入提交。
 - 默认不 push、tag、发布或创建外部资源，除非用户另行授权。
+- 实验 branch进入main/release前必须删除一次性instrumentation，并完成与影响面匹配的Product验证。
