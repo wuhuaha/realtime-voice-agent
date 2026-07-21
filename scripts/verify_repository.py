@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import codecs
 import hashlib
 import json
 import re
@@ -22,6 +23,43 @@ SHA256_PATTERN = re.compile(r"^[0-9a-fA-F]{64}$")
 PRODUCTION_FIRMWARE_PATH = "firmware/targets/lichuang-dev"
 HISTORICAL_FIRMWARE_PATH = "firmware/reference/xiaozhi-overlay"
 FIRMWARE_DEPENDENCY_LOCK = "firmware/locks/xiaozhi-esp32.dependencies.lock"
+RESEARCH_REPOSITORY_NAMES = ("voice-agent-research", "realtime-voice-agent-research")
+RESEARCH_BOUNDARY_SCAN_SUFFIXES = {
+    ".bat",
+    ".c",
+    ".cc",
+    ".cfg",
+    ".cmake",
+    ".cmd",
+    ".conf",
+    ".cpp",
+    ".cxx",
+    ".defaults",
+    ".h",
+    ".hh",
+    ".hpp",
+    ".hxx",
+    ".ini",
+    ".json",
+    ".patch",
+    ".properties",
+    ".ps1",
+    ".py",
+    ".sh",
+    ".toml",
+    ".yaml",
+    ".yml",
+}
+RESEARCH_BOUNDARY_SCAN_NAMES = {
+    "cmakelists.txt",
+    "dockerfile",
+    "gnumakefile",
+    "makefile",
+    "procfile",
+}
+RESEARCH_BOUNDARY_EVIDENCE_EXEMPTIONS = {
+    "migration/baseline/source-manifest.yaml",
+}
 
 
 def sha256(path: Path) -> str:
@@ -182,6 +220,34 @@ def validate_firmware_composition(root: Path) -> list[str]:
     return errors
 
 
+def is_executable_or_config(path: Path) -> bool:
+    lowered_name = path.name.lower()
+    return (
+        path.suffix.lower() in RESEARCH_BOUNDARY_SCAN_SUFFIXES
+        or lowered_name in RESEARCH_BOUNDARY_SCAN_NAMES
+        or lowered_name.startswith("dockerfile.")
+        or (lowered_name.startswith(".env") and lowered_name.endswith(".example"))
+    )
+
+
+def read_boundary_text(path: Path) -> str:
+    content = path.read_bytes()
+    if content.startswith((codecs.BOM_UTF32_LE, codecs.BOM_UTF32_BE)):
+        raise ValueError("expected UTF-8 or BOM-marked UTF-16 text")
+    if content.startswith(codecs.BOM_UTF8):
+        encoding = "utf-8-sig"
+    elif content.startswith((codecs.BOM_UTF16_LE, codecs.BOM_UTF16_BE)):
+        encoding = "utf-16"
+    else:
+        if b"\0" in content:
+            raise ValueError("expected UTF-8 or BOM-marked UTF-16 text")
+        encoding = "utf-8"
+    try:
+        return content.decode(encoding)
+    except UnicodeDecodeError as error:
+        raise ValueError("expected UTF-8 or BOM-marked UTF-16 text") from error
+
+
 def validate_research_boundary(root: Path, paths: tuple[str, ...]) -> list[str]:
     errors: list[str] = []
     decision = root / "docs" / "decisions" / "0004-research-production-boundary.md"
@@ -198,21 +264,23 @@ def validate_research_boundary(root: Path, paths: tuple[str, ...]) -> list[str]:
             if marker not in content:
                 errors.append(f"Product/Research boundary marker missing: {marker}")
 
-    executable_suffixes = {".cmake", ".ps1", ".py", ".toml"}
     for raw_path in paths:
         normalized = raw_path.replace("\\", "/")
         path = root / raw_path
         if not path.is_file():
             continue
-        if path.suffix.lower() not in executable_suffixes and path.name != "CMakeLists.txt":
+        if normalized in RESEARCH_BOUNDARY_EVIDENCE_EXEMPTIONS:
+            continue
+        if not is_executable_or_config(path):
             continue
         if normalized == "scripts/verify_repository.py":
             continue
         try:
-            content = path.read_text(encoding="utf-8").lower()
-        except UnicodeDecodeError:
+            content = read_boundary_text(path).lower()
+        except (OSError, ValueError) as error:
+            errors.append(f"Product executable/config cannot be boundary-scanned: {normalized}: {error}")
             continue
-        if "voice-agent-research" in content or "realtime-voice-agent-research" in content:
+        if any(repository_name in content for repository_name in RESEARCH_REPOSITORY_NAMES):
             errors.append(f"Product executable/config references Research repository: {normalized}")
     return errors
 

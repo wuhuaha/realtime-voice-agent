@@ -14,6 +14,22 @@ VERIFY = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(VERIFY)
 
 
+def write_boundary_decision(root: Path) -> None:
+    research_repository = "voice-agent" + "-research"
+    decision = root / "docs" / "decisions" / "0004-research-production-boundary.md"
+    decision.parent.mkdir(parents=True)
+    decision.write_text(
+        "\n".join(
+            (
+                "唯一 authoring source",
+                f"不得读取 `{research_repository}`",
+                "manifest不是运行配置",
+            )
+        ),
+        encoding="utf-8",
+    )
+
+
 def test_forbidden_paths_are_rejected() -> None:
     errors = VERIFY.validate_tracked_paths(
         (
@@ -95,6 +111,159 @@ def test_manifest_requires_historical_source_path_for_production_firmware(tmp_pa
 
 def test_repository_firmware_composition_is_explicit() -> None:
     assert VERIFY.validate_firmware_composition(ROOT) == []
+
+
+def test_research_boundary_rejects_yaml_reference(tmp_path: Path) -> None:
+    write_boundary_decision(tmp_path)
+    config = tmp_path / "deploy" / "service.yaml"
+    config.parent.mkdir(parents=True)
+    research_repository = "realtime-voice-agent" + "-research"
+    config.write_text(f"source: {research_repository}\n", encoding="utf-8")
+
+    assert VERIFY.validate_research_boundary(tmp_path, ("deploy/service.yaml",)) == [
+        "Product executable/config references Research repository: deploy/service.yaml"
+    ]
+
+
+def test_research_boundary_rejects_runtime_and_build_carrier_references(tmp_path: Path) -> None:
+    write_boundary_decision(tmp_path)
+    research_repository = "realtime-voice-agent" + "-research"
+    carrier_paths = (
+        "firmware/overlay/feature.patch",
+        "firmware/src/runtime.cc",
+        "firmware/include/runtime.h",
+        "firmware/.env.local.example",
+        "firmware/sdkconfig.defaults",
+        "deploy/service.ini",
+        "Makefile",
+    )
+    for raw_path in carrier_paths:
+        path = tmp_path / raw_path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(f"source={research_repository}\n", encoding="utf-8")
+
+    assert VERIFY.validate_research_boundary(tmp_path, carrier_paths) == [
+        f"Product executable/config references Research repository: {raw_path}"
+        for raw_path in carrier_paths
+    ]
+
+
+def test_research_boundary_scan_covers_executable_and_config_formats() -> None:
+    expected_scanned = (
+        "runtime.c",
+        "runtime.cc",
+        "runtime.cpp",
+        "runtime.cxx",
+        "runtime.h",
+        "runtime.hh",
+        "runtime.hpp",
+        "runtime.hxx",
+        "feature.patch",
+        "build.cmake",
+        "build.ps1",
+        "build.py",
+        "config.toml",
+        "config.ini",
+        "config.cfg",
+        "config.conf",
+        "config.properties",
+        "config.yml",
+        "config.yaml",
+        "config.json",
+        "sdkconfig.defaults",
+        ".env.example",
+        ".env.local.example",
+        "entrypoint.sh",
+        "install.bat",
+        "install.cmd",
+        "CMakeLists.txt",
+        "Dockerfile",
+        "Dockerfile.release",
+        "Makefile",
+        "GNUmakefile",
+        "Procfile",
+    )
+
+    assert all(VERIFY.is_executable_or_config(Path(name)) for name in expected_scanned)
+    assert not VERIFY.is_executable_or_config(Path("README.md"))
+    assert not VERIFY.is_executable_or_config(Path("firmware.bin"))
+
+
+def test_research_boundary_scans_bom_marked_utf16(tmp_path: Path) -> None:
+    write_boundary_decision(tmp_path)
+    config = tmp_path / "deploy" / "windows.ps1"
+    config.parent.mkdir(parents=True)
+    research_repository = "voice-agent" + "-research"
+    config.write_text(f'$ResearchRepo = "{research_repository}"\n', encoding="utf-16")
+
+    assert VERIFY.validate_research_boundary(tmp_path, ("deploy/windows.ps1",)) == [
+        "Product executable/config references Research repository: deploy/windows.ps1"
+    ]
+
+
+def test_research_boundary_reports_unsupported_text_encoding_and_ignores_binary(
+    tmp_path: Path,
+) -> None:
+    write_boundary_decision(tmp_path)
+    config = tmp_path / "deploy" / "service.ini"
+    config.parent.mkdir(parents=True)
+    config.write_bytes(b"\x80\x81\x82")
+    no_bom_utf16 = tmp_path / "deploy" / "windows-no-bom.ps1"
+    research_repository = "voice-agent" + "-research"
+    no_bom_utf16.write_bytes(research_repository.encode("utf-16-le"))
+    binary = tmp_path / "deploy" / "firmware.bin"
+    binary.write_bytes(b"\x80\x81\x82")
+
+    assert VERIFY.validate_research_boundary(
+        tmp_path,
+        (
+            "deploy/service.ini",
+            "deploy/windows-no-bom.ps1",
+            "deploy/firmware.bin",
+        ),
+    ) == [
+        "Product executable/config cannot be boundary-scanned: deploy/service.ini: "
+        "expected UTF-8 or BOM-marked UTF-16 text",
+        "Product executable/config cannot be boundary-scanned: deploy/windows-no-bom.ps1: "
+        "expected UTF-8 or BOM-marked UTF-16 text",
+    ]
+
+
+def test_research_boundary_exempts_only_the_evidence_source_manifest(tmp_path: Path) -> None:
+    write_boundary_decision(tmp_path)
+    research_repository = "voice-agent" + "-research"
+    evidence = tmp_path / "migration" / "baseline" / "source-manifest.yaml"
+    runtime = tmp_path / "deploy" / "source-manifest.yaml"
+    evidence.parent.mkdir(parents=True)
+    runtime.parent.mkdir(parents=True)
+    evidence.write_text(f"source_repository: {research_repository}\n", encoding="utf-8")
+    runtime.write_text(f"source_repository: {research_repository}\n", encoding="utf-8")
+
+    assert VERIFY.validate_research_boundary(
+        tmp_path,
+        (
+            "migration/baseline/source-manifest.yaml",
+            "deploy/source-manifest.yaml",
+        ),
+    ) == [
+        "Product executable/config references Research repository: deploy/source-manifest.yaml"
+    ]
+
+
+def test_research_boundary_allows_safe_config_and_self_verifier(tmp_path: Path) -> None:
+    write_boundary_decision(tmp_path)
+    config = tmp_path / "deploy" / "service.json"
+    config.parent.mkdir(parents=True)
+    config.write_text('{"service": "realtime-voice-agent"}\n', encoding="utf-8")
+    verifier = tmp_path / "scripts" / "verify_repository.py"
+    verifier.parent.mkdir(parents=True)
+    research_repository = "voice-agent" + "-research"
+    verifier.write_text(f'FORBIDDEN = "{research_repository}"\n', encoding="utf-8")
+
+    assert VERIFY.validate_research_boundary(
+        tmp_path,
+        ("deploy/service.json", "scripts/verify_repository.py"),
+    ) == []
 
 
 def test_firmware_source_lock_identity_rejects_cross_file_drift(tmp_path: Path) -> None:
