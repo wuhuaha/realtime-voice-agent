@@ -21,6 +21,7 @@ FORBIDDEN_SUFFIXES = {".bin", ".elf", ".map", ".wav", ".pcm", ".key", ".pem"}
 SHA256_PATTERN = re.compile(r"^[0-9a-fA-F]{64}$")
 PRODUCTION_FIRMWARE_PATH = "firmware/targets/lichuang-dev"
 HISTORICAL_FIRMWARE_PATH = "firmware/reference/xiaozhi-overlay"
+FIRMWARE_DEPENDENCY_LOCK = "firmware/locks/xiaozhi-esp32.dependencies.lock"
 
 
 def sha256(path: Path) -> str:
@@ -110,6 +111,30 @@ def validate_manifest(root: Path) -> list[str]:
             for raw_path in paths:
                 if not isinstance(raw_path, str) or raw_path.replace("\\", "/") not in manifest_paths:
                     errors.append(f"traceability path is not hashed in manifest: {capability}: {raw_path}")
+    return errors
+
+
+def validate_firmware_source_lock(root: Path) -> list[str]:
+    controlled_lock = root / FIRMWARE_DEPENDENCY_LOCK
+    source_lock = root / "third_party" / "sources.lock.yaml"
+    manifest = root / "migration" / "baseline" / "source-manifest.yaml"
+    if not controlled_lock.is_file() or not source_lock.is_file() or not manifest.is_file():
+        return ["firmware dependency lock identity inputs are incomplete"]
+
+    actual = sha256(controlled_lock).lower()
+    source_payload = yaml.safe_load(source_lock.read_text(encoding="utf-8"))
+    source_entries = source_payload.get("sources", []) if isinstance(source_payload, dict) else []
+    matches = [
+        entry for entry in source_entries if isinstance(entry, dict) and entry.get("id") == "xiaozhi-esp32"
+    ]
+    errors: list[str] = []
+    if len(matches) != 1 or matches[0].get("dependency_lock_sha256") != actual:
+        errors.append("third_party source lock differs from controlled firmware dependency lock")
+
+    manifest_payload = yaml.safe_load(manifest.read_text(encoding="utf-8"))
+    upstream = manifest_payload.get("upstream", {}) if isinstance(manifest_payload, dict) else {}
+    if not isinstance(upstream, dict) or upstream.get("xiaozhi_dependencies_lock_sha256") != actual:
+        errors.append("migration provenance differs from controlled firmware dependency lock")
     return errors
 
 
@@ -222,6 +247,7 @@ def main() -> int:
     errors = [
         *validate_tracked_paths(paths),
         *validate_manifest(root),
+        *validate_firmware_source_lock(root),
         *validate_protocol(root),
         *validate_firmware_composition(root),
         *validate_research_boundary(root, paths),

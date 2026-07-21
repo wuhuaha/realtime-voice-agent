@@ -6,7 +6,7 @@ sources:
     license: MIT
     accessed_at: 2026-07-20
     purpose: ESP32-S3 voice endpoint upstream application
-    dependency_lock_sha256: 5ada8c797ad185737923533677bc7bd6b323f3fe5998eba00a840dd4000a5189
+    dependency_lock_sha256: 3cd77fe32859f2588c75957e21d365f5a31c51167bb5ce65858d26f5fac1843b
   - id: esp-idf
     url: https://github.com/espressif/esp-idf.git
     revision: 30aaf64524299d3bde422ca9a2848090d1bc5d0f

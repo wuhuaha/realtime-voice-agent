@@ -95,3 +95,35 @@ def test_manifest_requires_historical_source_path_for_production_firmware(tmp_pa
 
 def test_repository_firmware_composition_is_explicit() -> None:
     assert VERIFY.validate_firmware_composition(ROOT) == []
+
+
+def test_firmware_source_lock_identity_rejects_cross_file_drift(tmp_path: Path) -> None:
+    controlled = tmp_path / "firmware" / "locks" / "xiaozhi-esp32.dependencies.lock"
+    source_lock = tmp_path / "third_party" / "sources.lock.yaml"
+    manifest = tmp_path / "migration" / "baseline" / "source-manifest.yaml"
+    controlled.parent.mkdir(parents=True)
+    source_lock.parent.mkdir(parents=True)
+    manifest.parent.mkdir(parents=True)
+    controlled.write_text("locked\n", encoding="utf-8")
+    source_lock.write_text(
+        yaml.safe_dump(
+            {
+                "sources": [
+                    {
+                        "id": "xiaozhi-esp32",
+                        "dependency_lock_sha256": "0" * 64,
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    manifest.write_text(
+        yaml.safe_dump({"upstream": {"xiaozhi_dependencies_lock_sha256": "1" * 64}}),
+        encoding="utf-8",
+    )
+
+    assert VERIFY.validate_firmware_source_lock(tmp_path) == [
+        "third_party source lock differs from controlled firmware dependency lock",
+        "migration provenance differs from controlled firmware dependency lock",
+    ]

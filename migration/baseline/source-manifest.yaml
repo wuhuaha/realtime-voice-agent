@@ -15,7 +15,7 @@ source_repository:
   udp_protocol_tree: 492fda331ff9c6d9a264153a1d3e512ebf841623
 upstream:
   xiaozhi_revision: 7b190b78e4f8dfef14126f6cd478c134b3cd3cd8
-  xiaozhi_dependencies_lock_sha256: 5ada8c797ad185737923533677bc7bd6b323f3fe5998eba00a840dd4000a5189
+  xiaozhi_dependencies_lock_sha256: 3cd77fe32859f2588c75957e21d365f5a31c51167bb5ce65858d26f5fac1843b
   esp_idf_version: 5.5.2
   esp_idf_revision: 30aaf64524299d3bde422ca9a2848090d1bc5d0f
 delivery_snapshots:
@@ -80,7 +80,7 @@ files:
   - production_path: protocol/xiaozhi_udp_v1/fixtures/negative.json
     sha256: d355179c29adf5041dce12ae61d6cef68f087a4daa223b02d5ebf2ada99f67b0
   - production_path: third_party/sources.lock.yaml
-    sha256: 7eb0342c9abd8fb11572bb36050ea22953bc3190ea414f614c1040cb881dbe2f
+    sha256: 0c0d55613139a5d0bc17446a1ee8dc7e4e0de5ab972e90d101462c6d2bdddb58
   - production_path: firmware/locks/xiaozhi-esp32.dependencies.lock
     sha256: 3cd77fe32859f2588c75957e21d365f5a31c51167bb5ce65858d26f5fac1843b
   - source_path: firmware/reference/xiaozhi-overlay/.env.local.example
