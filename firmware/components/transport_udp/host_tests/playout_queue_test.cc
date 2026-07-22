@@ -26,6 +26,40 @@ int main() {
            PlayoutPushResult::kAccepted);
     assert(queue.Pop(&output) && output.generation == 2);
 
+    PlayoutFrame expired{
+        .kind = PlayoutKind::kAudio,
+        .generation = 2,
+        .arrived_us = 100,
+    };
+    expired.payload_size = 1;
+    assert(queue.Push(expired) == PlayoutPushResult::kAccepted);
+    uint32_t expired_count = 0;
+    assert(!queue.PopFresh(&output, 360101, 360000, &expired_count));
+    assert(expired_count == 1);
+    assert(queue.size() == 0);
+
+    PlayoutFrame fresh{
+        .kind = PlayoutKind::kAudio,
+        .generation = 2,
+        .arrived_us = 200,
+    };
+    fresh.payload_size = 1;
+    assert(queue.Push(fresh) == PlayoutPushResult::kAccepted);
+    assert(queue.PopFresh(&output, 360200, 360000, &expired_count));
+    assert(expired_count == 0 && output.arrived_us == 200);
+
+    PlayoutFrame stale_plc{
+        .kind = PlayoutKind::kPlc,
+        .generation = 2,
+        .arrived_us = 500,
+    };
+    assert(queue.Push(stale_plc) == PlayoutPushResult::kAccepted);
+    assert(queue.PopFresh(&output, 360500, 360000, &expired_count));
+    assert(expired_count == 0 && output.kind == PlayoutKind::kPlc);
+    assert(queue.Push(stale_plc) == PlayoutPushResult::kAccepted);
+    assert(!queue.PopFresh(&output, 360501, 360000, &expired_count));
+    assert(expired_count == 1);
+
     std::atomic<bool> stop{false};
     std::atomic<uint32_t> generation{2};
     std::atomic<uint32_t> last_popped{2};

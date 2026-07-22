@@ -23,8 +23,9 @@ from voice_contracts import LeaseRenewal
 from ..admission import SharedSessionAdmission
 from ..agent import AgentOutputSegment, AgentRunner, create_runner
 from ..audio import PCM_SAMPLES, PcmFrame
-from ..auth import AuthContext
+from ..auth import AuthContext, device_ref
 from ..config import Settings
+from ..lifecycle import run_with_hard_deadline
 from ..transport.udp_gateway import UdpMediaGateway, UdpMediaSession
 
 logger = logging.getLogger("realtime_worker.bindings.xiaozhi")
@@ -380,6 +381,11 @@ class XiaozhiConnection:
     ) -> None:
         self._websocket = websocket
         self._auth = auth
+        self._device_ref = device_ref(
+            auth.tenant_id,
+            auth.device_id,
+            settings.internal_token.get_secret_value(),
+        )
         self._settings = settings
         self._runner_factory = runner_factory
         self._udp_gateway = udp_gateway
@@ -469,7 +475,7 @@ class XiaozhiConnection:
         except XiaozhiOverloadedError:
             close_code, close_reason = 1013, "media_overloaded"
         except Exception:
-            logger.exception("Xiaozhi session failed device=%s", self._auth.device_id)
+            logger.exception("Xiaozhi session failed device_ref=%s", self._device_ref)
             close_code, close_reason = 1011, "runtime_failure"
         finally:
             await self.close(code=close_code, reason=close_reason)
@@ -481,7 +487,12 @@ class XiaozhiConnection:
                 self._close_impl(code=code, reason=reason),
                 name=f"xiaozhi-close-{self.session_id}",
             )
-        await asyncio.shield(self._close_task)
+        try:
+            await asyncio.shield(self._close_task)
+        except asyncio.CancelledError:
+            self._close_task.cancel()
+            await asyncio.gather(self._close_task, return_exceptions=True)
+            raise
 
     async def _close_impl(self, *, code: int, reason: str) -> None:
         current = asyncio.current_task()
@@ -502,14 +513,23 @@ class XiaozhiConnection:
         runner, self._runner = self._runner, None
         if runner is not None:
             try:
-                await asyncio.wait_for(runner.close(), timeout=5.0)
+                closed = await run_with_hard_deadline(
+                    runner.close(),
+                    timeout=self._settings.agent_close_stage_timeout_seconds,
+                    task_name=f"xiaozhi-runner-close-{self.session_id}",
+                )
+                if not closed.completed:
+                    logger.warning("Xiaozhi runner close timed out device_ref=%s", self._device_ref)
             except asyncio.CancelledError:
                 task = asyncio.current_task()
                 if task is None or task.cancelling():
                     raise
-                logger.warning("Xiaozhi runner cancelled its own cleanup device=%s", self._auth.device_id)
+                logger.warning(
+                    "Xiaozhi runner cancelled its own cleanup device_ref=%s",
+                    self._device_ref,
+                )
             except Exception:
-                logger.warning("Xiaozhi runner cleanup failed device=%s", self._auth.device_id)
+                logger.warning("Xiaozhi runner cleanup failed device_ref=%s", self._device_ref)
         udp_session, self._udp_session = self._udp_session, None
         if udp_session is not None:
             await udp_session.close()
@@ -938,8 +958,8 @@ class XiaozhiConnection:
         if pending:
             names = ",".join(sorted(task.get_name() for task in pending))
             logger.critical(
-                "Xiaozhi detaching non-cooperative task device=%s context=%s tasks=%s",
-                self._auth.device_id,
+                "Xiaozhi detaching non-cooperative task device_ref=%s context=%s tasks=%s",
+                self._device_ref,
                 context,
                 names,
             )
@@ -1027,13 +1047,19 @@ class XiaozhiSessionRegistry:
         self._pending_releases: deque[LeaseRenewal] = deque()
         self._lock = asyncio.Lock()
 
-    async def run(self, websocket: WebSocket, auth: AuthContext) -> None:
+    async def reserve(self, auth: AuthContext) -> str | None:
+        return await self._admission.reserve((auth.tenant_id, auth.device_id))
+
+    async def release_reservation(self, token: str) -> None:
+        await self._admission.release(token)
+
+    async def abort_startup(self, auth: AuthContext, token: str) -> None:
+        self._queue_lease_release(auth)
+        await self._admission.release(token)
+
+    async def run(self, websocket: WebSocket, auth: AuthContext, token: str) -> None:
         principal = (auth.tenant_id, auth.device_id)
-        token = await self._admission.reserve(principal)
-        if token is None:
-            await websocket.close(code=1013, reason="session_overloaded")
-            return
-        async with self._lock:
+        try:
             connection = XiaozhiConnection(
                 websocket,
                 auth,
@@ -1041,9 +1067,13 @@ class XiaozhiSessionRegistry:
                 runner_factory=self._runner_factory,
                 udp_gateway=self._udp_gateway,
             )
-            self._connections[principal] = connection
-            if auth.session_epoch is not None and auth.expires_at is not None:
-                self._lease_deadlines[auth.session_epoch] = auth.expires_at
+            async with self._lock:
+                self._connections[principal] = connection
+                if auth.session_epoch is not None and auth.expires_at is not None:
+                    self._lease_deadlines[auth.session_epoch] = auth.expires_at
+        except BaseException:
+            await self.abort_startup(auth, token)
+            raise
         try:
             await connection.run()
         finally:
@@ -1052,19 +1082,23 @@ class XiaozhiSessionRegistry:
                     self._connections.pop(principal, None)
                 if connection.auth_context.session_epoch is not None:
                     self._lease_deadlines.pop(connection.auth_context.session_epoch, None)
-                release = self._lease_claim(connection.auth_context)
-                if release is not None:
-                    self._pending_releases.append(release)
+                self._queue_lease_release(connection.auth_context)
             await self._admission.release(token)
 
     async def close(self) -> None:
         async with self._lock:
             connections = tuple(self._connections.values())
+            for connection in connections:
+                self._queue_lease_release(connection.auth_context)
             self._connections.clear()
         await asyncio.gather(
             *(connection.close(code=1001, reason="server_shutdown") for connection in connections),
             return_exceptions=True,
         )
+
+    def snapshot_active_lease_releases(self) -> None:
+        for connection in self._connections.values():
+            self._queue_lease_release(connection.auth_context)
 
     async def revoke_session_epochs(self, session_epochs: set[str]) -> None:
         if not session_epochs:
@@ -1130,6 +1164,11 @@ class XiaozhiSessionRegistry:
             session_epoch=auth.session_epoch,
             fencing_token=auth.fencing_token,
         )
+
+    def _queue_lease_release(self, auth: AuthContext) -> None:
+        release = self._lease_claim(auth)
+        if release is not None and release not in self._pending_releases:
+            self._pending_releases.append(release)
 
     @property
     def active_count(self) -> int:

@@ -4,11 +4,11 @@
 
 #include <freertos/FreeRTOS.h>
 #include <freertos/queue.h>
-#include <freertos/semphr.h>
 #include <lvgl.h>
 
 #include "board_lichuang_s3/board_display.h"
 #include "ui_font_assets/font_assets.h"
+#include "ui_lvgl/ui_lifecycle.h"
 #include "ui_lvgl/ui_state.h"
 
 namespace rva::ui {
@@ -20,8 +20,9 @@ struct VoiceUiConfig final {
     const char* microphone_glyph = "MIC";
 };
 
-// The esp_lvgl_port task is the sole owner of reducer state and LVGL objects.
-// Producers interact only through bounded command/event queues.
+// Runtime mutations happen on the esp_lvgl_port task. Start/Stop mutate LVGL
+// synchronously while holding the port lock; producers use bounded queues.
+// The lifecycle is one-shot: Stop is final and a subsequent Start is rejected.
 class VoiceUi final {
 public:
     VoiceUi(board::lichuang_s3::LichuangDisplay& hardware, VoiceUiConfig config);
@@ -39,7 +40,6 @@ private:
     static constexpr size_t kCommandTextBytes = kMaxTranscriptBytes + 1;
     static constexpr UBaseType_t kCommandQueueCapacity = 8;
     static constexpr UBaseType_t kEventQueueCapacity = 8;
-    static constexpr uint32_t kAsyncTimeoutMs = 2000;
     static constexpr uint32_t kMaxCommandsPerTick = 4;
 
     struct CommandPacket final {
@@ -55,8 +55,6 @@ private:
         char secret[65];
     };
 
-    static void InitializeAsync(void* context);
-    static void DestroyAsync(void* context);
     static void CommandTimer(lv_timer_t* timer);
     static void MicClicked(lv_event_t* event);
     static void TransportClicked(lv_event_t* event);
@@ -79,7 +77,6 @@ private:
     VoiceUiConfig config_;
     QueueHandle_t command_queue_ = nullptr;
     QueueHandle_t event_queue_ = nullptr;
-    SemaphoreHandle_t async_done_ = nullptr;
     lv_display_t* display_ = nullptr;
     lv_indev_t* touch_ = nullptr;
     lv_timer_t* command_timer_ = nullptr;
@@ -103,8 +100,7 @@ private:
     lv_obj_t* keyboard_ = nullptr;
     UiState state_{};
     FontAssets font_assets_;
-    bool started_ = false;
-    bool async_success_ = false;
+    UiLifecycle lifecycle_;
     bool port_initialized_ = false;
 };
 

@@ -13,7 +13,6 @@ from ..transport.udp_gateway import (
     UDP_KEY_BYTES,
     UDP_MAX_DATAGRAM_BYTES,
     UDP_MAX_PAYLOAD_BYTES,
-    UDP_MAX_SEQUENCE_FORWARD_JUMP,
     UDP_SALT_BYTES,
     UDP_TAG_BYTES,
     ReplayWindow,
@@ -24,6 +23,7 @@ from ..transport.udp_gateway import (
     UdpMediaStats,
     UdpPacketHeader,
 )
+from ..transport.udp_wire import UDP_MAX_SEQUENCE_FORWARD_JUMP
 
 __all__ = [
     "UDP_FLAG_AUDIO",

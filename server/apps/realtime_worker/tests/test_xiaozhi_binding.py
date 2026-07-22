@@ -168,7 +168,12 @@ def test_audio_diagnostics_log_first_packet_and_bounded_summaries_without_payloa
     caplog.set_level(logging.INFO, logger="realtime_worker.bindings.xiaozhi")
     connection = XiaozhiConnection(
         object(),  # type: ignore[arg-type]
-        AuthContext(tenant_id="lab", device_id="private-device-id"),
+        AuthContext(
+            tenant_id="lab",
+            device_id="private-device-id",
+            allowed_profiles=("wss-opus-v1",),
+            control_protocol="xiaozhi-control-v1",
+        ),
         Settings(
             lab_token="validator-token-not-for-logs",
             xiaozhi_audio_diagnostics=True,
@@ -590,6 +595,27 @@ class _BlockingCloseRunner(_FakeRunner):
 
 
 @pytest.mark.asyncio
+async def test_cancelled_close_reaps_shielded_cleanup_task() -> None:
+    websocket = _HandshakeWebSocket()
+    runner = _BlockingCloseRunner(lambda _segment: asyncio.sleep(0))
+    connection = XiaozhiConnection(
+        websocket,  # type: ignore[arg-type]
+        legacy_auth_context(),
+        Settings(lab_token="test-token"),
+    )
+    connection._runner = runner  # noqa: SLF001
+
+    close = asyncio.create_task(connection.close(code=1001, reason="server_shutdown"))
+    await runner.close_started.wait()
+    close.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await close
+    assert connection._close_task is not None  # noqa: SLF001
+    assert connection._close_task.done()  # noqa: SLF001
+
+
+@pytest.mark.asyncio
 async def test_disconnect_and_registry_close_share_one_cleanup_completion() -> None:
     websocket = _DisconnectWebSocket()
     admission = SharedSessionAdmission(1)
@@ -609,8 +635,10 @@ async def test_disconnect_and_registry_close_share_one_cleanup_completion() -> N
         admission,
         runner_factory=factory,
     )
+    reservation = await registry.reserve(legacy_auth_context())
+    assert reservation is not None
     run = asyncio.create_task(
-        registry.run(websocket, legacy_auth_context())  # type: ignore[arg-type]
+        registry.run(websocket, legacy_auth_context(), reservation)  # type: ignore[arg-type]
     )
     await websocket.hello_sent.wait()
     websocket.disconnect.set()
@@ -649,7 +677,10 @@ class _StartupRunner(_FakeRunner):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("failure", ["throw", "timeout"])
-async def test_partial_runner_start_is_always_closed(failure: str) -> None:
+async def test_partial_runner_start_is_always_closed(
+    failure: str,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     websocket = _HandshakeWebSocket()
     runners: list[_StartupRunner] = []
 
@@ -668,13 +699,21 @@ async def test_partial_runner_start_is_always_closed(failure: str) -> None:
 
     connection = XiaozhiConnection(
         websocket,  # type: ignore[arg-type]
-        legacy_auth_context(),
+        AuthContext(
+            tenant_id="lab",
+            device_id="private-device-id",
+            allowed_profiles=("wss-opus-v1",),
+            control_protocol="xiaozhi-control-v1",
+        ),
         Settings(lab_token="test-token", xiaozhi_handshake_timeout_seconds=0.01),
         runner_factory=factory,
     )
     await connection.run()
     assert runners[0].closed is True
     assert websocket.closed == [(1008, "handshake_timeout") if failure == "timeout" else (1011, "runtime_failure")]
+    assert "private-device-id" not in caplog.text
+    if failure == "throw":
+        assert f"device_ref={connection._device_ref}" in caplog.text  # noqa: SLF001
 
 
 class _StopStallWebSocket(_HandshakeWebSocket):

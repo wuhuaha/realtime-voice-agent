@@ -66,16 +66,20 @@ bool EspIdfWebsocketClientPort::Close(uint32_t timeout_ms) {
            esp_websocket_client_close(Native(native_handle_), TimeoutTicks(timeout_ms)) == ESP_OK;
 }
 
-void EspIdfWebsocketClientPort::Destroy() {
-    if (native_handle_ == nullptr || destroyed_) return;
+bool EspIdfWebsocketClientPort::Destroy() {
+    if (native_handle_ == nullptr || destroyed_) return true;
     if (registered_) {
-        esp_websocket_unregister_events(Native(native_handle_), WEBSOCKET_EVENT_ANY, EventHandler);
+        if (esp_websocket_unregister_events(
+                Native(native_handle_), WEBSOCKET_EVENT_ANY, EventHandler) != ESP_OK) {
+            return false;
+        }
         registered_ = false;
     }
-    esp_websocket_client_destroy(Native(native_handle_));
+    if (esp_websocket_client_destroy(Native(native_handle_)) != ESP_OK) return false;
     native_handle_ = nullptr;
     sink_ = nullptr;
     destroyed_ = true;
+    return true;
 }
 
 void EspIdfWebsocketClientPort::HandleNativeEvent(int32_t event_id, void* event_data) noexcept {

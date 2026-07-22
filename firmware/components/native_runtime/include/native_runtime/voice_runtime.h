@@ -9,6 +9,7 @@
 #include <freertos/FreeRTOS.h>
 #include <freertos/event_groups.h>
 #include <freertos/queue.h>
+#include <freertos/semphr.h>
 #include <freertos/task.h>
 
 #include "audio_frontend_esp_sr/esp_sr_frontend.h"
@@ -59,6 +60,8 @@ public:
 
 class VoiceRuntime final {
 public:
+    using FailClosedHook = void (*)(void*) noexcept;
+
     VoiceRuntime(
         audio::AudioPipeline& pipeline,
         audio::EspSrFrontend& frontend,
@@ -69,6 +72,10 @@ public:
     bool Start(const BootstrapGrant& grant, const std::string& device_id,
                MediaPreference preference = MediaPreference::kWss);
     void Stop();
+    void SetFailClosedHook(FailClosedHook hook, void* context) noexcept {
+        fail_closed_hook_ = hook;
+        fail_closed_context_ = context;
+    }
     bool running() const { return running_; }
     bool should_fallback_to_wss() const { return fallback_to_wss_.load(); }
 
@@ -79,10 +86,17 @@ private:
         std::array<uint8_t, protocol::kWssMaxPayloadBytes> bytes{};
     };
 
+    struct WebsocketTeardownContext final {
+        wss::WssOwner* owner = nullptr;
+        SemaphoreHandle_t done = nullptr;
+        bool result = false;
+    };
+
     static void SupervisorTask(void* context);
     static void CaptureTask(void* context);
     static void UplinkTask(void* context);
     static void PlaybackTask(void* context);
+    static void WebsocketTeardownTask(void* context);
     void RunSupervisor();
     void RunCapture();
     void RunUplink();
@@ -96,6 +110,10 @@ private:
     bool StartPlaybackResampler();
     void StopPlaybackResampler();
     void MarkTaskStopped(EventBits_t bit);
+    bool CloseWebsocketBounded(uint32_t timeout_ms);
+    [[noreturn]] void FailClosedRestart(const char* category) noexcept;
+    [[noreturn]] void HandleTaskAllocationFailure(
+        const char* task_name, EventBits_t stopped_bit, bool stack_uses_caps) noexcept;
 
     audio::AudioPipeline& pipeline_;
     audio::EspSrFrontend& frontend_;
@@ -144,6 +162,8 @@ private:
     std::atomic<int64_t> udp_next_keepalive_us_{0};
     std::atomic<int64_t> response_end_deadline_us_{0};
     std::atomic<bool> fallback_to_wss_{false};
+    FailClosedHook fail_closed_hook_ = nullptr;
+    void* fail_closed_context_ = nullptr;
     uint32_t uplink_sequence_ = 0;
     uint32_t uplink_timestamp_ = 0;
 };

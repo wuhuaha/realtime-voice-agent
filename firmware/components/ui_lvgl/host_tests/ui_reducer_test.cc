@@ -1,25 +1,43 @@
 #include <cassert>
 #include <string>
 
+#include "ui_lvgl/ui_lifecycle.h"
 #include "ui_lvgl/ui_state.h"
 
 using namespace rva::ui;
 
 int main() {
+    UiLifecycle lifecycle;
+    assert(lifecycle.Begin());
+    assert(lifecycle.active());
+    assert(lifecycle.Begin());
+    lifecycle.End();
+    assert(!lifecycle.active());
+    assert(lifecycle.consumed());
+    assert(!lifecycle.Begin());
+
     UiState state;
     state.connection = ConnectionState::kOnline;
 
     auto event = Reduce(&state, {.kind = CommandKind::kMicPressed, .value = 0, .text = {}});
     assert(event.has_value() && event->kind == EventKind::kStartConversation);
+    assert(state.conversation == ConversationState::kConnecting);
+
+    event = Reduce(&state, {.kind = CommandKind::kMicPressed, .value = 0, .text = {}});
+    assert(event.has_value() && event->kind == EventKind::kStopConversation);
+    assert(state.conversation == ConversationState::kIdle);
 
     state.connection = ConnectionState::kOffline;
     event = Reduce(&state, {.kind = CommandKind::kMicPressed, .value = 0, .text = {}});
     assert(event.has_value() && event->kind == EventKind::kStartConversation);
+    assert(state.conversation == ConversationState::kConnecting);
 
     state.conversation = ConversationState::kListening;
     event = Reduce(&state, {.kind = CommandKind::kMicPressed, .value = 0, .text = {}});
     assert(event.has_value() && event->kind == EventKind::kStopConversation);
+    assert(state.conversation == ConversationState::kIdle);
 
+    state.conversation = ConversationState::kListening;
     event = Reduce(&state, {.kind = CommandKind::kTransportPressed, .value = 0, .text = {}});
     assert(!event.has_value());
     assert(state.preferred_transport == Transport::kWss);

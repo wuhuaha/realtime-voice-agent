@@ -5,9 +5,10 @@ import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
-from fastapi import Depends, FastAPI, Header, HTTPException, status
+from fastapi import Depends, FastAPI, Header, HTTPException, Request, status
 from fastapi.responses import JSONResponse
 from redis.asyncio import Redis
+from redis.exceptions import TimeoutError as RedisTimeoutError
 from voice_contracts import (
     BootstrapRequest,
     BootstrapResponse,
@@ -15,6 +16,8 @@ from voice_contracts import (
     GrantCodec,
     GrantConsumeRequest,
     GrantConsumeResponse,
+    RouteReleaseRequest,
+    RouteReleaseResponse,
     WorkerHeartbeat,
 )
 
@@ -62,6 +65,13 @@ def create_app(
 
     app = FastAPI(title="Voice Session Director", version="0.1.0", lifespan=lifespan)
 
+    @app.exception_handler(RedisTimeoutError)
+    async def redis_timeout_handler(_: Request, __: RedisTimeoutError) -> JSONResponse:
+        return JSONResponse(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            content={"detail": "coordination_unavailable"},
+        )
+
     def service() -> DirectorService:
         return app.state.director_service
 
@@ -93,6 +103,17 @@ def create_app(
             raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="no_capacity") from exc
         except LeaseConflictError as exc:
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="route_already_leased") from exc
+
+    @app.post("/v1/session/release", response_model=RouteReleaseResponse)
+    async def release(
+        request: RouteReleaseRequest,
+        authorization: str | None = Header(default=None),
+    ) -> RouteReleaseResponse:
+        if not _device_matches(authorization, request, settings):
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid_credentials")
+        await service().release(request)
+        # A stale or repeated release is intentionally indistinguishable from a successful release.
+        return RouteReleaseResponse()
 
     @app.post("/internal/v1/workers/heartbeat")
     async def heartbeat(
@@ -140,7 +161,7 @@ def create_app(
 
 def _device_matches(
     authorization: str | None,
-    request: BootstrapRequest,
+    request: BootstrapRequest | RouteReleaseRequest,
     settings: DirectorSettings,
 ) -> bool:
     tenant_credentials = settings.device_credentials.get(request.tenant_id, {})
@@ -161,7 +182,12 @@ def _require_internal(value: str | None, settings: DirectorSettings) -> None:
 def _create_store(settings: DirectorSettings) -> CoordinationStorePort:
     if settings.coordination_backend == "redis":
         return RedisCoordinationStore(
-            Redis.from_url(settings.redis_url, decode_responses=False),
+            Redis.from_url(
+                settings.redis_url,
+                decode_responses=False,
+                socket_connect_timeout=settings.redis_connect_timeout_seconds,
+                socket_timeout=settings.redis_command_timeout_seconds,
+            ),
             prefix=settings.coordination_prefix,
         )
     return InMemoryCoordinationStore()

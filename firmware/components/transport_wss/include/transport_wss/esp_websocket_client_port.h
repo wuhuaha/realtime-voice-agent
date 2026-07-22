@@ -17,7 +17,7 @@ public:
     bool SendText(const uint8_t* data, size_t size, uint32_t timeout_ms) override;
     bool SendBinary(const uint8_t* data, size_t size, uint32_t timeout_ms) override;
     bool Close(uint32_t timeout_ms) override;
-    void Destroy() override;
+    bool Destroy() override;
 
     void HandleNativeEvent(int32_t event_id, void* event_data) noexcept;
 

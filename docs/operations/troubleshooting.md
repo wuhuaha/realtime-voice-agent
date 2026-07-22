@@ -1,6 +1,6 @@
 # 故障排查
 
-更新日期：2026-07-20
+更新日期：2026-07-22
 
 ## 1. 排查原则
 
@@ -31,9 +31,15 @@ Invoke-RestMethod "$env:VOICE_WORKER_URL/health/ready"
 - Worker heartbeat 未过期，`healthy=true`、`draining=false`、`active < max`。
 - requested profiles 与 Worker profiles 有交集。
 - Redis ready；生产没有误用 memory backend。
+- Redis connect/command timeout 未被设为不合理的大值；timeout 应返回脱敏
+  `503 {"detail":"coordination_unavailable"}`，不能挂住 bootstrap 或泄露 Redis URL。
 
 `no_capacity` 与“服务宕机”不同。不要盲目提高 `max_sessions`，先看 active session、CPU/RSS/event-loop/provider
 pressure 和未释放 session。
+
+若设备 bootstrap 得到 200、但 WSS/runtime 本地启动失败后立即重试出现 `route_already_leased`，检查设备是否已在
+lease identity 验证后保留 worker/epoch/fencing、是否执行有界 `/v1/session/release`，以及日志中是否出现
+`route release acknowledged`。重复/stale release 返回成功是预期幂等语义，不能据此推断当前 lease 被删除。
 
 Worker 配置 Director 时，`/health/ready` 的 `coordination_ready=false` 表示 heartbeat 尚未成功；先修复
 Director/Redis/internal token/网络，不要只检查 provider。Drain 是单向操作，误 drain 后应停止旧 Worker 并启动
@@ -95,6 +101,8 @@ Opus 解码 PCM peak/RMS，再检查 grant、transport admission 与 provider en
 - 确认 callback carry buffer 不丢弃非整帧尾部。
 - 确认 WSS TCP HOL 或 UDP reorder deadline没有使 media age增长。
 - 确认播放 queue 既不为零也不通过大预缓冲掩盖延迟。
+- UDP 设备侧 `media_age_dropped` 增长表示 frame 在最终 360 ms gate 被拒绝；先查调度阻塞、reorder 和播放 queue，
+  不要简单放宽 gate 来掩盖过时 TTS。
 
 每次只调整一个 frame/buffer 参数并保留 A/B 音频与 timeline。
 
@@ -108,7 +116,19 @@ Opus 解码 PCM peak/RMS，再检查 grant、transport admission 与 provider en
 
 最终 AEC/声学当前为 `not_run`，旧 baseline 不能替代。
 
-## 10. 固件黑屏/启动失败
+若日志提示 ESP-SR `model` 分区不可用，当前预期是仅关闭神经网络降噪，AEC/VAD 仍初始化；这不证明实际声学效果。
+分别记录 `frontend.aec_enabled/vad_enabled`、近讲/播放中 double-talk、上行 PCM 与 ASR，对照补烧 model 分区后的结果。
+
+## 10. Worker 停止卡住 / route 长时间不释放
+
+- 确认 shutdown 日志先发布 `draining=true`，再关闭 registry，最后上报 pending exact releases。
+- 默认总预算 10 秒、最多 32 次 release heartbeat；达到任一上限会带 pending 数量告警后退出，这是有界退化而非
+  无限重试。
+- 若 TTS 并发槽已满，默认等待 0.25 秒后产生 retryable backpressure；不要通过无界调大 queue timeout 延长关停。
+- MiMo 返回异常大 SSE 时应在单行/事件 1 MiB、256 data line、512 KiB decoded chunk 或 8 MiB total response 边界
+  失败；若内存持续增长，核对运行 artifact 是否包含这些 parser gates。
+
+## 11. 固件黑屏/启动失败
 
 - 确认烧录的是 `firmware/apps/voice_terminal` 的完整 native artifact；`firmware/device` 仅是 headless contract
   harness，不包含板级、显示或音频运行时。
@@ -116,7 +136,7 @@ Opus 解码 PCM peak/RMS，再检查 grant、transport admission 与 provider en
 - 先看 reset reason、panic/WDT、PSRAM、LCD init、backlight 与 LVGL task，再看网络。
 - 不用擦 NVS 掩盖启动 bug；只有明确验证配置迁移且已备份时才擦除。
 
-## 11. 收尾记录
+## 12. 收尾记录
 
 故障记录至少包含环境、commit、artifact、redacted config shape、复现步骤、first failure、相关 metrics/log window、
 修复前后验证和仍为 `not_run` 的项目。

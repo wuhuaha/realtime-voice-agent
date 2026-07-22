@@ -1,10 +1,13 @@
 #include <algorithm>
+#include <exception>
 #include <memory>
+#include <new>
 #include <string>
 #include <string_view>
 #include <vector>
 
 #include <esp_log.h>
+#include <esp_system.h>
 #include <model_path.h>
 #include <nvs_flash.h>
 
@@ -82,6 +85,11 @@ public:
             static_cast<uint32_t>(rva::ui::ConnectionState::kError),
             {},
         });
+        Post({
+            rva::ui::CommandKind::kSetConversation,
+            static_cast<uint32_t>(rva::ui::ConversationState::kIdle),
+            {},
+        });
     }
 
 private:
@@ -137,6 +145,110 @@ bool PostUi(rva::ui::VoiceUi* ui, const rva::ui::UiCommand& command) {
         vTaskDelay(pdMS_TO_TICKS(10));
     }
     return false;
+}
+
+class ScopedBootstrapLease final {
+public:
+    ScopedBootstrapLease(
+        rva::runtime::DirectorBootstrap& director,
+        const rva::config::EndpointSnapshot& endpoint,
+        const std::string& tenant_id,
+        const std::string& device_id,
+        const rva::runtime::BootstrapGrant& grant) noexcept
+        : director_(director), endpoint_(endpoint), tenant_id_(tenant_id),
+          device_id_(device_id), grant_(grant), active_(grant.HasReleaseIdentity()) {}
+
+    ~ScopedBootstrapLease() { ReleaseNow(); }
+
+    ScopedBootstrapLease(const ScopedBootstrapLease&) = delete;
+    ScopedBootstrapLease& operator=(const ScopedBootstrapLease&) = delete;
+
+    bool ReleaseNow() noexcept {
+        if (!active_) return true;
+        const bool released = director_.Release(
+            endpoint_.url, endpoint_.token, tenant_id_, device_id_, grant_);
+        if (released) active_ = false;
+        return released;
+    }
+
+    bool Finalize() noexcept {
+        const bool released = ReleaseNow();
+        // Used immediately before endpoint reconfiguration. At this point two
+        // bounded release rounds have already been attempted; disarm so the
+        // destructor cannot target a newly selected Director endpoint.
+        active_ = false;
+        return released;
+    }
+
+private:
+    rva::runtime::DirectorBootstrap& director_;
+    const rva::config::EndpointSnapshot& endpoint_;
+    const std::string& tenant_id_;
+    const std::string& device_id_;
+    const rva::runtime::BootstrapGrant& grant_;
+    bool active_;
+};
+
+void ReleaseLeaseBeforeRestart(void* context) noexcept {
+    if (context != nullptr) {
+        static_cast<ScopedBootstrapLease*>(context)->ReleaseNow();
+    }
+}
+
+void ProcessConversationUiEvents(
+    rva::ui::VoiceUi* ui,
+    bool udp_available,
+    bool runtime_active,
+    rva::runtime::MediaPreference* preferred_media,
+    bool* conversation_requested,
+    bool* configuration_requested,
+    bool* stop_current_runtime) {
+    if (ui == nullptr || preferred_media == nullptr || conversation_requested == nullptr ||
+        configuration_requested == nullptr) {
+        return;
+    }
+    rva::ui::UiEvent event;
+    while (ui->PollEvent(&event)) {
+        if (event.kind == rva::ui::EventKind::kSelectTransport ||
+            event.kind == rva::ui::EventKind::kStartConversation) {
+            *preferred_media = udp_available && event.transport == rva::ui::Transport::kUdp
+                                   ? rva::runtime::MediaPreference::kUdp
+                                   : rva::runtime::MediaPreference::kWss;
+        }
+        if (event.kind == rva::ui::EventKind::kStartConversation) {
+            ESP_LOGI(kTag, "MIC requested conversation start");
+            *conversation_requested = true;
+        } else if (event.kind == rva::ui::EventKind::kStopConversation) {
+            ESP_LOGI(kTag, "MIC requested conversation stop");
+            *conversation_requested = false;
+            if (runtime_active && stop_current_runtime != nullptr) {
+                *stop_current_runtime = true;
+            }
+        } else if (event.kind == rva::ui::EventKind::kRequestWifiScan) {
+            *configuration_requested = true;
+            *conversation_requested = false;
+            if (runtime_active && stop_current_runtime != nullptr) {
+                *stop_current_runtime = true;
+            }
+        }
+    }
+}
+
+void WaitForRetryOrUi(
+    rva::ui::VoiceUi* ui,
+    bool udp_available,
+    rva::runtime::MediaPreference* preferred_media,
+    bool* conversation_requested,
+    bool* configuration_requested,
+    uint32_t timeout_ms) {
+    constexpr uint32_t kPollIntervalMs = 50;
+    for (uint32_t elapsed = 0; elapsed < timeout_ms; elapsed += kPollIntervalMs) {
+        ProcessConversationUiEvents(
+            ui, udp_available, false, preferred_media, conversation_requested,
+            configuration_requested, nullptr);
+        if (!*conversation_requested || *configuration_requested) return;
+        vTaskDelay(pdMS_TO_TICKS(kPollIntervalMs));
+    }
 }
 
 void ScanWifi(rva::runtime::WifiStation* wifi, rva::ui::VoiceUi* ui) {
@@ -259,7 +371,9 @@ bool EnsureProvisioned(
 
 }  // namespace
 
-extern "C" void app_main() {
+namespace {
+
+void RunApplication() {
     if (!InitializeNvs()) {
         ESP_LOGE(kTag, "NVS initialization failed");
         return;
@@ -322,6 +436,7 @@ extern "C" void app_main() {
         ESP_LOGE(kTag, "Unable to derive device identity");
         return;
     }
+    const std::string tenant_id = CONFIG_RVA_TENANT_ID;
 
     srmodel_list_t* models = esp_srmodel_init("model");
     if (models == nullptr) {
@@ -340,37 +455,43 @@ extern "C" void app_main() {
     rva::runtime::DirectorBootstrap director;
     rva::runtime::MediaPreference preferred_media = rva::runtime::MediaPreference::kWss;
     const bool udp_available = clock_synchronized;
-    bool conversation_requested = true;
+    // Interactive terminals start idle; headless endpoints retain automatic retry.
+    bool conversation_requested = ui == nullptr;
     bool configuration_requested = false;
 
     while (true) {
         while (!conversation_requested && ui != nullptr) {
-            rva::ui::UiEvent event;
-            while (ui->PollEvent(&event)) {
-                if (event.kind == rva::ui::EventKind::kSelectTransport ||
-                    event.kind == rva::ui::EventKind::kStartConversation) {
-                    preferred_media = udp_available && event.transport == rva::ui::Transport::kUdp
-                                          ? rva::runtime::MediaPreference::kUdp
-                                          : rva::runtime::MediaPreference::kWss;
-                }
-                if (event.kind == rva::ui::EventKind::kStartConversation) {
-                    conversation_requested = true;
-                } else if (event.kind == rva::ui::EventKind::kRequestWifiScan) {
-                    EnsureProvisioned(&device_config, &wifi, ui.get(), &service_endpoint, true);
-                }
+            ProcessConversationUiEvents(
+                ui.get(), udp_available, false, &preferred_media, &conversation_requested,
+                &configuration_requested, nullptr);
+            if (configuration_requested) {
+                configuration_requested = false;
+                EnsureProvisioned(&device_config, &wifi, ui.get(), &service_endpoint, true);
             }
             if (!conversation_requested) vTaskDelay(pdMS_TO_TICKS(50));
         }
         if (!conversation_requested) conversation_requested = true;
         rva::runtime::BootstrapGrant grant;
-        if (!director.Request(
-                service_endpoint.url,
-                service_endpoint.token,
-                CONFIG_RVA_TENANT_ID,
-                device_id,
-                &grant)) {
+        const bool bootstrap_accepted = director.Request(
+            service_endpoint.url,
+            service_endpoint.token,
+            tenant_id,
+            device_id,
+            &grant);
+        ScopedBootstrapLease lease(
+            director, service_endpoint, tenant_id, device_id, grant);
+        if (!bootstrap_accepted) {
+            lease.ReleaseNow();
             runtime_events.OnFailure("director_bootstrap");
-            vTaskDelay(pdMS_TO_TICKS(3000));
+            WaitForRetryOrUi(
+                ui.get(), udp_available, &preferred_media, &conversation_requested,
+                &configuration_requested, 3000);
+            if (configuration_requested) {
+                configuration_requested = false;
+                lease.Finalize();
+                EnsureProvisioned(&device_config, &wifi, ui.get(), &service_endpoint, true);
+            }
+            if (ui != nullptr) conversation_requested = false;
             continue;
         }
         rva::runtime::VoiceRuntime runtime(
@@ -383,32 +504,38 @@ extern "C" void app_main() {
                 .display = ui != nullptr,
                 .touch = ui != nullptr,
             });
+        runtime.SetFailClosedHook(ReleaseLeaseBeforeRestart, &lease);
         if (!runtime.Start(grant, device_id, preferred_media)) {
             runtime_events.OnFailure("voice_runtime_start");
-            vTaskDelay(pdMS_TO_TICKS(3000));
+            lease.ReleaseNow();
+            WaitForRetryOrUi(
+                ui.get(), udp_available, &preferred_media, &conversation_requested,
+                &configuration_requested, 3000);
+            if (configuration_requested) {
+                configuration_requested = false;
+                lease.Finalize();
+                EnsureProvisioned(&device_config, &wifi, ui.get(), &service_endpoint, true);
+            }
+            if (ui != nullptr) conversation_requested = false;
             continue;
         }
+        bool stop_current_runtime = false;
         while (runtime.running()) {
-            if (ui != nullptr) {
-                rva::ui::UiEvent event;
-                while (ui->PollEvent(&event)) {
-                    if (event.kind == rva::ui::EventKind::kStopConversation) {
-                        conversation_requested = false;
-                        runtime.Stop();
-                        break;
-                    } else if (event.kind == rva::ui::EventKind::kRequestWifiScan) {
-                        configuration_requested = true;
-                        conversation_requested = false;
-                        runtime.Stop();
-                        break;
-                    }
-                }
+            ProcessConversationUiEvents(
+                ui.get(), udp_available, true, &preferred_media, &conversation_requested,
+                &configuration_requested, &stop_current_runtime);
+            if (stop_current_runtime || configuration_requested) {
+                runtime.Stop();
             }
             vTaskDelay(pdMS_TO_TICKS(50));
         }
         runtime.Stop();
+        lease.ReleaseNow();
+        const bool fresh_start_requested =
+            stop_current_runtime && conversation_requested && !configuration_requested;
         if (configuration_requested) {
             configuration_requested = false;
+            lease.Finalize();
             EnsureProvisioned(&device_config, &wifi, ui.get(), &service_endpoint, true);
         }
         if (runtime.should_fallback_to_wss()) {
@@ -416,12 +543,31 @@ extern "C" void app_main() {
             runtime_events.OnFailure("udp_fallback_wss");
         }
         if (ui != nullptr) {
-            ui->Post({
-                rva::ui::CommandKind::kSetConversation,
-                static_cast<uint32_t>(rva::ui::ConversationState::kIdle),
-                {},
-            });
+            conversation_requested = fresh_start_requested;
+            if (!fresh_start_requested) {
+                ui->Post({
+                    rva::ui::CommandKind::kSetConversation,
+                    static_cast<uint32_t>(rva::ui::ConversationState::kIdle),
+                    {},
+                });
+            }
         }
-        if (conversation_requested) vTaskDelay(pdMS_TO_TICKS(1000));
+        if (conversation_requested && ui == nullptr) vTaskDelay(pdMS_TO_TICKS(1000));
     }
+}
+
+}  // namespace
+
+extern "C" void app_main() {
+    try {
+        RunApplication();
+    } catch (const std::bad_alloc&) {
+        ESP_LOGE(kTag, "fatal application allocation failure; restarting");
+    } catch (const std::exception& error) {
+        ESP_LOGE(kTag, "fatal application exception: %s; restarting", error.what());
+    } catch (...) {
+        ESP_LOGE(kTag, "fatal unknown application exception; restarting");
+    }
+    vTaskDelay(pdMS_TO_TICKS(50));
+    esp_restart();
 }

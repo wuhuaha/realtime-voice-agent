@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
 import socket
@@ -7,12 +8,14 @@ import subprocess
 import sys
 import time
 import uuid
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator
 from contextlib import contextmanager
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
 import httpx
+import psutil
 import pytest
 from redis import Redis
 from redis.exceptions import RedisError
@@ -22,6 +25,7 @@ RUN_LOCAL = SERVER_ROOT / "scripts" / "run-local.ps1"
 JOB_SUPERVISOR = SERVER_ROOT / "scripts" / "windows_job_supervisor.py"
 INTERNAL_TOKEN = "validator-horizontal-scale-internal-token"
 BOOTSTRAP_TOKEN = "validator-horizontal-scale-bootstrap-token"
+SUPERVISOR_MODULE: Any | None = None
 
 
 def _reserve_process_ports() -> tuple[int, int]:
@@ -65,6 +69,43 @@ def _wait_for[T](probe: Any, *, timeout: float, description: str) -> T:
     raise AssertionError(f"timed out waiting for {description}{detail}")
 
 
+def _supervisor_module() -> Any:
+    global SUPERVISOR_MODULE  # noqa: PLW0603
+    if SUPERVISOR_MODULE is not None:
+        return SUPERVISOR_MODULE
+    spec = importlib.util.spec_from_file_location("windows_job_supervisor_for_tests", JOB_SUPERVISOR)
+    if spec is None or spec.loader is None:
+        raise AssertionError(f"could not load {JOB_SUPERVISOR}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    SUPERVISOR_MODULE = module
+    return module
+
+
+def _exact_process_identity(process_id: int) -> tuple[int, str]:
+    supervisor = _supervisor_module()
+    kernel32 = supervisor._kernel32()  # noqa: SLF001
+    handle = kernel32.OpenProcess(supervisor.PROCESS_QUERY_LIMITED_INFORMATION, False, process_id)
+    if not handle:
+        raise ProcessLookupError(process_id)
+    try:
+        return supervisor._process_identity(kernel32, handle)  # noqa: SLF001
+    finally:
+        kernel32.CloseHandle(handle)
+
+
+def _declared_process_executable(process: psutil.Process, fallback: object) -> str:
+    try:
+        command_line = process.cmdline()
+    except (psutil.AccessDenied, psutil.NoSuchProcess, psutil.ZombieProcess):
+        command_line = []
+    if command_line:
+        first = str(command_line[0])
+        if first:
+            return os.path.abspath(first)
+    return str(fallback)
+
+
 def _workers(client: httpx.Client) -> dict[str, dict[str, Any]] | None:
     response = client.get("/internal/v1/workers", headers={"X-Internal-Token": INTERNAL_TOKEN})
     if response.status_code != 200:
@@ -75,47 +116,98 @@ def _workers(client: httpx.Client) -> dict[str, dict[str, Any]] | None:
     return {worker["worker_id"]: worker for worker in workers}
 
 
-def _windows_process_snapshot() -> dict[int, dict[str, Any]]:
-    result = subprocess.run(
-        [
-            "pwsh",
-            "-NoProfile",
-            "-Command",
-            (
-                "@(Get-CimInstance Win32_Process | "
-                "Select-Object ProcessId,ParentProcessId,CreationDate) | ConvertTo-Json -Compress"
-            ),
-        ],
-        check=True,
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        timeout=10,
-    )
-    rows = json.loads(result.stdout)
-    return {int(row["ProcessId"]): row for row in rows}
+def _windows_process_snapshot(
+    *,
+    process_ids: Iterable[int] = (),
+    parent_process_ids: Iterable[int] = (),
+) -> dict[int, dict[str, Any]]:
+    target_pids = {int(process_id) for process_id in process_ids}
+    target_parent_pids = {int(process_id) for process_id in parent_process_ids}
+    if not target_pids and not target_parent_pids:
+        raise ValueError("process_ids or parent_process_ids is required")
+
+    snapshot: dict[int, dict[str, Any]] = {}
+    for process in psutil.process_iter(["pid", "ppid", "create_time", "exe"]):
+        try:
+            info = process.info
+            process_id = int(info["pid"])
+            parent_process_id = int(info["ppid"])
+            if process_id not in target_pids and parent_process_id not in target_parent_pids:
+                continue
+            try:
+                creation_ticks, executable = _exact_process_identity(process_id)
+            except (OSError, ProcessLookupError):
+                creation_ticks = _datetime_to_dotnet_ticks(datetime.fromtimestamp(float(info["create_time"]), tz=UTC))
+                executable = info.get("exe")
+            executable = _declared_process_executable(process, executable)
+            snapshot[process_id] = {
+                "ProcessId": process_id,
+                "ParentProcessId": parent_process_id,
+                "CreationDate": str(creation_ticks),
+                "ExecutablePath": executable,
+            }
+        except (psutil.AccessDenied, psutil.NoSuchProcess, psutil.ZombieProcess):
+            continue
+    return snapshot
+
+
+def _datetime_to_dotnet_ticks(value: datetime) -> int:
+    timestamp = value.astimezone(UTC)
+    return int((timestamp - datetime(1, 1, 1, tzinfo=UTC)).total_seconds() * 10_000_000)
+
+
+def _dotnet_ticks_to_datetime(value: int) -> datetime:
+    seconds, ticks = divmod(value, 10_000_000)
+    return datetime(1, 1, 1, tzinfo=UTC) + timedelta(seconds=seconds, microseconds=ticks // 10)
+
+
+def _dotnet_ticks_to_utc_roundtrip(value: int) -> str:
+    created_at = _dotnet_ticks_to_datetime(value)
+    subsecond_ticks = value % 10_000_000
+    return f"{created_at:%Y-%m-%dT%H:%M:%S}.{subsecond_ticks:07d}Z"
+
+
+def _cim_creation_to_utc_ticks(value: object) -> str:
+    if isinstance(value, int) or (isinstance(value, str) and value.isdecimal()):
+        return str(value)
+    created_at = datetime.fromisoformat(str(value)).astimezone(UTC)
+    return str(_datetime_to_dotnet_ticks(created_at))
+
+
+def _process_identity_from_row(row: dict[str, Any]) -> dict[str, Any]:
+    if str(row["CreationDate"]).isdecimal():
+        start_time_utc = _dotnet_ticks_to_utc_roundtrip(int(row["CreationDate"]))
+    else:
+        created_at = datetime.fromisoformat(str(row["CreationDate"])).astimezone(UTC)
+        start_time_utc = created_at.isoformat().replace("+00:00", "Z")
+    return {
+        "executable": str(row["ExecutablePath"]),
+        "start_time_utc": start_time_utc,
+        "start_time_utc_ticks": _cim_creation_to_utc_ticks(row["CreationDate"]),
+    }
 
 
 def _owned_process_identities(manifest: dict[str, Any]) -> dict[int, str]:
-    snapshot = _windows_process_snapshot()
     owned: dict[int, str] = {}
     pending = [int(entry["supervisor_pid"]) for entry in manifest["processes"]]
     while pending:
         process_id = pending.pop()
+        snapshot = _windows_process_snapshot(process_ids=[process_id], parent_process_ids=[process_id])
         row = snapshot.get(process_id)
         if row is None or process_id in owned:
             continue
-        owned[process_id] = str(row["CreationDate"])
+        owned[process_id] = _cim_creation_to_utc_ticks(row["CreationDate"])
         pending.extend(child_id for child_id, child in snapshot.items() if int(child["ParentProcessId"]) == process_id)
     return owned
 
 
 def _matching_process_identities(identities: dict[int, str]) -> list[int]:
-    snapshot = _windows_process_snapshot()
+    snapshot = _windows_process_snapshot(process_ids=identities)
     return [
         process_id
         for process_id, creation_date in identities.items()
-        if (row := snapshot.get(process_id)) is not None and str(row["CreationDate"]) == creation_date
+        if (row := snapshot.get(process_id)) is not None
+        and _cim_creation_to_utc_ticks(row["CreationDate"]) == creation_date
     ]
 
 
@@ -159,31 +251,19 @@ def _force_close_verified_supervisors(manifest: dict[str, Any]) -> None:
 
 
 def _windows_process_identity(process_id: int) -> dict[str, Any]:
-    result = subprocess.run(
-        [
-            "pwsh",
-            "-NoProfile",
-            "-Command",
-            (
-                f"$process = Get-Process -Id {process_id}; "
-                "[pscustomobject]@{ "
-                "executable = $process.Path; "
-                "start_time_utc = $process.StartTime.ToUniversalTime().ToString('O'); "
-                "start_time_utc_ticks = [string]$process.StartTime.ToUniversalTime().Ticks "
-                "} | ConvertTo-Json -Compress"
-            ),
-        ],
-        check=True,
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        timeout=5,
-    )
-    return json.loads(result.stdout)
+    row = _windows_process_snapshot(process_ids=[process_id]).get(process_id)
+    if row is None:
+        raise ProcessLookupError(process_id)
+    return _process_identity_from_row(row)
 
 
 def _assert_manifest_process_identities(manifest: dict[str, Any]) -> None:
-    snapshot = _windows_process_snapshot()
+    process_ids = [
+        int(process_id)
+        for entry in manifest["processes"]
+        for process_id in (entry["pid"], entry["supervisor_pid"])
+    ]
+    snapshot = _windows_process_snapshot(process_ids=process_ids)
     child_ids: set[int] = set()
     supervisor_ids: set[int] = set()
     for entry in manifest["processes"]:
@@ -525,7 +605,9 @@ def test_legacy_manifest_captures_and_stops_descendant_identity(tmp_path: Path) 
         )
         root_identity = _windows_process_identity(root.pid)
         child_identity = _windows_process_identity(child_id)
-        child_creation = str(_windows_process_snapshot()[child_id]["CreationDate"])
+        child_creation = _cim_creation_to_utc_ticks(
+            _windows_process_snapshot(process_ids=[child_id])[child_id]["CreationDate"]
+        )
         manifest_path.write_text(
             json.dumps(
                 {

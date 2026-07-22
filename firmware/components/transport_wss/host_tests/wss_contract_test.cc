@@ -44,15 +44,20 @@ public:
     }
     bool Close(uint32_t) override {
         ++close_calls;
-        return true;
+        return close_result;
     }
-    void Destroy() override { ++destroy_calls; }
+    bool Destroy() override {
+        ++destroy_calls;
+        return destroy_result;
+    }
 
     int start_calls = 0;
     int text_calls = 0;
     int binary_calls = 0;
     int close_calls = 0;
     int destroy_calls = 0;
+    bool close_result = true;
+    bool destroy_result = true;
     size_t last_size = 0;
 };
 
@@ -319,6 +324,25 @@ void TestCallbackOnlyQueuesAndSupervisorOwnsTeardown() {
     assert(client.close_calls == 1 && client.destroy_calls == 1);
 }
 
+void TestTeardownFailureIsObservableAndRetryable() {
+    FakeClient client;
+    client.close_result = false;
+    client.destroy_result = false;
+    {
+        rva::wss::WssOwner owner(client, 1, 8);
+        assert(owner.Start());
+        owner.RequestClose();
+        assert(!owner.SupervisorClose(100));
+        assert(client.close_calls == 1 && client.destroy_calls == 1);
+
+        client.close_result = true;
+        client.destroy_result = true;
+        assert(owner.SupervisorClose(100));
+        assert(client.close_calls == 2 && client.destroy_calls == 2);
+    }
+    assert(client.close_calls == 2 && client.destroy_calls == 2);
+}
+
 }  // namespace
 
 int main() {
@@ -326,5 +350,6 @@ int main() {
     TestMediaHeaderStrictRoundTrip();
     TestSessionIdentityGenerationAndSequenceFences();
     TestCallbackOnlyQueuesAndSupervisorOwnsTeardown();
+    TestTeardownFailureIsObservableAndRetryable();
     return 0;
 }

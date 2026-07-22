@@ -32,9 +32,12 @@
 
 - Grant encode/verify、expiry、wrong worker/device、duplicate/replay。
 - Worker selection、capacity、heartbeat TTL、drain、lease/fencing。
+- Device exact release 的认证、重复/stale fence 幂等，以及 lease identity 有效但 media 字段无效时仍可释放 lease。
 - JSON duplicate/unknown/oversize/state parsing。
 - UDP header/nonce/AAD/replay/reorder/generation。
 - queue overflow、timeout、double close、cancellation 和 provider error mapping。
+- Redis connect/command timeout、Worker 10 秒总关停预算/有界 release heartbeat、TTS queue timeout 与 MiMo SSE
+  line/event/data-line/audio-chunk/total-response 上限。
 
 ### Contract
 
@@ -73,6 +76,8 @@
 - clean build、size、artifact SHA-256。
 - 确认目标设备与串口并获得授权后才 flash；记录 flash 命令、boot log 和 artifact identity。
 - WSS/UDP、UI/NVS、AEC、字幕、打断、音量、网络切换、Server restart 分项验收。
+- ESP-SR `model` 分区存在/缺失各启动一次；缺失时验证只禁用神经降噪，并重新执行 AEC/VAD、播放中
+  double-talk、上行 PCM 与 ASR 项。代码路径或 build 通过不能替代这组声学证据。
 
 ## 3. 风险专项
 
@@ -92,6 +97,8 @@ double-talk 和连续 20 轮。采集误唤醒、漏检、ASR CER/人工转写�
 - 单设备 30 分钟：heap/stack high-water、queue、socket、provider client、underrun 和 reconnect。
 - 并发阶梯：1/5/10/...，但不得假设默认 `5` 已测量。
 - cancellation storm、provider 429/timeout、Worker drain/crash、Redis 短时故障。
+- bootstrap 200 后本地 WSS/task allocation 失败、exact release、立即 fresh bootstrap；以及 WSS teardown 无法确认时
+  fail-closed restart，不允许旧 owner 与新 session 并存。
 - 通过门限由目标部署机器的 SLO 冻结。
 
 ### 安全

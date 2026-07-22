@@ -1,7 +1,7 @@
 # Session 生命周期与错误语义
 
 状态：accepted
-更新日期：2026-07-20
+更新日期：2026-07-22
 
 ## 1. 状态机
 
@@ -27,7 +27,7 @@ stateDiagram-v2
 | Phase | 必须有界 | 超时结果 |
 | --- | --- | --- |
 | bootstrap/grant | HTTP client deadline | 不创建 Worker session，退避后重试 |
-| WSS connect/hello | connect + handshake timeout | close，fresh bootstrap |
+| WSS connect/hello | connect + handshake timeout | close，best-effort release 当前精确 lease，fresh bootstrap |
 | UDP probe | grant `probe_timeout_ms` | close整个 session，fresh bootstrap |
 | Agent startup | session start timeout | close `runtime_failure` |
 | media queue put | 小于可接受 media age | drop/live-edge 或 `media_overloaded` |
@@ -77,6 +77,13 @@ reason 必须稳定且有限。
 
 Endpoint 对网络/服务失败采用有上限指数退避和随机抖动。认证/配置错误不得快速重试；应进入可配置 UI。
 每次 reconnect 重新 bootstrap 或取得新 Worker grant，不复用 UDP key/sequence。Server 不保证未提交 turn 恢复。
+设备取得 bootstrap grant 后若本地资源创建、WSS 建链或 session 运行失败，必须先完成本地 bounded teardown，再以
+`tenant_id/device_id/worker_id/session_epoch/fencing_token` best-effort release。Director 只 compare-and-delete 完全匹配的
+lease，旧请求不得撤销新 epoch；release 失败仍按退避策略 fresh bootstrap，不复用 grant。
+Endpoint 必须先验证并保留最小 release identity，再解析其余 media 字段；这样 200 response 的 endpoint/profile 字段
+无效时也能释放已创建的 lease。Release retry 必须同时有每次 HTTP deadline、尝试次数和总生命周期上限。`Stop ->
+Start` 表示新 session，不允许在已 teardown 的 WebSocket owner 或旧 grant 上原地复活；WSS close/destroy 无法确认时
+采用 fail-closed 重启。
 
 ## 7. 验证
 

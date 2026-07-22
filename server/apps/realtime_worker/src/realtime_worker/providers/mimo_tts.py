@@ -15,10 +15,16 @@ from livekit.agents import DEFAULT_API_CONNECT_OPTIONS, tts
 from ..config import Settings
 from ..errors import ProviderError
 from ..observability.events import Tracer, redact_exception
-from .cosyvoice_tts import PCMFrame, _pcm_frames, normalize_for_tts
+from .cosyvoice_tts import PCMFrame, _acquire_tts_slot, _pcm_frames, normalize_for_tts
 
 MIMO_SAMPLE_RATE = 24000
 MIMO_AUDIO_FORMAT = "pcm16"
+MIMO_MAX_SSE_LINE_BYTES = 1 * 1024 * 1024
+MIMO_MAX_SSE_EVENT_BYTES = 1 * 1024 * 1024
+MIMO_MAX_SSE_DATA_LINES = 256
+MIMO_MAX_DECODED_AUDIO_CHUNK_BYTES = 512 * 1024
+MIMO_MAX_RESPONSE_BYTES = 8 * 1024 * 1024
+_UTF8_BOM = b"\xef\xbb\xbf"
 
 
 class MimoTTSClient:
@@ -33,6 +39,7 @@ class MimoTTSClient:
         provider: str = "mimo",
         timeout_seconds: float = 20.0,
         max_concurrency: int = 1,
+        queue_timeout_seconds: float = 0.25,
         client: httpx.AsyncClient | None = None,
         semaphore: asyncio.Semaphore | None = None,
     ) -> None:
@@ -43,6 +50,7 @@ class MimoTTSClient:
         self._client = client or httpx.AsyncClient(timeout=httpx.Timeout(timeout_seconds))
         self._owns_client = client is None
         self._semaphore = semaphore or asyncio.Semaphore(max_concurrency)
+        self._queue_timeout_seconds = queue_timeout_seconds
 
     async def stream_pcm(
         self,
@@ -69,7 +77,11 @@ class MimoTTSClient:
         if self._api_key:
             headers["api-key"] = self._api_key
 
-        await self._semaphore.acquire()
+        await _acquire_tts_slot(
+            self._semaphore,
+            timeout_seconds=self._queue_timeout_seconds,
+            provider=self._provider,
+        )
         try:
             async with self._client.stream(
                 "POST", f"{self._base_url}/chat/completions", headers=headers, json=payload
@@ -103,7 +115,7 @@ class MimoTTSClient:
 
 
 async def _mimo_pcm_chunks(response: httpx.Response, *, provider: str = "mimo") -> AsyncIterator[bytes]:
-    async for event in _sse_events(response):
+    async for event in _sse_events(response, provider=provider):
         if event == "[DONE]":
             return
         try:
@@ -113,29 +125,100 @@ async def _mimo_pcm_chunks(response: httpx.Response, *, provider: str = "mimo") 
         encoded_audio = _extract_audio_data(payload, provider=provider)
         if encoded_audio is None:
             continue
+        max_encoded_bytes = ((MIMO_MAX_DECODED_AUDIO_CHUNK_BYTES + 2) // 3) * 4
+        if len(encoded_audio) > max_encoded_bytes:
+            raise ProviderError(provider, "TTS audio chunk is too large", retryable=False)
         try:
             audio = base64.b64decode(encoded_audio, validate=True)
         except (TypeError, ValueError) as exc:
             raise ProviderError(provider, "TTS returned invalid base64 audio", retryable=False) from exc
+        if len(audio) > MIMO_MAX_DECODED_AUDIO_CHUNK_BYTES:
+            raise ProviderError(provider, "TTS audio chunk is too large", retryable=False)
         if audio:
             yield audio
 
 
-async def _sse_events(response: httpx.Response) -> AsyncIterator[str]:
+async def _sse_events(response: httpx.Response, *, provider: str = "mimo") -> AsyncIterator[str]:
+    buffer = bytearray()
     data_lines: list[str] = []
-    async for raw_line in response.aiter_lines():
-        line = raw_line.strip()
+    event_bytes = 0
+    response_bytes = 0
+    bom_checked = False
+
+    async def handle_line(raw_line: bytes) -> str | None:
+        nonlocal data_lines, event_bytes
+        if len(raw_line) > MIMO_MAX_SSE_LINE_BYTES:
+            raise ProviderError(provider, "TTS SSE line is too large", retryable=False)
+        try:
+            line = raw_line.rstrip(b"\r").decode("utf-8").strip()
+        except UnicodeDecodeError as exc:
+            raise ProviderError(provider, "TTS SSE is not valid UTF-8", retryable=False) from exc
         if not line:
             if data_lines:
-                yield "\n".join(data_lines)
+                event = "\n".join(data_lines)
                 data_lines = []
-            continue
+                event_bytes = 0
+                return event
+            return None
         if line.startswith(":"):
-            continue
+            return None
         if line.startswith("data:"):
-            data_lines.append(line[5:].strip())
+            value = line[5:].strip()
+            event_bytes += len(value.encode("utf-8"))
+            if event_bytes > MIMO_MAX_SSE_EVENT_BYTES or len(data_lines) >= MIMO_MAX_SSE_DATA_LINES:
+                raise ProviderError(provider, "TTS SSE event is too large", retryable=False)
+            data_lines.append(value)
+        return None
+
+    async for chunk in response.aiter_bytes():
+        response_bytes += len(chunk)
+        if response_bytes > MIMO_MAX_RESPONSE_BYTES:
+            raise ProviderError(provider, "TTS SSE response is too large", retryable=False)
+        buffer.extend(chunk)
+        if not bom_checked:
+            if len(buffer) < len(_UTF8_BOM) and _UTF8_BOM.startswith(buffer):
+                continue
+            if buffer.startswith(_UTF8_BOM):
+                del buffer[: len(_UTF8_BOM)]
+            bom_checked = True
+        while True:
+            raw_line = _pop_sse_line(buffer)
+            if raw_line is None:
+                break
+            event = await handle_line(raw_line)
+            if event is not None:
+                yield event
+        if len(buffer) > MIMO_MAX_SSE_LINE_BYTES:
+            raise ProviderError(provider, "TTS SSE line is too large", retryable=False)
+
+    if not bom_checked and buffer.startswith(_UTF8_BOM):
+        del buffer[: len(_UTF8_BOM)]
+    while (raw_line := _pop_sse_line(buffer, final=True)) is not None:
+        event = await handle_line(raw_line)
+        if event is not None:
+            yield event
+    if buffer:
+        event = await handle_line(bytes(buffer))
+        if event is not None:
+            yield event
     if data_lines:
         yield "\n".join(data_lines)
+
+
+def _pop_sse_line(buffer: bytearray, *, final: bool = False) -> bytes | None:
+    for index, value in enumerate(buffer):
+        if value == 0x0A:
+            line = bytes(buffer[:index])
+            del buffer[: index + 1]
+            return line
+        if value == 0x0D:
+            if index + 1 == len(buffer) and not final:
+                return None
+            delimiter_bytes = 2 if index + 1 < len(buffer) and buffer[index + 1] == 0x0A else 1
+            line = bytes(buffer[:index])
+            del buffer[: index + delimiter_bytes]
+            return line
+    return None
 
 
 def _extract_audio_data(payload: object, *, provider: str = "mimo") -> str | None:
@@ -188,6 +271,7 @@ class MimoTTS(tts.TTS):
                 key.get_secret_value(),
                 timeout_seconds=settings.mimo_timeout_seconds,
                 max_concurrency=settings.mimo_max_concurrency,
+                queue_timeout_seconds=settings.tts_queue_timeout_seconds,
                 semaphore=semaphore,
             ),
             settings=settings,

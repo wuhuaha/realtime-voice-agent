@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import pytest
+import session_director.app as director_app
 from fastapi.testclient import TestClient
-from pydantic import SecretStr
+from pydantic import SecretStr, ValidationError
+from redis.exceptions import TimeoutError as RedisTimeoutError
 from session_director.app import create_app
 from session_director.config import DirectorSettings
 from session_director.store import InMemoryCoordinationStore
@@ -91,6 +93,76 @@ def test_internal_and_bootstrap_credentials_are_separate() -> None:
         assert client.post("/v1/session/bootstrap", json={"device_id": "device-1"}).status_code == 401
 
 
+def test_authenticated_release_is_idempotent_and_allows_immediate_bootstrap() -> None:
+    app = create_app(settings(), store=InMemoryCoordinationStore())
+    device = {"Authorization": "Bearer validator-device-token"}
+    internal = {"X-Internal-Token": "validator-internal-token"}
+    with TestClient(app) as client:
+        assert client.post(
+            "/internal/v1/workers/heartbeat",
+            headers=internal,
+            json={
+                "worker_id": "worker-a",
+                "public_wss_url": "ws://worker-a.test/v1/voice",
+                "active_sessions": 0,
+            },
+        ).status_code == 200
+        opened = client.post(
+            "/v1/session/bootstrap",
+            headers=device,
+            json={"tenant_id": "tenant-1", "device_id": "device-1"},
+        ).json()
+        release = {
+            "tenant_id": "tenant-1",
+            "device_id": "device-1",
+            "worker_id": opened["worker_id"],
+            "session_epoch": opened["session_epoch"],
+            "fencing_token": opened["fencing_token"],
+        }
+
+        assert client.post("/v1/session/release", headers=device, json=release).json() == {"released": True}
+        reopened = client.post(
+            "/v1/session/bootstrap",
+            headers=device,
+            json={"tenant_id": "tenant-1", "device_id": "device-1"},
+        )
+        assert reopened.status_code == 200
+        assert reopened.json()["fencing_token"] == opened["fencing_token"] + 1
+        assert client.post("/v1/session/release", headers=device, json=release).json() == {"released": True}
+        assert client.post(
+            "/v1/session/bootstrap",
+            headers=device,
+            json={"tenant_id": "tenant-1", "device_id": "device-1"},
+        ).status_code == 409
+
+
+def test_release_requires_credentials_bound_to_request_principal() -> None:
+    configured = settings().model_copy(
+        update={
+            "allow_shared_bootstrap_auth": False,
+            "device_credentials": {"tenant-1": {"device-1": SecretStr("validator-device-1-token")}},
+        }
+    )
+    app = create_app(configured, store=InMemoryCoordinationStore())
+    release = {
+        "tenant_id": "tenant-1",
+        "device_id": "device-2",
+        "worker_id": "worker-a",
+        "session_epoch": "epoch-1",
+        "fencing_token": 1,
+    }
+    with TestClient(app) as client:
+        missing = client.post("/v1/session/release", json=release)
+        wrong_principal = client.post(
+            "/v1/session/release",
+            headers={"Authorization": "Bearer validator-device-1-token"},
+            json=release,
+        )
+
+    assert missing.status_code == 401
+    assert wrong_principal.status_code == 401
+
+
 def test_device_specific_bootstrap_credential_is_bound_to_tenant_and_device() -> None:
     configured = settings().model_copy(
         update={
@@ -122,3 +194,71 @@ def test_drain_contract_is_one_way() -> None:
             json={"draining": False},
         )
         assert response.status_code == 422
+
+
+def test_redis_client_uses_configured_connection_and_command_timeouts(monkeypatch: pytest.MonkeyPatch) -> None:
+    configured = settings().model_copy(
+        update={
+            "coordination_backend": "redis",
+            "redis_connect_timeout_seconds": 0.4,
+            "redis_command_timeout_seconds": 0.7,
+        }
+    )
+    captured: dict[str, object] = {}
+
+    def fake_from_url(url: str, **kwargs: object) -> object:
+        captured["url"] = url
+        captured.update(kwargs)
+        return object()
+
+    monkeypatch.setattr(director_app.Redis, "from_url", fake_from_url)
+
+    director_app._create_store(configured)
+
+    assert captured == {
+        "url": configured.redis_url,
+        "decode_responses": False,
+        "socket_connect_timeout": 0.4,
+        "socket_timeout": 0.7,
+    }
+
+
+class _TimeoutCoordinationStore(InMemoryCoordinationStore):
+    async def ping(self) -> bool:
+        raise RedisTimeoutError("redis://user:secret@internal.example")
+
+    async def list_workers(self, *, now: float):  # type: ignore[no-untyped-def]
+        raise RedisTimeoutError("redis://user:secret@internal.example")
+
+
+def test_bootstrap_redis_timeout_returns_generic_service_unavailable() -> None:
+    app = create_app(settings(), store=_TimeoutCoordinationStore())
+
+    with TestClient(app, raise_server_exceptions=False) as client:
+        ready = client.get("/health/ready")
+        response = client.post(
+            "/v1/session/bootstrap",
+            headers={"Authorization": "Bearer validator-device-token"},
+            json={"tenant_id": "tenant-1", "device_id": "device-1", "supported_profiles": ["wss-opus-v2"]},
+        )
+
+    assert ready.status_code == 503
+    assert ready.json() == {"detail": "coordination_unavailable"}
+    assert "secret" not in ready.text
+    assert response.status_code == 503
+    assert response.json() == {"detail": "coordination_unavailable"}
+    assert "secret" not in response.text
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("redis_connect_timeout_seconds", 0.01),
+        ("redis_connect_timeout_seconds", 10.01),
+        ("redis_command_timeout_seconds", 0.01),
+        ("redis_command_timeout_seconds", 10.01),
+    ],
+)
+def test_redis_timeouts_are_bounded(field: str, value: float) -> None:
+    with pytest.raises(ValidationError):
+        DirectorSettings(_env_file=None, **{field: value})

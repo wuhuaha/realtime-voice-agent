@@ -17,6 +17,7 @@ from starlette.websockets import WebSocketDisconnect
 
 from realtime_worker.agent import AgentOutputSegment, AgentRunner
 from realtime_worker.audio import PCM_SAMPLES
+from realtime_worker.lifecycle import run_with_hard_deadline
 from realtime_worker.transport import UdpMediaGateway, UdpMediaSession
 from realtime_worker.voice.session import PlaybackRef
 
@@ -60,6 +61,7 @@ class RvaRuntimeLimits:
     handshake_timeout_seconds: float = 5.0
     runner_timeout_seconds: float = 5.0
     close_timeout_seconds: float = 5.0
+    agent_close_stage_timeout_seconds: float = 2.0
     idle_timeout_seconds: float = 45.0
     playback_prebuffer_packets: int = 4
 
@@ -72,6 +74,7 @@ class RvaRuntimeLimits:
             self.handshake_timeout_seconds,
             self.runner_timeout_seconds,
             self.close_timeout_seconds,
+            self.agent_close_stage_timeout_seconds,
             self.idle_timeout_seconds,
         )
         if any(value <= 0 for value in positive) or self.playback_prebuffer_packets < 0:
@@ -187,6 +190,7 @@ class RvaWssConnection:
             udp_grant=self._rva_udp_grant(),
             audio_port=self._audio_port,
             agent_port=self._agent_port,
+            close_stage_timeout_seconds=self._limits.agent_close_stage_timeout_seconds,
         )
         self._codec: RvaOpusCodec | None = None
         self._runner: AgentRunner | None = None
@@ -300,6 +304,10 @@ class RvaWssConnection:
             self._close_task = asyncio.create_task(self._close_impl(code, reason), name=f"rva-close-{self._binding_id}")
         try:
             await asyncio.wait_for(asyncio.shield(self._close_task), timeout=self._limits.close_timeout_seconds)
+        except asyncio.CancelledError:
+            self._close_task.cancel()
+            await asyncio.gather(self._close_task, return_exceptions=True)
+            raise
         except TimeoutError:
             logger.error("RVA bounded close timed out session=%s", self._binding_id)
 
@@ -309,15 +317,12 @@ class RvaWssConnection:
         task = self._close_task
         if task is None:
             return
-        cancelled = False
-        while not task.done():
-            try:
-                await asyncio.shield(task)
-            except asyncio.CancelledError:
-                cancelled = True
-        await task
-        if cancelled:
-            raise asyncio.CancelledError
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+            raise
 
     async def _receive_first_control(self) -> str:
         async with asyncio.timeout(self._limits.handshake_timeout_seconds):
@@ -649,10 +654,13 @@ class RvaWssConnection:
         runner, self._runner = self._runner, None
         if runner is None:
             return
-        try:
-            await asyncio.wait_for(runner.close(), timeout=self._limits.runner_timeout_seconds)
-        except TimeoutError as exc:
-            raise RvaRuntimeError("agent runner close timed out") from exc
+        closed = await run_with_hard_deadline(
+            runner.close(),
+            timeout=self._limits.runner_timeout_seconds,
+            task_name=f"rva-runner-close-{self._binding_id}",
+        )
+        if not closed.completed:
+            raise RvaRuntimeError("agent runner close timed out")
 
     async def _close_impl(self, code: int, reason: str) -> None:
         current = asyncio.current_task()

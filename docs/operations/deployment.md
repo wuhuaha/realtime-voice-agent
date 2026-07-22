@@ -1,7 +1,7 @@
 # 部署指南
 
 状态：目标生产拓扑；执行前须满足 release gate
-更新日期：2026-07-20
+更新日期：2026-07-22
 
 ## 0. Linux 单机交付基线
 
@@ -108,7 +108,9 @@ Director 可多副本无会话媒体状态；Worker 是 stateful realtime unit�
 ### Director
 
 - `VOICE_COORDINATION_BACKEND=redis`，生产禁止 `memory`。
-- `VOICE_REDIS_URL`、`VOICE_COORDINATION_PREFIX`。单机 Compose 内部固定由 Director 使用，不注入 Worker。
+- `VOICE_REDIS_URL`、`VOICE_COORDINATION_PREFIX`，以及 Redis connect/command deadline；默认
+  `VOICE_REDIS_CONNECT_TIMEOUT_SECONDS=1`、`VOICE_REDIS_COMMAND_TIMEOUT_SECONDS=1`。单机 Compose 内部固定由
+  Director 使用，不注入 Worker。
 - `VOICE_INTERNAL_TOKEN`、`VOICE_GRANT_SIGNING_KEY`、bootstrap credential。
 - heartbeat/route lease TTL 按网络和 drain 策略配置；grant 不长于 route lease。
 
@@ -118,9 +120,15 @@ Director 可多副本无会话媒体状态；Worker 是 stateful realtime unit�
 - 生产 `VOICE_WORKER_PUBLIC_WS_URL` 必须为 `wss://`；`ws://` 只允许受控开发环境。
 - `VOICE_WORKER_MAX_SESSIONS` 默认 `5`，部署可覆盖；不是测量 SLO。
 - `VOICE_DIRECTOR_URL`、heartbeat enabled/interval 和相同 signing/internal secret version。
+- `VOICE_SHUTDOWN_DRAIN_TIMEOUT_SECONDS` 控制关停总预算，默认 10 秒；部署 orchestrator 的 termination grace period
+  必须大于该预算并留出进程退出余量。
+- `VOICE_AGENT_CLOSE_STAGE_TIMEOUT_SECONDS` 限制 session、output 和 TTS 等单个 cleanup 阶段，默认 2 秒；部署时应
+  明显小于关停总预算，用于隔离不响应取消的 provider/runner，不能视为正常请求 deadline。
 - UDP bind/advertise host/port；单机 Compose 内部 bind 固定 `8092`，公网 publish 与 advertise 共用
   `VOICE_UDP_PUBLIC_PORT`；未通过 UDP release gate 时禁用或强制 WSS。
 - `VOICE_RUNNER=livekit` 与 provider endpoint/model/secret。
+- `VOICE_TTS_QUEUE_TIMEOUT_SECONDS` 控制 TTS bulkhead 排队时间，默认 0.25 秒；增大它会把过载转为对话延迟，不能
+  作为扩容替代品。
 
 ### Transport policy
 
@@ -143,7 +151,8 @@ Readiness 只探测 provider endpoint 的网络连通性，不证明 provider AP
 
 1. Director 将目标 Worker `draining=true`，确认不再分配新 session。
 2. 等待 active sessions 自然归零，或达到配置的 drain deadline。
-3. Deadline 到达后有界关闭：撤销 generation/UDP key、取消 Agent/provider task、关闭 transport。
+3. Deadline 到达后有界关闭：撤销 generation/UDP key、取消 Agent/provider task、关闭 transport；registry 关闭后
+   在总预算内通过最多 32 次 draining heartbeat 分批确认 exact lease release。
 4. 停止旧 Worker，部署新版本，检查 readiness/heartbeat。
 5. Canary 通过后保留 replacement Worker；drain 是单向状态，不对旧进程执行 undrain。
 

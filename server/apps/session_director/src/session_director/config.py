@@ -18,6 +18,8 @@ class DirectorSettings(BaseSettings):
     director_bind_port: int = Field(default=8080, ge=1, le=65535)
     coordination_backend: Literal["memory", "redis"] = "memory"
     redis_url: str = "redis://127.0.0.1:6379/0"
+    redis_connect_timeout_seconds: float = Field(default=1.0, ge=0.05, le=10.0)
+    redis_command_timeout_seconds: float = Field(default=1.0, ge=0.05, le=10.0)
     coordination_prefix: str = "voice-agent"
     internal_token: SecretStr = SecretStr("replace-with-random-internal-token")
     grant_signing_key: SecretStr = SecretStr("replace-with-random-grant-key")

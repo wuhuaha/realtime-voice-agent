@@ -19,6 +19,7 @@ from livekit.plugins import silero
 
 from .audio import PCM_SAMPLE_RATE, PCM_SAMPLES, PcmFrame
 from .config import Settings
+from .lifecycle import run_with_hard_deadline
 from .observability.events import (
     BoundedJsonLogTraceSink,
     TraceContext,
@@ -444,13 +445,52 @@ class LiveKitAgentRunner:
         return self._output.advance_producer_epoch()
 
     async def close(self) -> None:
-        self._input.close()
-        if self._session is not None:
-            await self._session.aclose()
-        await self._output.close()
-        closer = getattr(self._tts, "aclose", None)
+        failures: list[BaseException] = []
+        try:
+            self._input.close()
+        except BaseException as exc:
+            failures.append(exc)
+
+        session, self._session = self._session, None
+        if session is not None:
+            try:
+                closed = await run_with_hard_deadline(
+                    session.aclose(),
+                    timeout=self._settings.agent_close_stage_timeout_seconds,
+                    task_name="livekit-agent-session-close",
+                )
+                if not closed.completed:
+                    failures.append(TimeoutError("LiveKit AgentSession close timed out"))
+            except BaseException as exc:
+                failures.append(exc)
+
+        try:
+            closed = await run_with_hard_deadline(
+                self._output.close(),
+                timeout=self._settings.agent_close_stage_timeout_seconds,
+                task_name="livekit-agent-output-close",
+            )
+            if not closed.completed:
+                failures.append(TimeoutError("LiveKit output close timed out"))
+        except BaseException as exc:
+            failures.append(exc)
+
+        tts, self._tts = self._tts, None
+        closer = getattr(tts, "aclose", None)
         if closer is not None:
-            await closer()
+            try:
+                closed = await run_with_hard_deadline(
+                    closer(),
+                    timeout=self._settings.agent_close_stage_timeout_seconds,
+                    task_name="livekit-agent-tts-close",
+                )
+                if not closed.completed:
+                    failures.append(TimeoutError("LiveKit TTS close timed out"))
+            except BaseException as exc:
+                failures.append(exc)
+
+        if failures:
+            raise failures[0]
 
 
 def create_runner(settings: Settings, emit_segment: SegmentSink, stop_playback: StopSink) -> AgentRunner:

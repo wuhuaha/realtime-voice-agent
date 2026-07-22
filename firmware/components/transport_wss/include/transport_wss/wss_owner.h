@@ -81,7 +81,7 @@ public:
     virtual bool SendText(const uint8_t* data, size_t size, uint32_t timeout_ms) = 0;
     virtual bool SendBinary(const uint8_t* data, size_t size, uint32_t timeout_ms) = 0;
     virtual bool Close(uint32_t timeout_ms) = 0;
-    virtual void Destroy() = 0;
+    virtual bool Destroy() = 0;
 };
 
 class WssOwner final {

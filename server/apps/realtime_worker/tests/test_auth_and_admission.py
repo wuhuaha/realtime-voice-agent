@@ -5,7 +5,7 @@ import time
 
 import pytest
 from realtime_worker.admission import SharedSessionAdmission
-from realtime_worker.auth import WorkerAuthenticator
+from realtime_worker.auth import WorkerAuthenticator, device_ref
 from realtime_worker.config import Settings
 from voice_contracts import ConnectGrantClaims, GrantCodec
 
@@ -110,6 +110,15 @@ def test_invalid_scheme_log_redacts_device_principal(caplog: pytest.LogCaptureFi
     assert "reason=invalid_scheme" in caplog.text
     assert "device_ref=" in caplog.text
     assert "8c:bf:ea:04:9e:88" not in caplog.text
+
+
+def test_device_ref_is_keyed_and_tenant_scoped() -> None:
+    first = device_ref("tenant-a", "device-1", "deployment-key-a")
+
+    assert first == device_ref("tenant-a", "device-1", "deployment-key-a")
+    assert first != device_ref("tenant-b", "device-1", "deployment-key-a")
+    assert first != device_ref("tenant-a", "device-1", "deployment-key-b")
+    assert "device-1" not in first
 
 
 def test_lab_compatibility_does_not_require_director_consumption() -> None:

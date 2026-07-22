@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <cstdlib>
 #include <cstdio>
 #include <cstring>
 #include <ctime>
@@ -12,6 +13,7 @@
 #include <vector>
 
 #include <esp_crt_bundle.h>
+#include <esp_heap_caps.h>
 #include <esp_ae_rate_cvt.h>
 #include <esp_log.h>
 #include <esp_random.h>
@@ -28,8 +30,17 @@ constexpr EventBits_t kCaptureStopped = BIT1;
 constexpr EventBits_t kUplinkStopped = BIT2;
 constexpr EventBits_t kPlaybackStopped = BIT3;
 constexpr uint32_t kAudioFailureLimit = 10;
-// Match esp_audio_codec's 40 KiB all-encoder test baseline; tune from HIL high-water data.
-constexpr uint32_t kUplinkTaskStackBytes = 40 * 1024;
+// HIL measured about 26 KiB used through the first Opus encode. Keep roughly
+// 10 KiB of headroom while returning scarce internal RAM to the WSS client.
+constexpr uint32_t kUplinkTaskStackBytes = 36 * 1024;
+// HIL measured roughly 20 KiB unused with the former 24 KiB stack.
+constexpr uint32_t kCaptureTaskStackBytes = 8 * 1024;
+// A 10 KiB stack overflowed on the first Opus decode/resample pass in HIL.
+// Keep internal-RAM headroom now and tune down only from measured high-water data.
+constexpr uint32_t kPlaybackTaskStackBytes = 20 * 1024;
+constexpr uint32_t kWebsocketTeardownStackBytes = 6 * 1024;
+constexpr uint32_t kWebsocketCloseTimeoutMs = 1000;
+constexpr uint32_t kWebsocketTeardownTimeoutMs = 1500;
 constexpr int64_t kResponseDrainGraceUs = 180000;
 constexpr size_t kDecodedSamplesPerFrame = 960;
 constexpr size_t kNominalResampledSamplesPerFrame = 1440;
@@ -55,6 +66,7 @@ bool VoiceRuntime::Start(
     MediaPreference preference) {
     if (started_ || grant.worker_wss_url.empty() || grant.connect_grant.empty() || grant.session_epoch.empty() ||
         device_id.empty()) {
+        ESP_LOGE(kLogTag, "start rejected: invalid precondition");
         return false;
     }
     device_id_ = device_id;
@@ -74,7 +86,10 @@ bool VoiceRuntime::Start(
     std::snprintf(request.data(), request.size(), "open-%08lx", static_cast<unsigned long>(esp_random()));
     open_request_id_ = request.data();
     session_.reset(new (std::nothrow) wss::WssSession(open_request_id_));
-    if (session_ == nullptr || !core_gate_.BeginFreshSession(1)) return false;
+    if (session_ == nullptr || !core_gate_.BeginFreshSession(1)) {
+        ESP_LOGE(kLogTag, "start failed: session allocation or fresh-session gate");
+        return false;
+    }
 
     authorization_headers_ = "Authorization: Bearer " + grant.connect_grant + "\r\n" +
                              "Device-Id: " + device_id_ + "\r\n" +
@@ -88,7 +103,10 @@ bool VoiceRuntime::Start(
     websocket.buffer_size = 2048;
     if (grant.worker_wss_url.rfind("wss://", 0) == 0) websocket.crt_bundle_attach = esp_crt_bundle_attach;
     esp_websocket_client_handle_t handle = esp_websocket_client_init(&websocket);
-    if (handle == nullptr) return false;
+    if (handle == nullptr) {
+        ESP_LOGE(kLogTag, "start failed: websocket client init");
+        return false;
+    }
     client_port_.reset(new (std::nothrow) wss::EspIdfWebsocketClientPort(handle));
     if (client_port_ == nullptr) {
         esp_websocket_client_destroy(handle);
@@ -104,6 +122,11 @@ bool VoiceRuntime::Start(
     task_events_ = xEventGroupCreate();
     if (playback_queue_ == nullptr || task_events_ == nullptr || !codec_.Start() ||
         !pipeline_.Start().ok() || !StartPlaybackResampler()) {
+        ESP_LOGE(kLogTag,
+                 "start failed: resources queue=%d events=%d internal_free=%lu largest=%lu",
+                 playback_queue_ != nullptr, task_events_ != nullptr,
+                 static_cast<unsigned long>(heap_caps_get_free_size(MALLOC_CAP_INTERNAL)),
+                 static_cast<unsigned long>(heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL)));
         StopPlaybackResampler();
         pipeline_.Stop();
         codec_.Stop();
@@ -111,7 +134,9 @@ bool VoiceRuntime::Start(
         if (task_events_ != nullptr) vEventGroupDelete(task_events_);
         playback_queue_ = nullptr;
         task_events_ = nullptr;
-        owner_->SupervisorClose(1000);
+        if (!CloseWebsocketBounded(kWebsocketTeardownTimeoutMs)) {
+            FailClosedRestart("websocket_partial_start_teardown_failed");
+        }
         owner_.reset();
         client_port_.reset();
         return false;
@@ -119,26 +144,42 @@ bool VoiceRuntime::Start(
     started_ = true;
     running_ = true;
     expected_task_bits_ = 0;
-    bool tasks_started = xTaskCreate(
+    // The supervisor performs bounded control-plane polling and does not own
+    // DMA buffers. Its stack can live in PSRAM so audio and WSS tasks retain
+    // deterministic internal-RAM stacks.
+    bool tasks_started = xTaskCreateWithCaps(
                              SupervisorTask, "rva-supervisor", 8192, this, 6,
-                             &supervisor_task_) == pdPASS;
+                             &supervisor_task_, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) == pdPASS;
+    if (!tasks_started) ESP_LOGE(kLogTag, "start failed: supervisor task");
     if (tasks_started) expected_task_bits_ |= kSupervisorStopped;
     if (tasks_started) {
-        tasks_started = xTaskCreate(CaptureTask, "rva-capture", 24576, this, 7,
+        tasks_started = xTaskCreate(CaptureTask, "rva-capture", kCaptureTaskStackBytes, this, 7,
                                     &capture_task_) == pdPASS;
+        if (!tasks_started) ESP_LOGE(kLogTag, "start failed: capture task");
         if (tasks_started) expected_task_bits_ |= kCaptureStopped;
     }
     if (tasks_started) {
         tasks_started = xTaskCreate(UplinkTask, "rva-uplink", kUplinkTaskStackBytes, this, 6,
                                     &uplink_task_) == pdPASS;
+        if (!tasks_started) ESP_LOGE(kLogTag, "start failed: uplink task");
         if (tasks_started) expected_task_bits_ |= kUplinkStopped;
     }
     if (tasks_started) {
-        tasks_started = xTaskCreate(PlaybackTask, "rva-playback", 10240, this, 6,
+        tasks_started = xTaskCreate(PlaybackTask, "rva-playback", kPlaybackTaskStackBytes, this, 6,
                                     &playback_task_) == pdPASS;
+        if (!tasks_started) ESP_LOGE(kLogTag, "start failed: playback task");
         if (tasks_started) expected_task_bits_ |= kPlaybackStopped;
     }
+    ESP_LOGI(kLogTag, "runtime tasks ready: internal_free=%lu largest=%lu psram_free=%lu",
+             static_cast<unsigned long>(heap_caps_get_free_size(MALLOC_CAP_INTERNAL)),
+             static_cast<unsigned long>(heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL)),
+             static_cast<unsigned long>(heap_caps_get_free_size(MALLOC_CAP_SPIRAM)));
     if (!tasks_started || !owner_->Start()) {
+        if (tasks_started) ESP_LOGE(kLogTag, "start failed: websocket owner start");
+        ESP_LOGE(kLogTag, "start memory: internal_free=%lu largest=%lu psram_free=%lu",
+                 static_cast<unsigned long>(heap_caps_get_free_size(MALLOC_CAP_INTERNAL)),
+                 static_cast<unsigned long>(heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL)),
+                 static_cast<unsigned long>(heap_caps_get_free_size(MALLOC_CAP_SPIRAM)));
         Stop();
         return false;
     }
@@ -176,13 +217,12 @@ void VoiceRuntime::Stop() {
             // A task that cannot leave its bounded loop also makes in-process recovery
             // unsafe; fail closed with a controlled restart instead of deadlocking the
             // application supervisor forever.
-            events_.OnFailure("runtime_join_timeout");
-            vTaskDelay(pdMS_TO_TICKS(50));
-            esp_restart();
-            return;
+            FailClosedRestart("runtime_join_timeout");
         }
     }
-    if (owner_ != nullptr) owner_->SupervisorClose(1000);
+    if (owner_ != nullptr && !CloseWebsocketBounded(kWebsocketTeardownTimeoutMs)) {
+        FailClosedRestart("websocket_teardown_failed");
+    }
     if (udp_runtime_ != nullptr && !udp_runtime_->JoinAndClose(1000)) {
         events_.OnFailure("udp_join_timeout");
     }
@@ -215,24 +255,140 @@ void VoiceRuntime::Stop() {
 }
 
 void VoiceRuntime::SupervisorTask(void* context) {
-    static_cast<VoiceRuntime*>(context)->RunSupervisor();
+    auto* runtime = static_cast<VoiceRuntime*>(context);
+    try {
+        runtime->RunSupervisor();
+    } catch (const std::bad_alloc&) {
+        runtime->HandleTaskAllocationFailure("supervisor", kSupervisorStopped, true);
+    } catch (...) {
+        runtime->HandleTaskAllocationFailure("supervisor_exception", kSupervisorStopped, true);
+    }
 }
 
 void VoiceRuntime::CaptureTask(void* context) {
-    static_cast<VoiceRuntime*>(context)->RunCapture();
+    auto* runtime = static_cast<VoiceRuntime*>(context);
+    try {
+        runtime->RunCapture();
+    } catch (const std::bad_alloc&) {
+        runtime->HandleTaskAllocationFailure("capture", kCaptureStopped, false);
+    } catch (...) {
+        runtime->HandleTaskAllocationFailure("capture_exception", kCaptureStopped, false);
+    }
 }
 
 void VoiceRuntime::UplinkTask(void* context) {
-    static_cast<VoiceRuntime*>(context)->RunUplink();
+    auto* runtime = static_cast<VoiceRuntime*>(context);
+    try {
+        runtime->RunUplink();
+    } catch (const std::bad_alloc&) {
+        runtime->HandleTaskAllocationFailure("uplink", kUplinkStopped, false);
+    } catch (...) {
+        runtime->HandleTaskAllocationFailure("uplink_exception", kUplinkStopped, false);
+    }
 }
 
 void VoiceRuntime::PlaybackTask(void* context) {
-    static_cast<VoiceRuntime*>(context)->RunPlayback();
+    auto* runtime = static_cast<VoiceRuntime*>(context);
+    try {
+        runtime->RunPlayback();
+    } catch (const std::bad_alloc&) {
+        runtime->HandleTaskAllocationFailure("playback", kPlaybackStopped, false);
+    } catch (...) {
+        runtime->HandleTaskAllocationFailure("playback_exception", kPlaybackStopped, false);
+    }
+}
+
+void VoiceRuntime::WebsocketTeardownTask(void* context) {
+    auto* teardown = static_cast<WebsocketTeardownContext*>(context);
+    try {
+        teardown->result = teardown->owner != nullptr &&
+                           teardown->owner->SupervisorClose(kWebsocketCloseTimeoutMs);
+    } catch (...) {
+        teardown->result = false;
+    }
+    xSemaphoreGive(teardown->done);
+    // The owner task performs the caps-aware deletion after observing done,
+    // so completion includes all teardown work and no task self-delete path
+    // can allocate scheduler cleanup state.
+    vTaskSuspend(nullptr);
+}
+
+bool VoiceRuntime::CloseWebsocketBounded(uint32_t timeout_ms) {
+    if (owner_ == nullptr) return true;
+    SemaphoreHandle_t done = xSemaphoreCreateBinary();
+    if (done == nullptr) {
+        ESP_LOGE(kLogTag, "websocket teardown failed: semaphore allocation");
+        return false;
+    }
+    WebsocketTeardownContext teardown{
+        .owner = owner_.get(),
+        .done = done,
+        .result = false,
+    };
+    TaskHandle_t task = nullptr;
+    const BaseType_t created = xTaskCreateWithCaps(
+        WebsocketTeardownTask,
+        "rva-wss-close",
+        kWebsocketTeardownStackBytes,
+        &teardown,
+        7,
+        &task,
+        MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (created != pdPASS) {
+        vSemaphoreDelete(done);
+        ESP_LOGE(kLogTag, "websocket teardown failed: task allocation");
+        return false;
+    }
+    if (xSemaphoreTake(done, pdMS_TO_TICKS(timeout_ms)) != pdTRUE) {
+        // The task owns a pointer into this runtime and may still be inside the
+        // pinned SDK. Returning would create a UAF; restart while the stack
+        // context and owner are still alive.
+        FailClosedRestart("websocket_teardown_timeout");
+    }
+    const bool result = teardown.result;
+    vTaskDeleteWithCaps(task);
+    vSemaphoreDelete(done);
+    return result;
+}
+
+[[noreturn]] void VoiceRuntime::FailClosedRestart(const char* category) noexcept {
+    ESP_LOGE(kLogTag, "runtime cannot recover in-process: %s",
+             category == nullptr ? "unknown" : category);
+    try {
+        events_.OnFailure(category);
+    } catch (...) {
+        // Failure reporting must not delay the controlled restart.
+    }
+    if (fail_closed_hook_ != nullptr) {
+        fail_closed_hook_(fail_closed_context_);
+    }
+    vTaskDelay(pdMS_TO_TICKS(50));
+    esp_restart();
+    std::abort();
+}
+
+[[noreturn]] void VoiceRuntime::HandleTaskAllocationFailure(
+    const char* task_name, EventBits_t stopped_bit, bool stack_uses_caps) noexcept {
+    ESP_LOGE(kLogTag, "%s task allocation failed", task_name);
+    running_ = false;
+    try {
+        events_.OnFailure("task_allocation");
+    } catch (...) {
+        // Failure reporting must not escape a FreeRTOS task entry.
+    }
+    MarkTaskStopped(stopped_bit);
+    if (stack_uses_caps) {
+        vTaskDeleteWithCaps(nullptr);
+    } else {
+        vTaskDelete(nullptr);
+    }
+    std::abort();
 }
 
 void VoiceRuntime::RunSupervisor() {
     uint32_t observed_dropped_events = 0;
     uint32_t observed_udp_queue_dropped = 0;
+    uint32_t observed_udp_media_age_dropped = 0;
     while (running_) {
         const uint32_t dropped_events = owner_->dropped_events();
         if (dropped_events != observed_dropped_events) {
@@ -248,6 +404,7 @@ void VoiceRuntime::RunSupervisor() {
             const int64_t last_receive_us = udp_runtime_->last_authenticated_receive_us();
             const uint32_t queue_dropped =
                 udp_runtime_->playout_queue_dropped() + udp_runtime_->stats().queue_dropped;
+            const uint32_t media_age_dropped = udp_runtime_->playout_media_age_dropped();
             const char* failure = nullptr;
             if (expiry_deadline_us > 0 && now_us >= expiry_deadline_us) {
                 failure = "udp_grant_expired";
@@ -257,6 +414,9 @@ void VoiceRuntime::RunSupervisor() {
             } else if (queue_dropped != observed_udp_queue_dropped) {
                 observed_udp_queue_dropped = queue_dropped;
                 failure = "udp_playout_overflow";
+            } else if (media_age_dropped != observed_udp_media_age_dropped) {
+                observed_udp_media_age_dropped = media_age_dropped;
+                failure = "udp_media_age";
             } else if (udp_next_keepalive_us_.load() > 0 &&
                        now_us >= udp_next_keepalive_us_.load()) {
                 if (!udp_runtime_->SendKeepalive()) {
@@ -301,8 +461,10 @@ void VoiceRuntime::RunSupervisor() {
             if (event.type == wss::ClientEventType::kBinaryFragment) HandleMedia(frame);
         }
     }
+    ESP_LOGI(kLogTag, "supervisor task minimum free stack: %lu bytes",
+             static_cast<unsigned long>(uxTaskGetStackHighWaterMark(nullptr)));
     MarkTaskStopped(kSupervisorStopped);
-    vTaskDelete(nullptr);
+    vTaskDeleteWithCaps(nullptr);
 }
 
 void VoiceRuntime::HandleControl(const std::vector<uint8_t>& frame) {
@@ -627,6 +789,8 @@ void VoiceRuntime::RunUplink() {
             accumulated_samples = 0;
         }
     }
+    ESP_LOGI(kLogTag, "uplink task minimum free stack: %lu bytes",
+             static_cast<unsigned long>(uxTaskGetStackHighWaterMark(nullptr)));
     MarkTaskStopped(kUplinkStopped);
     vTaskDelete(nullptr);
 }
@@ -752,6 +916,8 @@ void VoiceRuntime::RunPlayback() {
             offset += count;
         }
     }
+    ESP_LOGI(kLogTag, "playback task minimum free stack: %lu bytes",
+             static_cast<unsigned long>(uxTaskGetStackHighWaterMark(nullptr)));
     MarkTaskStopped(kPlaybackStopped);
     vTaskDelete(nullptr);
 }

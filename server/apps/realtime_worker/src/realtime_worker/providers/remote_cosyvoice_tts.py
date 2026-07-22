@@ -20,6 +20,7 @@ class RemoteCosyVoiceTTSClient(MimoTTSClient):
         voice: str,
         timeout_seconds: float = 20.0,
         max_concurrency: int = 1,
+        queue_timeout_seconds: float = 0.25,
         client: httpx.AsyncClient | None = None,
         semaphore: asyncio.Semaphore | None = None,
     ) -> None:
@@ -30,6 +31,7 @@ class RemoteCosyVoiceTTSClient(MimoTTSClient):
             provider="remote_cosyvoice",
             timeout_seconds=timeout_seconds,
             max_concurrency=max_concurrency,
+            queue_timeout_seconds=queue_timeout_seconds,
             client=client,
             semaphore=semaphore,
         )
@@ -53,6 +55,7 @@ class RemoteCosyVoiceTTS(MimoTTS):
                 voice=settings.remote_cosyvoice_voice,
                 timeout_seconds=settings.remote_cosyvoice_timeout_seconds,
                 max_concurrency=settings.remote_cosyvoice_max_concurrency,
+                queue_timeout_seconds=settings.tts_queue_timeout_seconds,
                 semaphore=semaphore,
             ),
             settings=settings,

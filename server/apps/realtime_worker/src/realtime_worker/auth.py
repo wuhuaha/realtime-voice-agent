@@ -15,8 +15,9 @@ TransportProfile = Literal["wss-opus-v1", "wss-opus-v2", "udp-opus-gcm-v1"]
 logger = logging.getLogger(__name__)
 
 
-def _device_ref(device_id: str) -> str:
-    return hashlib.sha256(device_id.encode("utf-8")).hexdigest()[:12]
+def device_ref(tenant_id: str, device_id: str, key: str) -> str:
+    message = f"{tenant_id}\0{device_id}".encode()
+    return hmac.new(key.encode(), message, hashlib.sha256).hexdigest()[:12]
 
 
 @dataclass(frozen=True, slots=True)
@@ -41,6 +42,7 @@ class WorkerAuthenticator:
 
     def __init__(self, settings: Settings) -> None:
         self._worker_id = settings.worker_id
+        self._device_ref_key = settings.internal_token.get_secret_value()
         self._rva_udp_enabled = settings.rva_udp_enabled
         self._lab_token = settings.lab_token.get_secret_value() if settings.allow_lab_auth else None
         self._codec = GrantCodec(settings.grant_signing_key.get_secret_value())
@@ -63,7 +65,7 @@ class WorkerAuthenticator:
             logger.warning(
                 "worker_auth_rejected reason=invalid_scheme worker_id=%s device_ref=%s",
                 self._worker_id,
-                _device_ref(device_id),
+                device_ref(f"worker:{self._worker_id}", device_id, self._device_ref_key),
             )
             return None
         if self._lab_token is not None and hmac.compare_digest(supplied, self._lab_token):
@@ -86,7 +88,7 @@ class WorkerAuthenticator:
                 "worker_auth_rejected reason=grant_%s worker_id=%s device_ref=%s token_length=%d",
                 str(exc).replace(" ", "_"),
                 self._worker_id,
-                _device_ref(device_id),
+                device_ref(f"worker:{self._worker_id}", device_id, self._device_ref_key),
                 len(supplied),
             )
             return None
@@ -94,7 +96,7 @@ class WorkerAuthenticator:
             logger.warning(
                 "worker_auth_rejected reason=control_protocol_mismatch worker_id=%s device_ref=%s",
                 self._worker_id,
-                _device_ref(device_id),
+                device_ref(f"worker:{self._worker_id}", device_id, self._device_ref_key),
             )
             return None
         return VerifiedAuth(

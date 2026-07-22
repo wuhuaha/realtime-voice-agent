@@ -5,6 +5,7 @@
 
 #include <esp_log.h>
 #include <esp_lvgl_port.h>
+#include <esp_system.h>
 
 #include "board_lichuang_s3/display_config.h"
 
@@ -12,6 +13,7 @@ namespace rva::ui {
 namespace {
 
 constexpr char kTag[] = "rva_voice_ui";
+constexpr uint32_t kLvglLockTimeoutMs = 2000;
 
 lv_color_t Background() { return lv_color_hex(0x101516); }
 lv_color_t Surface() { return lv_color_hex(0x1B2324); }
@@ -21,6 +23,25 @@ lv_color_t Listening() { return lv_color_hex(0x38D6A0); }
 lv_color_t Speaking() { return lv_color_hex(0xFFB84D); }
 lv_color_t Connecting() { return lv_color_hex(0x4FB7D8); }
 lv_color_t Danger() { return lv_color_hex(0xFF6B6B); }
+
+[[noreturn]] void RestartAfterLvglLockTimeout(const char* operation) {
+    ESP_LOGE(kTag, "UI %s failed: lvgl_lock_timeout; restarting", operation);
+    esp_restart();
+    while (true) {
+        // esp_restart() is documented not to return. Keep the failure path
+        // non-returning even if a test double or future port violates that.
+    }
+}
+
+void LockLvglOrRestart(const char* operation) {
+    if (lvgl_port_lock(kLvglLockTimeoutMs)) {
+        return;
+    }
+
+    // A timed-out owner can still be using the display and LVGL allocator.
+    // Restart instead of releasing resources underneath that task.
+    RestartAfterLvglLockTimeout(operation);
+}
 
 }  // namespace
 
@@ -32,7 +53,7 @@ VoiceUi::~VoiceUi() {
 }
 
 bool VoiceUi::Start() {
-    if (started_) {
+    if (lifecycle_.active()) {
         return true;
     }
     if (!hardware_.started() || config_.text_font == nullptr ||
@@ -44,12 +65,15 @@ bool VoiceUi::Start() {
                  config_.microphone_glyph != nullptr);
         return false;
     }
+    if (!lifecycle_.Begin()) {
+        ESP_LOGE(kTag, "UI start failed: lifecycle already stopped; restart required");
+        return false;
+    }
 
     command_queue_ = xQueueCreate(kCommandQueueCapacity, sizeof(CommandPacket));
     event_queue_ = xQueueCreate(kEventQueueCapacity, sizeof(EventPacket));
-    async_done_ = xSemaphoreCreateBinary();
-    if (command_queue_ == nullptr || event_queue_ == nullptr || async_done_ == nullptr) {
-        ESP_LOGE(kTag, "UI start failed: queue_or_semaphore_allocation");
+    if (command_queue_ == nullptr || event_queue_ == nullptr) {
+        ESP_LOGE(kTag, "UI start failed: queue_allocation");
         Stop();
         return false;
     }
@@ -121,35 +145,33 @@ bool VoiceUi::Start() {
         }
     }
 
-    async_success_ = false;
-    if (lv_async_call(InitializeAsync, this) != LV_RESULT_OK) {
-        ESP_LOGE(kTag, "UI start failed: initialize_async_schedule");
+    LockLvglOrRestart("start");
+    BuildHome();
+    command_timer_ = lv_timer_create(CommandTimer, 10, this);
+    const bool initialized = root_ != nullptr && command_timer_ != nullptr;
+    lvgl_port_unlock();
+    if (!initialized) {
+        ESP_LOGE(kTag, "UI start failed: invalid_root_or_timer");
         Stop();
         return false;
     }
-    lvgl_port_task_wake(LVGL_PORT_EVENT_USER, nullptr);
-    if (xSemaphoreTake(async_done_, pdMS_TO_TICKS(kAsyncTimeoutMs)) != pdTRUE ||
-        !async_success_) {
-        ESP_LOGE(kTag, "UI start failed: initialize_async_timeout_or_invalid_root");
-        Stop();
-        return false;
-    }
-    started_ = true;
     ESP_LOGI(kTag, "UI started (touch=%d)", touch_ != nullptr);
     return true;
 }
 
 bool VoiceUi::Stop() {
     bool success = true;
-    if (root_ != nullptr && async_done_ != nullptr) {
-        async_success_ = false;
-        if (lv_async_call(DestroyAsync, this) != LV_RESULT_OK) {
-            success = false;
-        } else {
-            lvgl_port_task_wake(LVGL_PORT_EVENT_USER, nullptr);
-            success = xSemaphoreTake(async_done_, pdMS_TO_TICKS(kAsyncTimeoutMs)) == pdTRUE &&
-                      async_success_;
+    if (port_initialized_ && (root_ != nullptr || command_timer_ != nullptr)) {
+        LockLvglOrRestart("stop");
+        if (command_timer_ != nullptr) {
+            lv_timer_delete(command_timer_);
+            command_timer_ = nullptr;
         }
+        if (root_ != nullptr) {
+            lv_obj_delete(root_);
+            root_ = nullptr;
+        }
+        lvgl_port_unlock();
     }
     if (touch_ != nullptr) {
         success = lvgl_port_remove_touch(touch_) == ESP_OK && success;
@@ -175,18 +197,14 @@ bool VoiceUi::Stop() {
         vQueueDelete(event_queue_);
         event_queue_ = nullptr;
     }
-    if (async_done_ != nullptr) {
-        vSemaphoreDelete(async_done_);
-        async_done_ = nullptr;
-    }
     root_ = nullptr;
     command_timer_ = nullptr;
-    started_ = false;
+    lifecycle_.End();
     return success;
 }
 
 bool VoiceUi::Post(const UiCommand& command) {
-    if (!started_ || command_queue_ == nullptr) {
+    if (!lifecycle_.active() || command_queue_ == nullptr) {
         return false;
     }
     CommandPacket packet = {.kind = command.kind, .value = command.value, .text = {}};
@@ -217,34 +235,13 @@ bool VoiceUi::PollEvent(UiEvent* event) {
     return true;
 }
 
-void VoiceUi::InitializeAsync(void* context) {
-    auto* self = static_cast<VoiceUi*>(context);
-    self->BuildHome();
-    self->command_timer_ = lv_timer_create(CommandTimer, 10, self);
-    self->async_success_ = self->root_ != nullptr && self->command_timer_ != nullptr;
-    xSemaphoreGive(self->async_done_);
-}
-
-void VoiceUi::DestroyAsync(void* context) {
-    auto* self = static_cast<VoiceUi*>(context);
-    if (self->command_timer_ != nullptr) {
-        lv_timer_delete(self->command_timer_);
-        self->command_timer_ = nullptr;
-    }
-    if (self->root_ != nullptr) {
-        lv_obj_delete(self->root_);
-        self->root_ = nullptr;
-    }
-    self->async_success_ = true;
-    xSemaphoreGive(self->async_done_);
-}
-
 void VoiceUi::CommandTimer(lv_timer_t* timer) {
     static_cast<VoiceUi*>(lv_timer_get_user_data(timer))->DrainCommands();
 }
 
 void VoiceUi::MicClicked(lv_event_t* event) {
     auto* self = static_cast<VoiceUi*>(lv_event_get_user_data(event));
+    ESP_LOGI(kTag, "MIC button pressed");
     self->Apply({.kind = CommandKind::kMicPressed, .value = 0, .text = {}});
 }
 
@@ -376,7 +373,7 @@ void VoiceUi::BuildHome() {
     lv_obj_set_style_border_width(microphone_button_, 3, 0);
     lv_obj_set_style_shadow_width(microphone_button_, 10, 0);
     lv_obj_set_style_shadow_opa(microphone_button_, LV_OPA_30, 0);
-    lv_obj_add_event_cb(microphone_button_, MicClicked, LV_EVENT_CLICKED, this);
+    lv_obj_add_event_cb(microphone_button_, MicClicked, LV_EVENT_PRESSED, this);
     microphone_label_ = lv_label_create(microphone_button_);
     lv_obj_set_style_text_font(microphone_label_, config_.icon_font, 0);
     lv_label_set_text(microphone_label_, config_.microphone_glyph);

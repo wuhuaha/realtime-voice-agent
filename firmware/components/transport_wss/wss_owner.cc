@@ -160,10 +160,12 @@ bool WssOwner::SupervisorClose(uint32_t timeout_ms) {
     if (destroyed_) return true;
     close_requested_ = true;
     const bool closed = !started_ || client_.Close(timeout_ms);
-    client_.Destroy();
-    destroyed_ = true;
-    started_ = false;
-    return closed;
+    const bool destroyed = client_.Destroy();
+    if (destroyed) {
+        destroyed_ = true;
+        started_ = false;
+    }
+    return closed && destroyed;
 }
 
 }  // namespace rva::wss

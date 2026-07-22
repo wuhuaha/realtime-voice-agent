@@ -9,6 +9,8 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Protocol, TypeVar
 
+from ..lifecycle import run_with_hard_deadline
+
 
 class SessionClosedError(RuntimeError):
     """Raised when new playback is requested after session shutdown starts."""
@@ -63,12 +65,16 @@ class VoiceSessionState:
         *,
         close_ports: Iterable[AsyncClosePort] = (),
         connection_epoch: str | None = None,
+        close_stage_timeout_seconds: float = 2.0,
     ) -> None:
         self._connection_epoch = connection_epoch or f"conn_{uuid.uuid4().hex}"
         if not self._connection_epoch:
             raise ValueError("connection_epoch must not be empty")
+        if close_stage_timeout_seconds <= 0:
+            raise ValueError("close_stage_timeout_seconds must be positive")
         self._interrupt_port = interrupt_port
         self._close_ports = tuple(close_ports)
+        self._close_stage_timeout_seconds = close_stage_timeout_seconds
         self._generation = 0
         self._active_playback: PlaybackRef | None = None
         self._closed = False
@@ -152,7 +158,13 @@ class VoiceSessionState:
         errors: list[BaseException] = []
         for port in reversed(self._close_ports):
             try:
-                await port.close()
+                closed = await run_with_hard_deadline(
+                    port.close(),
+                    timeout=self._close_stage_timeout_seconds,
+                    task_name=f"voice-session-port-close-{self._connection_epoch}",
+                )
+                if not closed.completed:
+                    errors.append(TimeoutError("voice session close port timed out"))
             except BaseException as exc:
                 errors.append(exc)
         if errors:

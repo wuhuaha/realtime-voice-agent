@@ -23,12 +23,12 @@ from realtime_worker.transport.udp_gateway import (
     UDP_FLAG_PROBE_ACK,
     UDP_HEADER_BYTES,
     UDP_MAX_PAYLOAD_BYTES,
-    UDP_MAX_SEQUENCE_FORWARD_JUMP,
     ReplayWindow,
     UdpMediaError,
     UdpMediaGateway,
     UdpPacketHeader,
 )
+from realtime_worker.transport.udp_wire import UDP_MAX_SEQUENCE_FORWARD_JUMP
 
 FIXTURES = Path(__file__).parent / "fixtures" / "xiaozhi"
 

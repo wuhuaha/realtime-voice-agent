@@ -45,6 +45,7 @@ class Settings(BaseSettings):
     director_url: str = ""
     heartbeat_enabled: bool = True
     heartbeat_interval_seconds: float = Field(default=5.0, ge=1.0, le=60.0)
+    shutdown_drain_timeout_seconds: float = Field(default=10.0, gt=0, le=60.0)
     provider_probe_interval_seconds: float = Field(default=10.0, ge=2.0, le=300.0)
     provider_probe_timeout_seconds: float = Field(default=3.0, gt=0, le=15.0)
 
@@ -52,6 +53,7 @@ class Settings(BaseSettings):
     output_segment_max_seconds: int = Field(default=30, ge=5, le=120)
     max_control_bytes: int = Field(default=16 * 1024, ge=1024, le=64 * 1024)
     session_start_timeout_seconds: float = Field(default=20.0, gt=0, le=120)
+    agent_close_stage_timeout_seconds: float = Field(default=2.0, gt=0, le=10)
     websocket_ping_interval_seconds: float = Field(default=10.0, gt=0, le=60)
     websocket_ping_timeout_seconds: float = Field(default=5.0, gt=0, le=60)
     xiaozhi_handshake_timeout_seconds: float = Field(default=8.0, gt=0, le=10)
@@ -183,6 +185,7 @@ class Settings(BaseSettings):
     remote_cosyvoice_timeout_seconds: float = Field(default=20.0, gt=0, le=120)
     remote_cosyvoice_max_concurrency: int = Field(default=1, ge=1, le=4)
     tts_provider: Literal["remote_cosyvoice", "mimo", "cosyvoice"] = "remote_cosyvoice"
+    tts_queue_timeout_seconds: float = Field(default=0.25, gt=0, le=5)
     cosyvoice_url: str = "http://127.0.0.1:50000"
     cosyvoice_mode: str = "zero-shot"
     cosyvoice_speaker: str = ""

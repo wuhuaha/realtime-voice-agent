@@ -11,6 +11,8 @@ from voice_contracts import (
     ConnectGrantClaims,
     GrantCodec,
     GrantError,
+    LeaseRenewal,
+    RouteReleaseRequest,
     WorkerHeartbeat,
     WorkerHeartbeatResponse,
     WorkerSnapshot,
@@ -125,6 +127,17 @@ class DirectorService:
             allowed_profiles=profiles,
             control_protocol=request.control_protocol,
             expires_at=expires_at,
+        )
+
+    async def release(self, request: RouteReleaseRequest) -> bool:
+        return await self._store.release_route_claim(
+            request.worker_id,
+            LeaseRenewal(
+                tenant_id=request.tenant_id,
+                device_id=request.device_id,
+                session_epoch=request.session_epoch,
+                fencing_token=request.fencing_token,
+            ),
         )
 
     async def set_draining(self, worker_id: str, draining: bool) -> WorkerSnapshot:

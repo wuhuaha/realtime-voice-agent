@@ -190,10 +190,22 @@ class BootstrapResponse(ContractModel):
     worker_wss_url: str
     connect_grant: str
     session_epoch: Identifier
-    fencing_token: int
+    fencing_token: int = Field(ge=1, le=9_007_199_254_740_991)
     allowed_profiles: tuple[TransportProfile, ...]
     control_protocol: ControlProtocol
     expires_at: float
+
+
+class RouteReleaseRequest(ContractModel):
+    tenant_id: Identifier = "default"
+    device_id: Identifier
+    worker_id: Identifier
+    session_epoch: Identifier
+    fencing_token: int = Field(ge=1, le=9_007_199_254_740_991)
+
+
+class RouteReleaseResponse(ContractModel):
+    released: Literal[True] = True
 
 
 class DrainRequest(ContractModel):

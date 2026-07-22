@@ -3,7 +3,14 @@ from __future__ import annotations
 import pytest
 from session_director.service import DirectorService, GrantConsumeError, NoCapacityError
 from session_director.store import InMemoryCoordinationStore, LeaseConflictError
-from voice_contracts import BindingAdvertisement, BootstrapRequest, GrantCodec, LeaseRenewal, WorkerHeartbeat
+from voice_contracts import (
+    BindingAdvertisement,
+    BootstrapRequest,
+    GrantCodec,
+    LeaseRenewal,
+    RouteReleaseRequest,
+    WorkerHeartbeat,
+)
 from voice_testkit import MutableClock
 
 
@@ -132,6 +139,45 @@ async def test_route_lease_is_single_owner_and_fencing_increases_after_release()
     )
     assert second.fencing_token == first.fencing_token + 1
     assert await store.release_route(first) is False
+
+
+@pytest.mark.asyncio
+async def test_device_release_allows_immediate_rebootstrap_and_stale_release_is_fenced() -> None:
+    clock = MutableClock()
+    store = InMemoryCoordinationStore()
+    service = DirectorService(
+        store,
+        GrantCodec("test-signing-key-with-32-bytes", clock=clock),
+        heartbeat_ttl_seconds=30,
+        lease_ttl_seconds=20,
+        clock=clock,
+    )
+    await service.heartbeat(heartbeat("worker-a", 0))
+    first = await service.bootstrap(BootstrapRequest(tenant_id="tenant-1", device_id="device-1"))
+
+    assert await service.release(
+        RouteReleaseRequest(
+            tenant_id="tenant-1",
+            device_id="device-1",
+            worker_id=first.worker_id,
+            session_epoch=first.session_epoch,
+            fencing_token=first.fencing_token,
+        )
+    ) is True
+    second = await service.bootstrap(BootstrapRequest(tenant_id="tenant-1", device_id="device-1"))
+    assert second.fencing_token == first.fencing_token + 1
+
+    assert await service.release(
+        RouteReleaseRequest(
+            tenant_id="tenant-1",
+            device_id="device-1",
+            worker_id=first.worker_id,
+            session_epoch=first.session_epoch,
+            fencing_token=first.fencing_token,
+        )
+    ) is False
+    with pytest.raises(LeaseConflictError):
+        await service.bootstrap(BootstrapRequest(tenant_id="tenant-1", device_id="device-1"))
 
 
 @pytest.mark.asyncio

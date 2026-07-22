@@ -53,6 +53,11 @@ AEC reference 要求 playback 与 microphone 同时进入 ESP-SR `MR` 输入。C
 decode/playout 分 task 管理；每条 queue 有固定容量、超时、停止和 overflow 语义。音频热路径不写 Flash、不解析
 JSON、不执行重连或无界日志。
 
+`model` 分区缺失时，当前 composition 仍创建 ESP-SR AFE 并保留 AEC 与 VAD，只关闭依赖 NSNet model 的神经网络
+降噪；启动日志必须出现 `ESP-SR model partition unavailable; neural noise suppression disabled`。这是代码降级边界，
+不等于无 model 分区时的 AEC/VAD/ASR 声学效果已经通过，发布仍须分别验证有/无 model 分区的启动、近讲、播放中
+double-talk 和 ASR 结果。
+
 ## 5. Session 与 transport
 
 1. Wi-Fi 连接后向 Director bootstrap，声明 `rva-control-v1` 和支持的 profiles。
@@ -60,10 +65,16 @@ JSON、不执行重连或无界日志。
 3. `session.opened` commit 唯一 profile、session/media identity 和 limits。
 4. WSS 或 UDP media owner 驱动同一 audio/Agent session；不做 mid-session switch。
 5. cancel 先推进 generation fence、清空旧 playout，再通知远端和 Agent。
-6. WSS 断开、Wi-Fi 变化或 fatal error 后 supervisor 有界 teardown，并 fresh bootstrap。
+6. WSS 断开、Wi-Fi 变化或 fatal error 后 supervisor 有界 teardown；`Stop -> Start` 不复用 runtime/grant，而是完成
+   exact lease release 后 fresh bootstrap，获得新的 epoch/fencing/grant。
 
 Callback 只复制有界事件并入队；不得在 callback 中 close/destroy。Supervisor 是 socket、task、codec 和 session
-teardown 的唯一协调者。
+teardown 的唯一协调者。WSS close/destroy 未在外层 watchdog 内确认时，runtime 不得继续原进程重连；它先
+best-effort release 当前 exact lease，再受控重启，避免旧 callback/task/heap 与新 session 并存。
+
+UDP 下行通过 reorder/jitter 与 generation fence 后，在 decode/playout 前还有 360 ms 最终 media-age gate。超过该
+年龄的 frame 清零并丢弃、递增 `media_age_dropped`，runtime 分类为 `udp_media_age` 并结束当前 session；后续按策略
+fresh bootstrap，不播放已经失去实时价值的旧 TTS。
 
 ## 6. UI 与配置
 

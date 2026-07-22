@@ -18,6 +18,7 @@ from realtime_worker.transport.udp_gateway import (
     UdpMediaSession,
     UdpPacketHeader,
 )
+from realtime_worker.transport.udp_wire import UDP_JITTER_WINDOW_PACKETS
 
 pytestmark = pytest.mark.integration
 
@@ -298,6 +299,119 @@ async def test_multiple_loss_gaps_rearm_deadline_and_far_future_packet_does_not_
         await _eventually(lambda: received[-1:] == [b"five"])
 
         assert received == [b"two", b"four", b"five"]
+        assert failures == []
+    finally:
+        await session.close()
+
+
+@pytest.mark.asyncio
+async def test_reorder_buffer_drops_the_fifth_packet_without_growing() -> None:
+    failures: list[BaseException] = []
+
+    async def receive(_payload: bytes, _timestamp: int, _generation: int) -> None:
+        pytest.fail("overflow packet must not reach playout")
+
+    session = UdpMediaSession(
+        _FakeGateway(),  # type: ignore[arg-type]
+        _grant(),
+        receive,
+        failures.append,
+        queue_size=16,
+        reorder_wait_seconds=1,
+    )
+    try:
+        session._next_audio_sequence = 1  # noqa: SLF001
+        session._reorder = {  # noqa: SLF001
+            sequence: (UDP_FLAG_AUDIO, b"buffered", sequence * 960, 1)
+            for sequence in range(100, 100 + UDP_JITTER_WINDOW_PACKETS)
+        }
+        header = UdpPacketHeader(
+            flags=UDP_FLAG_AUDIO,
+            media_id=session.grant.media_id,
+            media_epoch=session.grant.media_epoch,
+            sequence=3,
+            timestamp=3 * 960,
+            generation=1,
+            payload_length=8,
+        )
+
+        await session._buffer_media(header, b"overflow")  # noqa: SLF001
+
+        assert len(session._reorder) == UDP_JITTER_WINDOW_PACKETS  # noqa: SLF001
+        assert session.stats.queue_dropped == 1
+        assert failures == []
+    finally:
+        await session.close()
+
+
+@pytest.mark.asyncio
+async def test_authenticated_audio_admission_drop_does_not_advance_replay_window() -> None:
+    received: list[bytes] = []
+    failures: list[BaseException] = []
+
+    async def receive(payload: bytes, _timestamp: int, _generation: int) -> None:
+        received.append(payload)
+
+    grant = _grant()
+    session = UdpMediaSession(
+        _FakeGateway(),  # type: ignore[arg-type]
+        grant,
+        receive,
+        failures.append,
+        queue_size=16,
+        reorder_wait_seconds=0.01,
+    )
+    try:
+        session.enqueue(_uplink_packet(grant, flags=UDP_FLAG_PROBE, sequence=0, payload=b""), _SOURCE)
+        await session.wait_ready(0.1)
+
+        # Delta 3 is the final admitted slot; delta 4 is outside the canonical
+        # four-slot playout window. Sequence 1025 exceeds anti-replay as well.
+        session.enqueue(_uplink_packet(grant, flags=UDP_FLAG_AUDIO, sequence=1025, payload=b"replay-far"), _SOURCE)
+        session.enqueue(_uplink_packet(grant, flags=UDP_FLAG_AUDIO, sequence=4, payload=b"delta-three"), _SOURCE)
+        session.enqueue(_uplink_packet(grant, flags=UDP_FLAG_AUDIO, sequence=5, payload=b"delta-four"), _SOURCE)
+        await _eventually(lambda: session.stats.queue_dropped == 1 and session.stats.invalid == 1)
+
+        session.enqueue(_uplink_packet(grant, flags=UDP_FLAG_AUDIO, sequence=1, payload=b"one"), _SOURCE)
+        await _eventually(lambda: received == [b"one"])
+
+        assert session.stats.authenticated == 4
+        assert failures == []
+    finally:
+        await session.close()
+
+
+@pytest.mark.asyncio
+async def test_authenticated_control_admission_drop_does_not_advance_replay_window() -> None:
+    received: list[bytes] = []
+    failures: list[BaseException] = []
+
+    async def receive(payload: bytes, _timestamp: int, _generation: int) -> None:
+        received.append(payload)
+
+    gateway = _FakeGateway()
+    grant = _grant()
+    session = UdpMediaSession(
+        gateway,  # type: ignore[arg-type]
+        grant,
+        receive,
+        failures.append,
+        queue_size=16,
+        reorder_wait_seconds=0.01,
+    )
+    try:
+        session.enqueue(_uplink_packet(grant, flags=UDP_FLAG_PROBE, sequence=0, payload=b""), _SOURCE)
+        await session.wait_ready(0.1)
+
+        session.enqueue(_uplink_packet(grant, flags=UDP_FLAG_KEEPALIVE, sequence=4, payload=b""), _SOURCE)
+        session.enqueue(_uplink_packet(grant, flags=UDP_FLAG_PROBE, sequence=5, payload=b""), _SOURCE)
+        await _eventually(lambda: session.stats.queue_dropped == 1)
+
+        session.enqueue(_uplink_packet(grant, flags=UDP_FLAG_AUDIO, sequence=1, payload=b"one"), _SOURCE)
+        await _eventually(lambda: received == [b"one"])
+
+        assert session.stats.authenticated == 4
+        assert len(gateway.transport.sent) == 2
         assert failures == []
     finally:
         await session.close()

@@ -64,10 +64,13 @@ WSS grant 中 key/salt 使用 base64，`media_id` 使用 16 字符 hex；转换�
 接收端按以下顺序处理，失败即静默丢弃并计数：
 
 1. 检查 datagram/header 长度、magic、version、payload length 和 MTU。
-2. 检查 `media_id`、`media_epoch`、允许的单一 flag 和 sequence replay window。
+2. 检查 `media_id`、`media_epoch`、允许的单一 flag、64-packet anti-replay history 和 1024-packet 最大
+   forward jump。
 3. 用 header 作为 AAD 完成 GCM authentication。
 4. 检查已绑定 source；首次通过认证的空 `PROBE` 绑定 source 并返回 `PROBE_ACK`。
-5. authentication 成功后提交 sequence；audio 再进入 bounded reorder/jitter queue。
+5. 对所有共享 sequence 的 packet，在提交 anti-replay state 前检查 4-slot jitter admission：只允许
+   `expected..expected+3`；超出窗口或队列已满时丢弃，且不得推进 replay highest。
+6. admission 成功后提交 sequence；media 进入 4-slot bounded reorder/jitter queue，缺口最多等待 120 ms。
 
 `generation` 是 freshness fence，不是加密计数器。收到更高 generation 时应清空旧播放
 媒体；低于当前 generation 的下行 audio 必须丢弃。

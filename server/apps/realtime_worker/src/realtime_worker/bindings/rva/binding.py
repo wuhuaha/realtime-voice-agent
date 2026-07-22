@@ -58,6 +58,7 @@ class RvaWssBinding:
         udp_grant: Mapping[str, object] | None = None,
         audio_port: AudioInputPort,
         agent_port: AgentControlPort,
+        close_stage_timeout_seconds: float = 2.0,
     ) -> None:
         self._expected_device_id = require_identifier(expected_device_id, "device_id")
         self._session_id = require_identifier(session_id, "session_id")
@@ -73,6 +74,7 @@ class RvaWssBinding:
             agent_port,
             close_ports=(audio_port, agent_port),
             connection_epoch=self._session_epoch,
+            close_stage_timeout_seconds=close_stage_timeout_seconds,
         )
         self._opened = False
         self._selected_media_profile: str | None = None

@@ -24,6 +24,7 @@ bool UdpRuntime::Start() {
     }
     stop_requested_.store(false);
     queue_dropped_.store(0);
+    media_age_dropped_.store(0);
     playout_queue_.Open(session_.generation());
     TaskHandle_t created = nullptr;
     if (xTaskCreate(TaskEntry, "rva_udp", 4096, this, 4, &created) != pdPASS) {
@@ -80,7 +81,11 @@ bool UdpRuntime::AdvanceGeneration(uint32_t generation) {
 }
 
 bool UdpRuntime::PollPlayout(PlayoutFrame* frame) {
-    return playout_queue_.Pop(frame);
+    uint32_t expired = 0;
+    const bool ready = playout_queue_.PopFresh(
+        frame, esp_timer_get_time(), kMaximumMediaAgeUs, &expired);
+    if (expired != 0) media_age_dropped_.fetch_add(expired);
+    return ready;
 }
 
 void UdpRuntime::RequestStop() {

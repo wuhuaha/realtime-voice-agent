@@ -86,6 +86,7 @@ PlayoutFrame JitterBuffer::Pop(int64_t now_us, Stats* stats) {
         PlayoutFrame output{.kind = PlayoutKind::kAudio,
                             .timestamp = expected->timestamp,
                             .generation = expected->generation,
+                            .arrived_us = expected->arrived_us,
                             .payload_size = expected->payload_size};
         std::copy_n(expected->payload.begin(), expected->payload_size, output.payload.begin());
         const int64_t age = std::max<int64_t>(0, now_us - expected->arrived_us);
@@ -114,7 +115,10 @@ PlayoutFrame JitterBuffer::Pop(int64_t now_us, Stats* stats) {
                                    : 0;
     expected_++;
     if (stats) stats->lost++;
-    return {.kind = PlayoutKind::kPlc, .timestamp = timestamp, .generation = generation_};
+    return {.kind = PlayoutKind::kPlc,
+            .timestamp = timestamp,
+            .generation = generation_,
+            .arrived_us = first->arrived_us};
 }
 
 void JitterBuffer::Reset(uint32_t generation) {

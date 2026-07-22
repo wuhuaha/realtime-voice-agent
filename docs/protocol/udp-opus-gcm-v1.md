@@ -52,7 +52,7 @@ epoch、重复 sequence 和超限 payload 静默丢弃并计数。
 ## 5. Admission 顺序
 
 1. 校验 datagram/header length、magic、version、单一 flag、payload length 和 MTU。
-2. 定位 `media_id/media_epoch`，预检查 64-packet replay/reorder window。
+2. 定位 `media_id/media_epoch`，预检查 64-packet anti-replay history 和 1024-packet 最大 forward jump。
 3. 使用 header 作为 AAD 完成 GCM authentication。
 4. 校验已绑定 source；首次通过认证的空 PROBE 绑定 endpoint 并返回 PROBE_ACK。
 5. Authentication 成功后提交 sequence。
@@ -65,10 +65,14 @@ NAT/Wi-Fi 改变使用 fresh session，不做 rebinding。
 
 首版使用固定小型窗口：
 
-- 允许 64 packet anti-replay/reorder 视窗，但 playout 等待仅采用可配置小 deadline。
+- Canonical anti-replay history 为 64 packet，最大 sequence forward jump 为 1024 packet，reorder/jitter window 为
+  4 packet；三者是不同边界，不得互相替代。Playout 等待上限为 120 ms；当前 Server 默认 30 ms（配置上限
+  100 ms），ESP32 使用 120 ms。
 - 缺口到 deadline 后计为 lost，推进 live edge；不请求重传。
 - Receiver 应调用 Opus PLC 生成缺失的 60 ms，且保持 1 至 2 帧量级 PCM/playout queue。
 - Late packet、queue full、media age 超限和旧 generation 直接丢弃。
+- 当前 ESP32 endpoint 在 decode/playout 前执行 360 ms 最终 media-age gate；超限 frame 清零丢弃并关闭当前 UDP
+  session。该接收端安全阈值不改变 wire format，也不授权其他 endpoint 无限增大缓存。
 - FEC 初始关闭；20/40/60 ms 与 in-band FEC 只作为独立实验变量。
 
 ## 7. Liveness 与关闭

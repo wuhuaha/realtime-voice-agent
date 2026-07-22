@@ -199,6 +199,16 @@ def uplink_packets(count: int) -> list[bytes]:
 
 
 @pytest.mark.unit
+def test_runtime_passes_non_default_close_stage_timeout_to_session_state() -> None:
+    connection, _ = create_connection(
+        FakeWebSocket(),
+        limits=RvaRuntimeLimits(agent_close_stage_timeout_seconds=0.125),
+    )
+
+    assert connection.binding._state._close_stage_timeout_seconds == 0.125  # noqa: SLF001
+
+
+@pytest.mark.unit
 def test_rva_opus_codec_roundtrips_one_60ms_packet_to_three_pcm_frames() -> None:
     encoder = RvaOpusCodec()
     decoder = RvaOpusCodec()

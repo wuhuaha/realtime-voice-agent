@@ -9,7 +9,7 @@
 namespace rva::ui {
 
 enum class ConnectionState : uint8_t { kOffline, kConnecting, kOnline, kError };
-enum class ConversationState : uint8_t { kIdle, kListening, kThinking, kSpeaking };
+enum class ConversationState : uint8_t { kIdle, kConnecting, kListening, kThinking, kSpeaking };
 enum class Transport : uint8_t { kWss, kUdp };
 enum class Page : uint8_t { kHome, kWifi, kWifiKeyboard, kEndpoint };
 

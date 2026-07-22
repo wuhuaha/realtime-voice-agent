@@ -19,7 +19,7 @@ from livekit import rtc
 from livekit.agents import DEFAULT_API_CONNECT_OPTIONS, tts
 
 from ..config import Settings
-from ..errors import ProviderError
+from ..errors import BackpressureError, ProviderError
 from ..observability.events import Tracer, redact_exception
 
 
@@ -48,6 +48,18 @@ class PCMFrame:
         )
 
 
+async def _acquire_tts_slot(
+    semaphore: asyncio.Semaphore,
+    *,
+    timeout_seconds: float,
+    provider: str,
+) -> None:
+    try:
+        await asyncio.wait_for(semaphore.acquire(), timeout=timeout_seconds)
+    except TimeoutError:
+        raise BackpressureError(provider, "TTS concurrency") from None
+
+
 class CosyVoiceClient:
     def __init__(
         self,
@@ -55,6 +67,7 @@ class CosyVoiceClient:
         *,
         timeout_seconds: float = 30.0,
         max_concurrency: int = 1,
+        queue_timeout_seconds: float = 0.25,
         client: httpx.AsyncClient | None = None,
         semaphore: asyncio.Semaphore | None = None,
     ) -> None:
@@ -62,6 +75,7 @@ class CosyVoiceClient:
         self._client = client or httpx.AsyncClient(timeout=httpx.Timeout(timeout_seconds))
         self._owns_client = client is None
         self._semaphore = semaphore or asyncio.Semaphore(max_concurrency)
+        self._queue_timeout_seconds = queue_timeout_seconds
 
     async def health(self) -> GatewayHealth:
         try:
@@ -103,7 +117,11 @@ class CosyVoiceClient:
             "speaker": speaker,
             "speed": 1.0,
         }
-        await self._semaphore.acquire()
+        await _acquire_tts_slot(
+            self._semaphore,
+            timeout_seconds=self._queue_timeout_seconds,
+            provider="cosyvoice",
+        )
         try:
             async with self._client.stream("POST", f"{self._base_url}/v1/tts", json=payload) as response:
                 if response.status_code >= 400:
@@ -203,6 +221,7 @@ class CosyVoiceTTS(tts.TTS):
             settings.cosyvoice_url,
             timeout_seconds=settings.cosyvoice_timeout_seconds,
             max_concurrency=settings.cosyvoice_max_concurrency,
+            queue_timeout_seconds=settings.tts_queue_timeout_seconds,
             semaphore=semaphore,
         )
         try:

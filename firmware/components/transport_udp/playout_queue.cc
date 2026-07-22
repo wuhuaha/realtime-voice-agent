@@ -34,7 +34,14 @@ PlayoutPushResult PlayoutQueue::Push(const PlayoutFrame& frame) {
 }
 
 bool PlayoutQueue::Pop(PlayoutFrame* frame) {
+    return PopFresh(frame, 0, 0, nullptr);
+}
+
+bool PlayoutQueue::PopFresh(
+    PlayoutFrame* frame, int64_t now_us, int64_t maximum_age_us,
+    uint32_t* expired_count) {
     if (frame == nullptr) return false;
+    if (expired_count != nullptr) *expired_count = 0;
     std::lock_guard<std::mutex> lock(mutex_);
     while (open_ && size_ > 0) {
         PlayoutFrame& candidate = items_[head_];
@@ -42,7 +49,15 @@ bool PlayoutQueue::Pop(PlayoutFrame* frame) {
         ClearFrame(&candidate);
         head_ = (head_ + 1) % kCapacity;
         size_--;
-        if (frame->generation == generation_) return true;
+        if (frame->generation != generation_) continue;
+        const bool expired = maximum_age_us > 0 && now_us >= frame->arrived_us &&
+                             now_us - frame->arrived_us > maximum_age_us;
+        if (expired) {
+            if (expired_count != nullptr) (*expired_count)++;
+            ClearFrame(frame);
+            continue;
+        }
+        return true;
     }
     return false;
 }

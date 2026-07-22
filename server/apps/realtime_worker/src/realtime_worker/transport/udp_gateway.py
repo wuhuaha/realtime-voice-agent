@@ -19,10 +19,10 @@ from .udp_wire import (
     UDP_FLAG_PROBE,
     UDP_FLAG_PROBE_ACK,
     UDP_HEADER_BYTES,
+    UDP_JITTER_WINDOW_PACKETS,
     UDP_KEY_BYTES,
     UDP_MAX_DATAGRAM_BYTES,
     UDP_MAX_PAYLOAD_BYTES,
-    UDP_MAX_SEQUENCE_FORWARD_JUMP,
     UDP_SALT_BYTES,
     UDP_TAG_BYTES,
     ReplayWindow,
@@ -243,15 +243,18 @@ class UdpMediaSession:
                 self.stats.invalid += 1
                 return
             expected = self._next_audio_sequence
-            if expected is not None and header.sequence > expected + UDP_MAX_SEQUENCE_FORWARD_JUMP:
-                self.stats.invalid += 1
-                return
+            if expected is not None:
+                if header.sequence < expected:
+                    self.stats.replayed += 1
+                    return
+                if header.sequence >= expected + UDP_JITTER_WINDOW_PACKETS or (
+                    header.sequence != expected and len(self._reorder) >= UDP_JITTER_WINDOW_PACKETS
+                ):
+                    self.stats.queue_dropped += 1
+                    return
             self._replay.commit(header.sequence)
             self._source = addr
             await self._send(UDP_FLAG_PROBE_ACK, b"", timestamp=0, generation=1)
-            if expected is not None and header.sequence < expected:
-                self.stats.replayed += 1
-                return
             if expected is None:
                 self._next_audio_sequence = header.sequence
             await self._buffer_media(header, b"")
@@ -273,8 +276,11 @@ class UdpMediaSession:
         if header.sequence < expected:
             self.stats.replayed += 1
             return
-        if header.sequence > expected + UDP_MAX_SEQUENCE_FORWARD_JUMP:
-            self.stats.invalid += 1
+        if (
+            header.sequence >= expected + UDP_JITTER_WINDOW_PACKETS
+            or (header.sequence != expected and len(self._reorder) >= UDP_JITTER_WINDOW_PACKETS)
+        ):
+            self.stats.queue_dropped += 1
             return
         self._replay.commit(header.sequence)
         await self._buffer_media(header, payload)
@@ -294,8 +300,17 @@ class UdpMediaSession:
         if header.sequence < expected:
             self.stats.replayed += 1
             return
-        if header.sequence > expected + UDP_MAX_SEQUENCE_FORWARD_JUMP:
-            self.stats.invalid += 1
+        if header.sequence >= expected + UDP_JITTER_WINDOW_PACKETS:
+            self.stats.queue_dropped += 1
+            return
+        if len(self._reorder) >= UDP_JITTER_WINDOW_PACKETS:
+            if header.sequence != expected:
+                self.stats.queue_dropped += 1
+                return
+            if header.flags == UDP_FLAG_AUDIO:
+                await self._receive_audio(payload, header.timestamp, header.generation)
+            self._next_audio_sequence = expected + 1
+            await self._drain_reorder()
             return
         if header.sequence != expected:
             self.stats.reordered += 1

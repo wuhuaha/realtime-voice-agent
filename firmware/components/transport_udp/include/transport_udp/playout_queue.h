@@ -22,6 +22,8 @@ public:
     void Close();
     PlayoutPushResult Push(const PlayoutFrame& frame);
     bool Pop(PlayoutFrame* frame);
+    bool PopFresh(PlayoutFrame* frame, int64_t now_us, int64_t maximum_age_us,
+                  uint32_t* expired_count);
     [[nodiscard]] size_t size() const;
 
 private:

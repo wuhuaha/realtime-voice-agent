@@ -23,12 +23,19 @@ from .agent import create_runner
 from .auth import AuthContext, VerifiedAuth, WorkerAuthenticator, resolve_device_id
 from .bindings.rva import RvaRuntimeLimits, RvaWssConnection
 from .config import Settings
+from .lifecycle import run_with_hard_deadline
 from .transport import UdpMediaGateway
 
 logger = logging.getLogger(__name__)
 
+SHUTDOWN_RELEASE_MAX_ATTEMPTS = 32
+SHUTDOWN_CLOSE_BUDGET_RATIO = 0.6
+SHUTDOWN_INITIAL_HEARTBEAT_MAX_SECONDS = 1.0
+
 
 class LeaseRegistryPort(Protocol):
+    def snapshot_active_lease_releases(self) -> None: ...
+
     async def revoke_expired_leases(self, now: float) -> None: ...
 
     async def revoke_session_epochs(self, session_epochs: set[str]) -> None: ...
@@ -66,6 +73,10 @@ class RvaSessionRegistry:
     async def release_reservation(self, token: str) -> None:
         await self._admission.release(token)
 
+    async def abort_startup(self, auth: AuthContext, token: str) -> None:
+        self._queue_lease_release(auth)
+        await self._admission.release(token)
+
     async def run(self, websocket: WebSocket, auth: AuthContext, token: str) -> None:
         principal = (auth.tenant_id, auth.device_id)
         session_epoch = auth.session_epoch or f"lab-{secrets.token_hex(16)}"
@@ -91,16 +102,17 @@ class RvaSessionRegistry:
                     handshake_timeout_seconds=self._settings.rva_handshake_timeout_seconds,
                     runner_timeout_seconds=self._settings.rva_runner_timeout_seconds,
                     close_timeout_seconds=self._settings.rva_close_timeout_seconds,
+                    agent_close_stage_timeout_seconds=self._settings.agent_close_stage_timeout_seconds,
                     playback_prebuffer_packets=self._settings.rva_playback_prebuffer_packets,
                 ),
             )
-        except Exception:
-            await self._admission.release(token)
+            async with self._lock:
+                self._connections[principal] = (connection, auth)
+                if auth.session_epoch is not None and auth.expires_at is not None:
+                    self._lease_deadlines[auth.session_epoch] = auth.expires_at
+        except BaseException:
+            await self.abort_startup(auth, token)
             raise
-        async with self._lock:
-            self._connections[principal] = (connection, auth)
-            if auth.session_epoch is not None and auth.expires_at is not None:
-                self._lease_deadlines[auth.session_epoch] = auth.expires_at
         try:
             await connection.run()
         finally:
@@ -113,20 +125,25 @@ class RvaSessionRegistry:
                         self._connections.pop(principal, None)
                     if auth.session_epoch is not None:
                         self._lease_deadlines.pop(auth.session_epoch, None)
-                    release = self._lease_claim(auth)
-                    if release is not None:
-                        self._pending_releases.append(release)
+                    self._queue_lease_release(auth)
                 await self._admission.release(token)
 
     async def close(self) -> None:
         async with self._lock:
-            connections = tuple(connection for connection, _ in self._connections.values())
+            owned = tuple(self._connections.values())
+            for _, auth in owned:
+                self._queue_lease_release(auth)
+            connections = tuple(connection for connection, _ in owned)
             self._connections.clear()
         await asyncio.gather(
             *(connection.close(code=1_001, reason="server_shutdown") for connection in connections),
             return_exceptions=True,
         )
         await asyncio.gather(*(connection.wait_closed() for connection in connections), return_exceptions=True)
+
+    def snapshot_active_lease_releases(self) -> None:
+        for _, auth in self._connections.values():
+            self._queue_lease_release(auth)
 
     async def revoke_session_epochs(self, session_epochs: set[str]) -> None:
         if not session_epochs:
@@ -191,6 +208,11 @@ class RvaSessionRegistry:
             fencing_token=auth.fencing_token,
         )
 
+    def _queue_lease_release(self, auth: AuthContext) -> None:
+        release = self._lease_claim(auth)
+        if release is not None and release not in self._pending_releases:
+            self._pending_releases.append(release)
+
 
 class CombinedLeaseRegistry:
     def __init__(self, *registries: LeaseRegistryPort) -> None:
@@ -198,6 +220,12 @@ class CombinedLeaseRegistry:
 
     async def revoke_expired_leases(self, now: float) -> None:
         await asyncio.gather(*(registry.revoke_expired_leases(now) for registry in self._registries))
+
+    def snapshot_active_lease_releases(self) -> None:
+        for registry in self._registries:
+            snapshot = getattr(registry, "snapshot_active_lease_releases", None)
+            if snapshot is not None:
+                snapshot()
 
     async def revoke_session_epochs(self, session_epochs: set[str]) -> None:
         await asyncio.gather(*(registry.revoke_session_epochs(session_epochs) for registry in self._registries))
@@ -419,7 +447,8 @@ class WorkerHeartbeatLoop:
         body = response.json()
         if self._registry is not None:
             self._registry.acknowledge_lease_releases(pending_releases)
-        self._admission.set_draining(bool(body.get("draining", False)))
+        if bool(body.get("draining", False)):
+            self._admission.set_draining(True)
         if self._registry is not None:
             rejected = {str(value) for value in body.get("rejected_session_epochs", [])}
             lease_expires_at = float(body["lease_expires_at"])
@@ -484,13 +513,10 @@ def create_app(
     async def consume_director_grant(verified: VerifiedAuth) -> bool:
         if verified.director_grant is None:
             return True
-        try:
-            return await active_grant_consumer.consume(
-                verified.director_grant,
-                device_id=verified.context.device_id,
-            )
-        except Exception:
-            return False
+        return await active_grant_consumer.consume(
+            verified.director_grant,
+            device_id=verified.context.device_id,
+        )
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
@@ -510,13 +536,78 @@ def create_app(
             yield
         finally:
             admission.set_draining(True)
+            lease_registry.snapshot_active_lease_releases()
+
+            async def send_draining_heartbeat() -> bool:
+                admission.set_draining(True)
+                try:
+                    await heartbeat.send_once()
+                except Exception:
+                    return False
+                finally:
+                    admission.set_draining(True)
+                return True
+
+            async def close_registries() -> None:
+                registries = [rva_registry.close()]
+                if xiaozhi_registry is not None:
+                    registries.append(xiaozhi_registry.close())
+                await asyncio.gather(*registries)
+
+            async def drain_sessions_and_release_leases() -> None:
+                loop = asyncio.get_running_loop()
+                started_at = loop.time()
+                total_budget = settings.shutdown_drain_timeout_seconds
+                deadline = started_at + total_budget
+                close_stage_budget = total_budget * SHUTDOWN_CLOSE_BUDGET_RATIO
+                initial_release_budget = max(0.0, total_budget - close_stage_budget)
+                initial_heartbeat_budget = min(
+                    SHUTDOWN_INITIAL_HEARTBEAT_MAX_SECONDS,
+                    initial_release_budget,
+                    max(0.0, deadline - loop.time()),
+                )
+                if initial_heartbeat_budget > 0:
+                    await run_with_hard_deadline(
+                        send_draining_heartbeat(),
+                        timeout=initial_heartbeat_budget,
+                        task_name="worker-shutdown-initial-heartbeat",
+                    )
+
+                close_budget = max(0.0, min(close_stage_budget, deadline - loop.time()))
+                if close_budget > 0:
+                    closed = await run_with_hard_deadline(
+                        close_registries(),
+                        timeout=close_budget,
+                        task_name="worker-shutdown-registries",
+                    )
+                    if not closed.completed:
+                        logger.warning("worker registry close timed out timeout_seconds=%s", close_budget)
+
+                for _ in range(SHUTDOWN_RELEASE_MAX_ATTEMPTS):
+                    if not lease_registry.pending_lease_releases():
+                        return
+                    remaining = deadline - loop.time()
+                    if remaining <= 0:
+                        break
+                    sent = await run_with_hard_deadline(
+                        send_draining_heartbeat(),
+                        timeout=remaining,
+                        task_name="worker-shutdown-final-heartbeat",
+                    )
+                    if not sent.completed:
+                        break
+                    if not sent.value:
+                        await asyncio.sleep(0)
+                if lease_registry.pending_lease_releases():
+                    logger.warning(
+                        "worker shutdown left lease releases pending after max attempts count=%d",
+                        len(lease_registry.pending_lease_releases()),
+                    )
+
+            await drain_sessions_and_release_leases()
             await heartbeat.close()
             await provider_readiness.close()
             await active_grant_consumer.close()
-            registries = [rva_registry.close()]
-            if xiaozhi_registry is not None:
-                registries.append(xiaozhi_registry.close())
-            await asyncio.gather(*registries)
             if udp_gateway is not None:
                 await udp_gateway.close()
 
@@ -590,11 +681,25 @@ def create_app(
             if verified is None or websocket.headers.get("protocol-version") != "1":
                 await websocket.close(code=status.WS_1008_POLICY_VIOLATION, reason="invalid_credentials")
                 return
-            if not await consume_director_grant(verified):
+            reservation = await xiaozhi_registry.reserve(verified.context)
+            if reservation is None:
+                await websocket.close(code=1_013, reason="session_overloaded")
+                return
+            try:
+                grant_consumed = await consume_director_grant(verified)
+            except BaseException:
+                await xiaozhi_registry.abort_startup(verified.context, reservation)
+                raise
+            if not grant_consumed:
+                await xiaozhi_registry.release_reservation(reservation)
                 await websocket.close(code=status.WS_1008_POLICY_VIOLATION, reason="grant_rejected")
                 return
-            await websocket.accept()
-            await xiaozhi_registry.run(websocket, verified.context)
+            try:
+                await websocket.accept()
+            except BaseException:
+                await xiaozhi_registry.abort_startup(verified.context, reservation)
+                raise
+            await xiaozhi_registry.run(websocket, verified.context, reservation)
 
     if settings.rva_enabled:
 
@@ -616,14 +721,19 @@ def create_app(
             if reservation is None:
                 await websocket.close(code=1_013, reason="session_overloaded")
                 return
-            if not await consume_director_grant(verified):
+            try:
+                grant_consumed = await consume_director_grant(verified)
+            except BaseException:
+                await rva_registry.abort_startup(verified.context, reservation)
+                raise
+            if not grant_consumed:
                 await rva_registry.release_reservation(reservation)
                 await websocket.close(code=status.WS_1008_POLICY_VIOLATION, reason="grant_rejected")
                 return
             try:
                 await websocket.accept()
             except BaseException:
-                await rva_registry.release_reservation(reservation)
+                await rva_registry.abort_startup(verified.context, reservation)
                 raise
             await rva_registry.run(websocket, verified.context, reservation)
 

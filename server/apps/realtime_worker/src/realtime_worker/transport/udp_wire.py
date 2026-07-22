@@ -18,7 +18,9 @@ UDP_HEADER = struct.Struct("!2sBB8sIIIII")
 UDP_HEADER_BYTES = UDP_HEADER.size
 UDP_MAX_DATAGRAM_BYTES = 1280
 UDP_MAX_PAYLOAD_BYTES = 1200
+UDP_REPLAY_WINDOW_PACKETS = 64
 UDP_MAX_SEQUENCE_FORWARD_JUMP = 1024
+UDP_JITTER_WINDOW_PACKETS = 4
 
 
 @dataclass(frozen=True, slots=True)
@@ -79,7 +81,7 @@ class ReplayWindow:
         if sequence > self._highest:
             return sequence - self._highest <= UDP_MAX_SEQUENCE_FORWARD_JUMP
         distance = self._highest - sequence
-        return distance < 64 and (self._bitmap & (1 << distance)) == 0
+        return distance < UDP_REPLAY_WINDOW_PACKETS and (self._bitmap & (1 << distance)) == 0
 
     def exceeds_forward_window(self, sequence: int) -> bool:
         return self._highest >= 0 and sequence > self._highest + UDP_MAX_SEQUENCE_FORWARD_JUMP
@@ -89,7 +91,11 @@ class ReplayWindow:
             raise ValueError("sequence is outside replay window or duplicated")
         if sequence > self._highest:
             shift = sequence - self._highest
-            self._bitmap = 1 if shift >= 64 else ((self._bitmap << shift) | 1) & ((1 << 64) - 1)
+            self._bitmap = (
+                1
+                if shift >= UDP_REPLAY_WINDOW_PACKETS
+                else ((self._bitmap << shift) | 1) & ((1 << UDP_REPLAY_WINDOW_PACKETS) - 1)
+            )
             self._highest = sequence
             return
         self._bitmap |= 1 << (self._highest - sequence)
@@ -102,9 +108,11 @@ __all__ = [
     "UDP_FLAG_PROBE_ACK",
     "UDP_HEADER_BYTES",
     "UDP_KEY_BYTES",
+    "UDP_JITTER_WINDOW_PACKETS",
     "UDP_MAX_DATAGRAM_BYTES",
     "UDP_MAX_PAYLOAD_BYTES",
     "UDP_MAX_SEQUENCE_FORWARD_JUMP",
+    "UDP_REPLAY_WINDOW_PACKETS",
     "UDP_SALT_BYTES",
     "UDP_TAG_BYTES",
     "ReplayWindow",

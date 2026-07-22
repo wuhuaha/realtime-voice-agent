@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from types import SimpleNamespace
 
@@ -7,6 +8,7 @@ import pytest
 from realtime_worker import agent as agent_module
 from realtime_worker.agent import LiveKitAgentRunner, RoomlessTextOutput, _register_livekit_observers
 from realtime_worker.config import Settings
+from realtime_worker.lifecycle import detached_shutdown_task_count
 from realtime_worker.observability.events import (
     BoundedJsonLogTraceSink,
     InMemoryTraceSink,
@@ -319,3 +321,93 @@ async def test_livekit_runner_passes_one_session_tracer_to_stt_tts_and_observers
     assert assistant_texts == ["首个", "首个文本"]
     await runner.close()
     assert fake_session.closed and captured["tts_closed"] is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure_type", [RuntimeError, asyncio.CancelledError])
+async def test_livekit_runner_close_releases_output_and_tts_after_session_failure(
+    failure_type: type[BaseException],
+) -> None:
+    events: list[str] = []
+
+    class FailingSession:
+        async def aclose(self) -> None:
+            events.append("session")
+            raise failure_type()
+
+    class FakeOutput:
+        async def close(self) -> None:
+            events.append("output")
+
+    class FakeTTS:
+        async def aclose(self) -> None:
+            events.append("tts")
+
+    async def emit_segment(_frames: object) -> None:
+        return None
+
+    runner = LiveKitAgentRunner(
+        Settings(runner="livekit", deepseek_api_key="test-key"),
+        emit_segment,
+        lambda _epoch: None,
+    )
+    runner._session = FailingSession()  # type: ignore[assignment]  # noqa: SLF001
+    runner._output = FakeOutput()  # type: ignore[assignment]  # noqa: SLF001
+    runner._tts = FakeTTS()  # noqa: SLF001
+
+    with pytest.raises(failure_type):
+        await runner.close()
+
+    assert events == ["session", "output", "tts"]
+    assert runner._session is None and runner._tts is None  # noqa: SLF001
+
+
+@pytest.mark.asyncio
+async def test_livekit_runner_hard_deadline_continues_after_non_cooperative_session() -> None:
+    release = asyncio.Event()
+    events: list[str] = []
+    baseline = detached_shutdown_task_count()
+
+    class NonCooperativeSession:
+        async def aclose(self) -> None:
+            while not release.is_set():
+                try:
+                    await release.wait()
+                except asyncio.CancelledError:
+                    continue
+
+    class FakeOutput:
+        async def close(self) -> None:
+            events.append("output")
+
+    class FakeTTS:
+        async def aclose(self) -> None:
+            events.append("tts")
+
+    async def emit_segment(_frames: object) -> None:
+        return None
+
+    runner = LiveKitAgentRunner(
+        Settings(
+            runner="livekit",
+            deepseek_api_key="test-key",
+            agent_close_stage_timeout_seconds=0.02,
+        ),
+        emit_segment,
+        lambda _epoch: None,
+    )
+    runner._session = NonCooperativeSession()  # type: ignore[assignment]  # noqa: SLF001
+    runner._output = FakeOutput()  # type: ignore[assignment]  # noqa: SLF001
+    runner._tts = FakeTTS()  # noqa: SLF001
+
+    with pytest.raises(TimeoutError, match="AgentSession close timed out"):
+        await runner.close()
+
+    assert events == ["output", "tts"]
+    assert detached_shutdown_task_count() == baseline + 1
+    release.set()
+    for _ in range(20):
+        if detached_shutdown_task_count() == baseline:
+            break
+        await asyncio.sleep(0)
+    assert detached_shutdown_task_count() == baseline

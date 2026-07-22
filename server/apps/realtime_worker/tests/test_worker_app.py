@@ -12,6 +12,7 @@ from realtime_worker.app import DirectorGrantConsumer, RvaSessionRegistry, Worke
 from realtime_worker.auth import AuthContext
 from realtime_worker.bindings.xiaozhi import XiaozhiSessionRegistry
 from realtime_worker.config import Settings
+from realtime_worker.lifecycle import detached_shutdown_task_count
 from voice_contracts import LeaseRenewal
 from voice_testkit import MutableClock
 
@@ -128,6 +129,387 @@ def test_worker_drain_rejects_readiness_and_requires_internal_credential() -> No
         assert client.get("/health/ready").status_code == 503
 
 
+def test_worker_shutdown_reports_draining_then_releases_before_closing_clients(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[tuple[str, object]] = []
+    releases: list[LeaseRenewal] = []
+
+    class FakeRegistry:
+        def __init__(self, *_args: object, **_kwargs: object) -> None:
+            return None
+
+        async def close(self) -> None:
+            events.append(("registry_close", None))
+            releases.append(
+                LeaseRenewal(
+                    tenant_id="tenant-1",
+                    device_id="device-1",
+                    session_epoch="epoch-1",
+                    fencing_token=2,
+                )
+            )
+
+        async def revoke_expired_leases(self, _now: float) -> None:
+            return None
+
+        async def revoke_session_epochs(self, _session_epochs: set[str]) -> None:
+            return None
+
+        def extend_lease_deadlines(self, _expires_at: float, _rejected_epochs: set[str]) -> None:
+            return None
+
+        def active_lease_renewals(self) -> tuple[LeaseRenewal, ...]:
+            return ()
+
+        def pending_lease_releases(self) -> tuple[LeaseRenewal, ...]:
+            return tuple(releases)
+
+        def acknowledge_lease_releases(self, acknowledged: tuple[LeaseRenewal, ...]) -> None:
+            for release in acknowledged:
+                releases.remove(release)
+
+    class FakeHeartbeat:
+        last_success = True
+
+        def __init__(
+            self,
+            _settings: Settings,
+            admission: SharedSessionAdmission,
+            registry: FakeRegistry,
+            *args: object,
+            **kwargs: object,
+        ) -> None:
+            self._admission = admission
+            self._registry = registry
+
+        def start(self) -> None:
+            return None
+
+        async def send_once(self) -> None:
+            pending = self._registry.pending_lease_releases()
+            events.append(("heartbeat", (self._admission.draining, pending)))
+            self._registry.acknowledge_lease_releases(pending)
+
+        async def close(self) -> None:
+            events.append(("heartbeat_close", None))
+
+    class FakeGrantConsumer:
+        async def close(self) -> None:
+            events.append(("grant_consumer_close", None))
+
+    monkeypatch.setattr(app_module, "RvaSessionRegistry", FakeRegistry)
+    monkeypatch.setattr(app_module, "WorkerHeartbeatLoop", FakeHeartbeat)
+    app = create_app(
+        settings(director_url="http://director.test", heartbeat_enabled=True),
+        grant_consumer=FakeGrantConsumer(),  # type: ignore[arg-type]
+    )
+
+    with TestClient(app):
+        pass
+
+    assert events == [
+        ("heartbeat", (True, ())),
+        ("registry_close", None),
+        (
+            "heartbeat",
+            (
+                True,
+                (
+                    LeaseRenewal(
+                        tenant_id="tenant-1",
+                        device_id="device-1",
+                        session_epoch="epoch-1",
+                        fencing_token=2,
+                    ),
+                ),
+            ),
+        ),
+        ("heartbeat_close", None),
+        ("grant_consumer_close", None),
+    ]
+
+
+def test_worker_shutdown_cancels_hung_registry_close_at_configured_deadline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[str] = []
+    releases: list[LeaseRenewal] = []
+    release = LeaseRenewal(
+        tenant_id="tenant-1",
+        device_id="device-1",
+        session_epoch="epoch-1",
+        fencing_token=2,
+    )
+
+    class HungRegistry:
+        def __init__(self, *_args: object, **_kwargs: object) -> None:
+            return None
+
+        async def close(self) -> None:
+            events.append("registry_close_started")
+            releases.append(release)
+            child = asyncio.create_task(asyncio.Event().wait(), name="shielded-registry-child")
+            try:
+                await asyncio.shield(child)
+            finally:
+                child.cancel()
+                await asyncio.gather(child, return_exceptions=True)
+                events.append("registry_child_reaped")
+
+        async def revoke_expired_leases(self, _now: float) -> None:
+            return None
+
+        async def revoke_session_epochs(self, _session_epochs: set[str]) -> None:
+            return None
+
+        def extend_lease_deadlines(self, _expires_at: float, _rejected_epochs: set[str]) -> None:
+            return None
+
+        def active_lease_renewals(self) -> tuple[LeaseRenewal, ...]:
+            return ()
+
+        def pending_lease_releases(self) -> tuple[LeaseRenewal, ...]:
+            return tuple(releases)
+
+        def acknowledge_lease_releases(self, _acknowledged: tuple[LeaseRenewal, ...]) -> None:
+            releases.clear()
+
+    class FastHeartbeat:
+        last_success = True
+
+        def __init__(
+            self,
+            _settings: object,
+            _admission: object,
+            registry: HungRegistry,
+            *_args: object,
+            **_kwargs: object,
+        ) -> None:
+            self._registry = registry
+
+        def start(self) -> None:
+            return None
+
+        async def send_once(self) -> None:
+            pending = self._registry.pending_lease_releases()
+            if pending:
+                events.append("final_release_sent")
+                self._registry.acknowledge_lease_releases(pending)
+
+        async def close(self) -> None:
+            events.append("heartbeat_close")
+
+    class FakeGrantConsumer:
+        async def close(self) -> None:
+            events.append("grant_consumer_close")
+
+    monkeypatch.setattr(app_module, "RvaSessionRegistry", HungRegistry)
+    monkeypatch.setattr(app_module, "WorkerHeartbeatLoop", FastHeartbeat)
+    app = create_app(
+        settings(shutdown_drain_timeout_seconds=0.01),
+        grant_consumer=FakeGrantConsumer(),  # type: ignore[arg-type]
+    )
+
+    with TestClient(app):
+        pass
+
+    assert set(events) == {
+        "registry_close_started",
+        "registry_child_reaped",
+        "final_release_sent",
+        "heartbeat_close",
+        "grant_consumer_close",
+    }
+    assert events.index("registry_close_started") < events.index("final_release_sent")
+    assert events.index("final_release_sent") < events.index("heartbeat_close")
+
+
+def test_worker_shutdown_stops_when_release_acknowledgements_never_arrive(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    release = LeaseRenewal(
+        tenant_id="tenant-1",
+        device_id="device-1",
+        session_epoch="epoch-1",
+        fencing_token=2,
+    )
+    heartbeat_calls = 0
+
+    class PendingRegistry:
+        def __init__(self, *_args: object, **_kwargs: object) -> None:
+            self.closed = False
+
+        async def close(self) -> None:
+            self.closed = True
+
+        async def revoke_expired_leases(self, _now: float) -> None:
+            return None
+
+        async def revoke_session_epochs(self, _session_epochs: set[str]) -> None:
+            return None
+
+        def extend_lease_deadlines(self, _expires_at: float, _rejected_epochs: set[str]) -> None:
+            return None
+
+        def active_lease_renewals(self) -> tuple[LeaseRenewal, ...]:
+            return ()
+
+        def pending_lease_releases(self) -> tuple[LeaseRenewal, ...]:
+            return (release,) if self.closed else ()
+
+        def acknowledge_lease_releases(self, _acknowledged: tuple[LeaseRenewal, ...]) -> None:
+            return None
+
+    class NonAcknowledgingHeartbeat:
+        last_success = True
+
+        def __init__(self, *_args: object, **_kwargs: object) -> None:
+            return None
+
+        def start(self) -> None:
+            return None
+
+        async def send_once(self) -> None:
+            nonlocal heartbeat_calls
+            heartbeat_calls += 1
+
+        async def close(self) -> None:
+            return None
+
+    class FakeGrantConsumer:
+        async def close(self) -> None:
+            return None
+
+    monkeypatch.setattr(app_module, "RvaSessionRegistry", PendingRegistry)
+    monkeypatch.setattr(app_module, "WorkerHeartbeatLoop", NonAcknowledgingHeartbeat)
+    app = create_app(settings(), grant_consumer=FakeGrantConsumer())  # type: ignore[arg-type]
+
+    with TestClient(app):
+        pass
+
+    assert heartbeat_calls == app_module.SHUTDOWN_RELEASE_MAX_ATTEMPTS + 1
+
+
+def test_worker_snapshots_active_leases_before_blackhole_heartbeat(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[str] = []
+    releases: list[LeaseRenewal] = []
+    release_blackhole: asyncio.Event | None = None
+    baseline = detached_shutdown_task_count()
+    lease = LeaseRenewal(
+        tenant_id="tenant-1",
+        device_id="device-1",
+        session_epoch="epoch-1",
+        fencing_token=2,
+    )
+
+    class SnapshotRegistry:
+        def __init__(self, *_args: object, **_kwargs: object) -> None:
+            return None
+
+        def snapshot_active_lease_releases(self) -> None:
+            events.append("snapshot")
+            releases.append(lease)
+
+        async def close(self) -> None:
+            events.append("registry_close")
+
+        async def revoke_expired_leases(self, _now: float) -> None:
+            return None
+
+        async def revoke_session_epochs(self, _session_epochs: set[str]) -> None:
+            return None
+
+        def extend_lease_deadlines(self, _expires_at: float, _rejected_epochs: set[str]) -> None:
+            return None
+
+        def active_lease_renewals(self) -> tuple[LeaseRenewal, ...]:
+            return (lease,)
+
+        def pending_lease_releases(self) -> tuple[LeaseRenewal, ...]:
+            return tuple(releases)
+
+        def acknowledge_lease_releases(self, _acknowledged: tuple[LeaseRenewal, ...]) -> None:
+            releases.clear()
+
+    class BlackholeHeartbeat:
+        last_success = True
+
+        def __init__(self, *_args: object, **_kwargs: object) -> None:
+            nonlocal release_blackhole
+            release_blackhole = asyncio.Event()
+
+        def start(self) -> None:
+            return None
+
+        async def send_once(self) -> None:
+            events.append("heartbeat_started")
+            assert release_blackhole is not None
+            while not release_blackhole.is_set():
+                try:
+                    await release_blackhole.wait()
+                except asyncio.CancelledError:
+                    continue
+
+        async def close(self) -> None:
+            events.append("heartbeat_close")
+            assert release_blackhole is not None
+            release_blackhole.set()
+
+    class FakeGrantConsumer:
+        async def close(self) -> None:
+            return None
+
+    monkeypatch.setattr(app_module, "RvaSessionRegistry", SnapshotRegistry)
+    monkeypatch.setattr(app_module, "WorkerHeartbeatLoop", BlackholeHeartbeat)
+    app = create_app(
+        settings(shutdown_drain_timeout_seconds=0.02),
+        grant_consumer=FakeGrantConsumer(),  # type: ignore[arg-type]
+    )
+
+    with TestClient(app):
+        pass
+
+    assert events[0:2] == ["snapshot", "heartbeat_started"]
+    assert "heartbeat_close" in events
+    assert releases == [lease]
+    assert detached_shutdown_task_count() == baseline
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("registry_type", [RvaSessionRegistry, XiaozhiSessionRegistry])
+async def test_registry_startup_abort_is_idempotent_for_admission_and_exact_release(
+    registry_type: type[RvaSessionRegistry] | type[XiaozhiSessionRegistry],
+) -> None:
+    admission = SharedSessionAdmission(1)
+    registry = registry_type(settings(), admission)
+    auth = AuthContext(
+        tenant_id="tenant-1",
+        device_id="device-1",
+        allowed_profiles=frozenset({"wss-opus-v2"}),
+        session_epoch="epoch-1",
+        fencing_token=7,
+        expires_at=100.0,
+    )
+    reservation = await registry.reserve(auth)
+    assert reservation is not None
+
+    await registry.abort_startup(auth, reservation)
+    await registry.abort_startup(auth, reservation)
+
+    assert admission.active_count == 0
+    assert registry.pending_lease_releases() == (
+        LeaseRenewal(
+            tenant_id="tenant-1",
+            device_id="device-1",
+            session_epoch="epoch-1",
+            fencing_token=7,
+        ),
+    )
+
+
 async def test_worker_heartbeat_reports_capacity_and_applies_director_drain() -> None:
     requests: list[dict[str, object]] = []
     revoked: list[set[str]] = []
@@ -204,6 +586,30 @@ async def test_worker_heartbeat_reports_capacity_and_applies_director_drain() ->
     ]
     assert admission.draining is True
     assert revoked == [{"epoch-1"}]
+
+
+@pytest.mark.asyncio
+async def test_worker_heartbeat_does_not_clear_local_drain() -> None:
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "accepted": True,
+                "draining": False,
+                "heartbeat_expires_at": 123.0,
+                "lease_expires_at": 153.0,
+                "rejected_session_epochs": [],
+            },
+        )
+
+    worker_settings = settings(director_url="http://director.test", heartbeat_enabled=True)
+    admission = SharedSessionAdmission(worker_settings.max_sessions)
+    admission.set_draining(True)
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        heartbeat = WorkerHeartbeatLoop(worker_settings, admission, client=client)
+        await heartbeat.send_once()
+
+    assert admission.draining is True
 
 
 @pytest.mark.asyncio
@@ -366,7 +772,9 @@ async def test_xiaozhi_registry_does_not_drop_release_claims_above_heartbeat_bat
             fencing_token=1,
             expires_at=200.0,
         )
-        await registry.run(object(), auth)  # type: ignore[arg-type]
+        reservation = await registry.reserve(auth)
+        assert reservation is not None
+        await registry.run(object(), auth, reservation)  # type: ignore[arg-type]
 
     assert len(registry.pending_lease_releases()) == 80
 

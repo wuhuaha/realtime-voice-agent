@@ -29,6 +29,11 @@ public:
 // is non-blocking; only the supervisor may call JoinAndClose and destroy it.
 class UdpRuntime final {
 public:
+    // Six 60 ms Opus frames is the absolute freshness fence. Normal steady
+    // state remains at one to two frames; this bound only prevents stale audio
+    // from reaching decode/playback after scheduling or future-generation wait.
+    static constexpr int64_t kMaximumMediaAgeUs = 360000;
+
     UdpRuntime(UdpSession& session, DatagramIoPort& io);
     ~UdpRuntime();
     bool Start();
@@ -43,6 +48,9 @@ public:
     bool JoinAndClose(uint32_t timeout_ms);
     [[nodiscard]] uint32_t playout_queue_dropped() const {
         return queue_dropped_.load();
+    }
+    [[nodiscard]] uint32_t playout_media_age_dropped() const {
+        return media_age_dropped_.load();
     }
     [[nodiscard]] int64_t last_authenticated_receive_us() const {
         return session_.last_authenticated_receive_us();
@@ -61,6 +69,7 @@ private:
     std::atomic<TaskHandle_t> task_{nullptr};
     std::atomic<bool> stop_requested_{false};
     std::atomic<uint32_t> queue_dropped_{0};
+    std::atomic<uint32_t> media_age_dropped_{0};
     std::atomic<bool> closed_{false};
     std::mutex send_mutex_;
     std::mutex control_mutex_;

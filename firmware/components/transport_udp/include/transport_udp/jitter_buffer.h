@@ -15,6 +15,7 @@ struct PlayoutFrame final {
     PlayoutKind kind = PlayoutKind::kNone;
     uint32_t timestamp = 0;
     uint32_t generation = 0;
+    int64_t arrived_us = 0;
     uint16_t payload_size = 0;
     std::array<uint8_t, wire::kMaxPayloadBytes> payload{};
 };

@@ -1,14 +1,15 @@
 from __future__ import annotations
 
+import asyncio
 import base64
 import json
 
 import httpx
 import pytest
 from realtime_worker.config import Settings
-from realtime_worker.errors import ConfigurationError, ProviderError
+from realtime_worker.errors import BackpressureError, ConfigurationError, ProviderError
 from realtime_worker.providers import tts_factory
-from realtime_worker.providers.remote_cosyvoice_tts import RemoteCosyVoiceTTSClient
+from realtime_worker.providers.remote_cosyvoice_tts import RemoteCosyVoiceTTS, RemoteCosyVoiceTTSClient
 
 
 def make_settings(**overrides: object) -> Settings:
@@ -103,3 +104,26 @@ async def test_tts_factory_selects_remote_cosyvoice(monkeypatch: pytest.MonkeyPa
     result = await tts_factory.create_tts(make_settings(tts_provider="remote_cosyvoice"))
 
     assert result is selected
+
+
+@pytest.mark.asyncio
+async def test_remote_cosyvoice_uses_configured_queue_deadline() -> None:
+    semaphore = asyncio.Semaphore(1)
+    await semaphore.acquire()
+    provider = await RemoteCosyVoiceTTS.create(
+        make_settings(tts_queue_timeout_seconds=0.01),
+        semaphore=semaphore,
+    )
+    try:
+        with pytest.raises(BackpressureError, match="queue is full"):
+            _ = [
+                frame
+                async for frame in provider._client.stream_pcm(  # noqa: SLF001
+                    "你好",
+                    voice="mumu",
+                    style="",
+                )
+            ]
+    finally:
+        semaphore.release()
+        await provider.aclose()

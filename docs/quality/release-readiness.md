@@ -10,16 +10,16 @@ release evidence；详细实验材料不进入 Product 仓。
 
 | 范围 | 状态 | 证据 |
 | --- | --- | --- |
-| Product repository | `repository_verified` | 根 suite 42 项（其中 protocol 9 项）、repository verifier、secret scan 和 `git diff --check` 通过 |
+| Product repository | `repository_verified` | 根 suite 49 项（其中 protocol 9 项）、repository verifier、secret scan 和 `git diff --check` 通过 |
 | `rva-control-v1` schema/fixtures | `contract_verified` | 根协议 suite 9 项通过 |
-| Director 双 binding、grant/fencing | `unit_verified` | 当前源码完整 Server suite 251 项通过；3 项 Redis 环境测试显式 skip，不记为通过 |
+| Director 双 binding、grant/fencing | `unit_verified` | 当前源码完整 Server suite 297 项通过；3 项 Redis 环境测试显式 skip，不记为通过 |
 | Worker `/v1/voice`、RVA runtime | `process_verified` | 当前源码完整 Server suite 与本机独立进程 Director/Worker 真实 provider WSS 闭环通过，收到 166 个下行媒体包 |
 | Worker RVA UDP binding | `process_verified` | focused grant/probe/GCM/双向媒体测试及本机独立进程真实 provider UDP GCM 闭环通过，收到 119 个下行媒体包 |
 | Server static analysis | `verified` | Ruff 检查通过 |
 | Firmware core/session contracts | `host_verified` | headless contract 与 canonical UDP fixture boundary 通过 |
 | WSS protocol/owner | `host_verified` | strict parser、fragment、queue、teardown host tests 通过 |
 | Board/audio/UI components | `host_verified` | focused host/Xtensa component compile；不等于 HIL |
-| Native ESP-IDF composition | `build_passed` / `image_sized` | ESP-IDF 5.5.2、`esp-14.2.0_20251107` 构建通过；镜像 `0x197d90` bytes，4 MiB app 分区剩余 `0x268270` bytes（约 60%）；SHA-256 `AF3E42F3EED54D60C47C3C08D84083E2BF539E7E37097D4FC7DECCB9E5FED060` |
+| Native ESP-IDF composition | `build_passed` / `image_sized` | ESP-IDF 5.5.2、`esp-14.2.0_20251107` 构建通过；镜像 `0x2136d0` bytes，4 MiB app 分区剩余 `0x1ec930` bytes（约 48%）；SHA-256 `24E7A95D542DF680515D1CAFA0A673309DF857CA080E38145D12D496A4BCDA68`；size 报告 static IRAM `16384/16384`，后续 IRAM 增长必须阻断 |
 | Native WSS uplink | `device_verified` | 当前镜像在目标 ESP32-S3 上完成 Wi-Fi、Director bootstrap、Worker admission、AFE 与 Opus uplink，连接连续超过 70 秒并跨过多个 10 秒 WebSocket PING 和 45 秒 idle 门限；未出现 panic、重连或 media idle |
 
 以上跨进程闭环只证明当前主机上的 Server 拓扑、协议和 provider 数据路径可运行，不替代目标部署、ESP32 真机、
@@ -36,7 +36,7 @@ release evidence；详细实验材料不进入 Product 仓。
 | UDP voice loop | `not_run` | GCM probe、双向媒体、generation、loss/jitter/PLC 和 fallback 通过 |
 | AEC/acoustic | `not_run` | 近讲、远讲、double-talk、自回授与 interrupt tail 评测通过 |
 | Stability | `not_run` | 20 轮交互和 30 分钟运行，无 panic/WDT、泄漏或持续 underrun |
-| Security/repository | `verified` | repository verifier 已自动检查字体 copyright notice 与 OFL/MIT 许可证文件；secret scan、根测试、protocol 测试和 `git diff --check` 通过；发布前仍需对最终提交 identity 重跑 |
+| Security/repository | `not ready` | repository verifier、secret scan、根测试、protocol 测试和 `git diff --check` 通过；`xiaozhi-fonts` 固定包只声明 MIT metadata、未附上游许可证文本，发布前必须完成许可证来源复核 |
 
 ## 兼容线退役条件
 
@@ -47,9 +47,9 @@ Canonical `udp-opus-gcm-v1` byte fixtures 位于 `protocol/udp_opus_gcm_v1/`，�
 
 ## 2026-07-22 native HIL 结论
 
-- `esp_audio_codec` 的 Opus encode 在本配置下瞬时使用约 20 KiB task stack。24 KiB uplink task 在进入 encode
-  前仅剩约 18 KiB，导致返回上下文被 PCM 数据覆盖并触发 `InstrFetchProhibited`；当前使用组件 all-encoder
-  test 的 40 KiB baseline，实测最低余量约 14 KiB。
+- `esp_audio_codec` 的 Opus encode 在本配置下首帧累计使用约 26 KiB task stack。历史 24 KiB 配置发生
+  `InstrFetchProhibited`；当前 uplink task 配置为 36 KiB，按该次 HIL 数据保留约 10 KiB 余量。该数值仍需在最终
+  artifact 的完整 ASR/TTS 交互和长稳测试中重新采样 high-water mark。
 - Worker 的 10 秒 WebSocket PING 会作为零长度 `WEBSOCKET_EVENT_DATA` 到达 ESP-IDF callback，同时由组件自动
   回复 PONG。Transport adapter 必须忽略 PING/PONG/CLOSE data callback，并只通过 CLOSED/DISCONNECTED 事件驱动
   session teardown；否则会稳定形成约 10 秒断连。

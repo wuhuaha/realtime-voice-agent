@@ -224,7 +224,9 @@ int main() {
 
     // Reordering waits for the missing sequence 2 before releasing 3 and 4.
     assert(session.PopPlayout(3000).kind == PlayoutKind::kNone);
-    assert(session.PopPlayout(123001).kind == PlayoutKind::kPlc);
+    const auto first_plc = session.PopPlayout(123001);
+    assert(first_plc.kind == PlayoutKind::kPlc);
+    assert(first_plc.arrived_us == 2000);
     assert(session.PopPlayout(123001).kind == PlayoutKind::kAudio);
     assert(session.PopPlayout(123001).kind == PlayoutKind::kAudio);
 
@@ -234,7 +236,9 @@ int main() {
     assert(session.Receive(Server(), datagram.data(), size, 130000) ==
            AdmissionResult::kAcceptedAudio);
     assert(session.PopPlayout(130000).kind == PlayoutKind::kNone);
-    assert(session.PopPlayout(250001).kind == PlayoutKind::kPlc);
+    const auto later_plc = session.PopPlayout(250001);
+    assert(later_plc.kind == PlayoutKind::kPlc);
+    assert(later_plc.arrived_us == 130000);
     assert(session.PopPlayout(250001).kind == PlayoutKind::kAudio);
 
     // Authenticated future media is bounded and remains silent until control advances.

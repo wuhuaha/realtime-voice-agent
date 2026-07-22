@@ -51,6 +51,9 @@ server/
 
 - `POST /v1/session/bootstrap`：输入 tenant、device、supported profiles，返回 Worker URL、短期 grant、epoch、
   fencing token、allowed profiles 和 expiry。
+- `POST /v1/session/release`：设备在本地建链失败或完整 teardown 后提交 tenant、device、Worker、epoch 和 fencing
+  token；Director 使用精确 compare-and-delete 释放 route。请求使用与 bootstrap 相同且绑定 tenant/device 的认证，
+  不存在、重复或旧 fence 均返回相同幂等成功响应，避免泄露当前 lease 状态。
 - `POST /internal/v1/workers/heartbeat`：认证 Worker 上报 public URL、active/max、profiles、draining、healthy。
 - `POST /internal/v1/workers/{worker_id}/drain`：单向进入 drain；v1 不允许对同一进程撤销 drain。
 - `POST /internal/v1/grants/consume`：认证 Worker 请求 Director 原子消费 shared `jti` 并复核 route/fencing。
@@ -72,6 +75,8 @@ server/
 - Worker 必须验证签名、audience、expiry、设备、Worker，并通过 Director 将 `jti` 在 shared coordination
   store 中原子单次消费；消费发生在 session admission，不能进入媒体热路径。
 - store 不可用时不得签发无法 fencing 的新 grant。
+- Redis adapter 的连接建立和单条命令必须分别有界；当前默认均为 1 秒，允许配置范围为 0.05 至 10 秒。
+  Redis timeout 对外映射为不包含 URL、credential 或原始异常的 `503 coordination_unavailable`。
 
 ## 4. Realtime Worker
 
@@ -131,6 +136,11 @@ LiveKit `AgentSession` 是 VAD、STT、EOU、interruption、turn 和 response �
 默认 `VOICE_WORKER_MAX_SESSIONS=5` 是保守配置。生产值必须以目标机器相同 provider、codec、profile 和观测
 开销下的 CPU、RSS、event-loop lag、queue pressure 与 p95/p99 压测决定。
 
+TTS provider 的共享并发槽使用单独的排队 deadline；当前 `VOICE_TTS_QUEUE_TIMEOUT_SECONDS` 默认 0.25 秒，超时产生
+retryable backpressure，不启动 provider 请求。MiMo SSE 入口按流式增量解析并强制限制：单行与单事件各 1 MiB、
+每事件最多 256 条 `data:`、单个 base64 解码后音频 chunk 512 KiB、整次响应 8 MiB；越界视为不可重试的 provider
+协议错误，避免异常响应造成无界内存增长。
+
 ## 6. Health、drain 与关闭
 
 - `live`：event loop 和进程仍运行。
@@ -138,7 +148,10 @@ LiveKit `AgentSession` 是 VAD、STT、EOU、interruption、turn 和 response �
   至少一次 coordination heartbeat 成功。
 - `dependency health`：provider 和 Redis 单独报告，不与 liveness 混淆。
 - `draining`：heartbeat 立即发布，Director 停止分配；Worker 拒绝新连接，现有 session 在 deadline 内收敛。
-- deadline 到达：显式 close 当前 session，撤销 UDP key/grant；不得无限等待 provider。
+- Worker registry 完整关闭后再通过 draining heartbeat 上报 exact lease release；每个 heartbeat 合同最多携带 64 条，
+  最多尝试 32 次，且全流程仍受 `VOICE_SHUTDOWN_DRAIN_TIMEOUT_SECONDS` 总预算约束（默认 10 秒）。
+- deadline 或最大尝试次数到达：记录仍 pending 的 release，撤销 UDP key/grant 并退出；不得无限等待 provider 或
+  coordination store。
 
 ## 7. 可观测性
 

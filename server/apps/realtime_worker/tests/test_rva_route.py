@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import base64
 import json
 import socket
@@ -76,6 +77,10 @@ class FakeGrantConsumer:
 
     async def close(self) -> None:
         return None
+
+
+class FatalGrantConsume(BaseException):
+    pass
 
 
 def test_rva_lab_route_completes_native_handshake() -> None:
@@ -288,6 +293,94 @@ def test_rva_route_fails_closed_when_director_rejects_consumption() -> None:
     assert consumer.calls == [(token, "device-001")]
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ["accept", "registration"])
+async def test_rva_route_releases_consumed_grant_when_startup_fails(
+    monkeypatch: pytest.MonkeyPatch,
+    failure: str,
+) -> None:
+    consumer = FakeGrantConsumer()
+    app = create_app(settings(), grant_consumer=consumer)  # type: ignore[arg-type]
+    token = connect_grant(control_protocol="rva-control-v1", profiles=("wss-opus-v2",))
+
+    class FakeWebSocket:
+        headers = {"authorization": f"Bearer {token}", "device-id": "device-001"}
+
+        async def accept(self) -> None:
+            if failure == "accept":
+                raise RuntimeError("accept failed")
+
+        async def close(self, *, code: int, reason: str) -> None:
+            pytest.fail(f"unexpected websocket close: {code} {reason}")
+
+    if failure == "registration":
+        monkeypatch.setattr(
+            "realtime_worker.app.RvaWssConnection",
+            lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("registration failed")),
+        )
+    route = next(route for route in app.routes if route.path == "/v1/voice")
+
+    async with app.router.lifespan_context(app):
+        with pytest.raises(RuntimeError, match=f"{failure} failed"):
+            await route.endpoint(FakeWebSocket())  # type: ignore[attr-defined, arg-type]
+
+        assert consumer.calls == [(token, "device-001")]
+        assert app.state.admission.active_count == 0
+        releases = app.state.rva_session_registry.pending_lease_releases()
+        assert [(item.session_epoch, item.fencing_token) for item in releases] == [("grant-epoch-001", 2)]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("route_path", "control_protocol", "registry_state_name"),
+    [
+        ("/v1/voice", "rva-control-v1", "rva_session_registry"),
+        ("/v1/xiaozhi", "xiaozhi-control-v1", "xiaozhi_session_registry"),
+    ],
+)
+@pytest.mark.parametrize("failure_type", [asyncio.CancelledError, FatalGrantConsume])
+async def test_grant_consume_interruption_releases_reservation_and_exact_lease_once(
+    route_path: str,
+    control_protocol: str,
+    registry_state_name: str,
+    failure_type: type[BaseException],
+) -> None:
+    class InterruptedGrantConsumer(FakeGrantConsumer):
+        async def consume(self, token: str, *, device_id: str) -> bool:
+            self.calls.append((token, device_id))
+            raise failure_type()
+
+    consumer = InterruptedGrantConsumer()
+    app = create_app(
+        settings(legacy_xiaozhi_enabled=route_path == "/v1/xiaozhi"),
+        grant_consumer=consumer,  # type: ignore[arg-type]
+    )
+    profiles = ("wss-opus-v1",) if route_path == "/v1/xiaozhi" else ("wss-opus-v2",)
+    token = connect_grant(control_protocol=control_protocol, profiles=profiles)
+
+    class FakeWebSocket:
+        headers = {
+            "authorization": f"Bearer {token}",
+            "device-id": "device-001",
+            "protocol-version": "1",
+        }
+
+        async def close(self, *, code: int, reason: str) -> None:
+            pytest.fail(f"unexpected websocket close: {code} {reason}")
+
+    route = next(route for route in app.routes if route.path == route_path)
+    async with app.router.lifespan_context(app):
+        with pytest.raises(failure_type):
+            await route.endpoint(FakeWebSocket())  # type: ignore[attr-defined, arg-type]
+
+        registry = getattr(app.state, registry_state_name)
+        assert app.state.admission.active_count == 0
+        releases = registry.pending_lease_releases()
+        assert [(item.session_epoch, item.fencing_token) for item in releases] == [("grant-epoch-001", 2)]
+
+    assert consumer.calls == [(token, "device-001")]
+
+
 def test_shared_admission_rejects_same_principal_across_xiaozhi_and_rva() -> None:
     app = create_app(settings(legacy_xiaozhi_enabled=True))
     xiaozhi_hello = {
@@ -346,3 +439,101 @@ def test_capacity_rejection_does_not_consume_director_grant() -> None:
                     pass
     assert overloaded.value.code == 1_013
     assert consumer.calls == []
+
+
+def test_xiaozhi_capacity_rejection_does_not_consume_director_grant() -> None:
+    consumer = FakeGrantConsumer()
+    app = create_app(
+        settings(max_sessions=1, legacy_xiaozhi_enabled=True),
+        grant_consumer=consumer,  # type: ignore[arg-type]
+    )
+    token = connect_grant(control_protocol="xiaozhi-control-v1", profiles=("wss-opus-v1",))
+    with TestClient(app) as client:
+        with client.websocket_connect(
+            "/v1/voice",
+            headers={"Authorization": "Bearer lab-test-token", "Device-Id": "device-other"},
+        ) as occupied:
+            occupied.send_json({**session_open(), "device_id": "device-other"})
+            assert occupied.receive_json()["type"] == "session.opened"
+            with pytest.raises(WebSocketDisconnect) as overloaded:
+                with client.websocket_connect(
+                    "/v1/xiaozhi",
+                    headers={
+                        "Authorization": f"Bearer {token}",
+                        "Device-Id": "device-001",
+                        "Protocol-Version": "1",
+                    },
+                ):
+                    pass
+
+    assert overloaded.value.code == 1_013
+    assert consumer.calls == []
+
+
+def test_xiaozhi_consume_rejection_releases_admission() -> None:
+    consumer = FakeGrantConsumer(accepted=False)
+    app = create_app(
+        settings(max_sessions=1, legacy_xiaozhi_enabled=True),
+        grant_consumer=consumer,  # type: ignore[arg-type]
+    )
+    token = connect_grant(control_protocol="xiaozhi-control-v1", profiles=("wss-opus-v1",))
+    with TestClient(app) as client:
+        with pytest.raises(WebSocketDisconnect) as rejected:
+            with client.websocket_connect(
+                "/v1/xiaozhi",
+                headers={
+                    "Authorization": f"Bearer {token}",
+                    "Device-Id": "device-001",
+                    "Protocol-Version": "1",
+                },
+            ):
+                pass
+        assert app.state.admission.active_count == 0
+        assert app.state.xiaozhi_session_registry.pending_lease_releases() == ()
+
+    assert rejected.value.code == 1_008
+    assert consumer.calls == [(token, "device-001")]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ["accept", "registration"])
+async def test_xiaozhi_route_releases_consumed_grant_when_startup_fails(
+    monkeypatch: pytest.MonkeyPatch,
+    failure: str,
+) -> None:
+    consumer = FakeGrantConsumer()
+    app = create_app(
+        settings(legacy_xiaozhi_enabled=True),
+        grant_consumer=consumer,  # type: ignore[arg-type]
+    )
+    token = connect_grant(control_protocol="xiaozhi-control-v1", profiles=("wss-opus-v1",))
+
+    class FakeWebSocket:
+        headers = {
+            "authorization": f"Bearer {token}",
+            "device-id": "device-001",
+            "protocol-version": "1",
+        }
+
+        async def accept(self) -> None:
+            if failure == "accept":
+                raise RuntimeError("accept failed")
+
+        async def close(self, *, code: int, reason: str) -> None:
+            pytest.fail(f"unexpected websocket close: {code} {reason}")
+
+    if failure == "registration":
+        monkeypatch.setattr(
+            "realtime_worker.bindings.xiaozhi_runtime.XiaozhiConnection",
+            lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("registration failed")),
+        )
+    route = next(route for route in app.routes if route.path == "/v1/xiaozhi")
+
+    async with app.router.lifespan_context(app):
+        with pytest.raises(RuntimeError, match=f"{failure} failed"):
+            await route.endpoint(FakeWebSocket())  # type: ignore[attr-defined, arg-type]
+
+        assert consumer.calls == [(token, "device-001")]
+        assert app.state.admission.active_count == 0
+        releases = app.state.xiaozhi_session_registry.pending_lease_releases()
+        assert [(item.session_epoch, item.fencing_token) for item in releases] == [("grant-epoch-001", 2)]

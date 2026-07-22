@@ -102,11 +102,14 @@ std::optional<UiEvent> Reduce(UiState* state, const UiCommand& command) {
             return UiEvent{.kind = EventKind::kRequestWifiScan, .transport = Transport::kWss, .text = {}, .secret = {}};
         case CommandKind::kMicPressed:
             if (state->conversation != ConversationState::kIdle) {
-                return UiEvent{.kind = EventKind::kStopConversation, .transport = Transport::kWss,
+                state->conversation = ConversationState::kIdle;
+                return UiEvent{.kind = EventKind::kStopConversation,
+                               .transport = state->active_transport,
                                .text = {}, .secret = {}};
             }
-            // Idle 点击表达 fresh bootstrap 意图，不依赖上一条 session 的连接状态。
-            return UiEvent{.kind = EventKind::kStartConversation, .transport = Transport::kWss,
+            state->conversation = ConversationState::kConnecting;
+            return UiEvent{.kind = EventKind::kStartConversation,
+                           .transport = state->preferred_transport,
                            .text = {}, .secret = {}};
         case CommandKind::kTransportPressed:
             if (state->conversation == ConversationState::kIdle) {
@@ -150,6 +153,7 @@ const char* ConnectionLabel(ConnectionState state) {
 const char* ConversationLabel(ConversationState state) {
     switch (state) {
         case ConversationState::kIdle: return "待机";
+        case ConversationState::kConnecting: return "连接中...";
         case ConversationState::kListening: return "聆听中...";
         case ConversationState::kThinking: return "思考中...";
         case ConversationState::kSpeaking: return "回复中...";

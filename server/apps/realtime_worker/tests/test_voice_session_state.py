@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 
 import pytest
+from realtime_worker.lifecycle import detached_shutdown_task_count
 from realtime_worker.voice.session import (
     CancelDisposition,
     PlaybackAlreadyActiveError,
@@ -178,3 +179,35 @@ async def test_close_attempts_every_owned_resource_and_reports_failures() -> Non
     assert len(captured.value.exceptions) == 1
     assert isinstance(captured.value.exceptions[0], RuntimeError)
     assert session.closed is True
+
+
+@pytest.mark.unit
+async def test_close_port_hard_deadline_tracks_non_cooperative_cleanup() -> None:
+    release = asyncio.Event()
+    baseline = detached_shutdown_task_count()
+
+    class NonCooperativePort:
+        async def close(self) -> None:
+            while not release.is_set():
+                try:
+                    await release.wait()
+                except asyncio.CancelledError:
+                    continue
+
+    session = VoiceSessionState(
+        _InterruptPort(),
+        close_ports=(NonCooperativePort(),),
+        connection_epoch="conn_stubborn",
+        close_stage_timeout_seconds=0.02,
+    )
+
+    with pytest.raises(BaseExceptionGroup, match="voice session cleanup failed"):
+        await session.close()
+
+    assert detached_shutdown_task_count() == baseline + 1
+    release.set()
+    for _ in range(20):
+        if detached_shutdown_task_count() == baseline:
+            break
+        await asyncio.sleep(0)
+    assert detached_shutdown_task_count() == baseline
