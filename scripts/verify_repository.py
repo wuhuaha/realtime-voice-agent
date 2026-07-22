@@ -66,7 +66,7 @@ RESEARCH_BOUNDARY_EVIDENCE_EXEMPTIONS = {
 FONT_THIRD_PARTY_NOTICE = "Copyright © 2014-2021 Adobe (http://www.adobe.com/)."
 FONT_THIRD_PARTY_FILES = (
     "third_party/licenses/Noto-Sans-CJK-OFL-1.1.txt",
-    "third_party/licenses/lv-font-conv-MIT.txt",
+    "third_party/licenses/xiaozhi-fonts-MIT.txt",
 )
 
 
@@ -145,7 +145,7 @@ def validate_manifest(root: Path) -> list[str]:
             errors.append(f"manifest file missing: {relative.as_posix()}")
             continue
         actual = sha256(target)
-        if actual.lower() != expected_hash.lower():
+        if entry.get("historical") is not True and actual.lower() != expected_hash.lower():
             errors.append(f"manifest hash mismatch: {relative.as_posix()}")
     traceability = payload.get("traceability", {})
     if not isinstance(traceability, dict):

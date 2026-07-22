@@ -1,18 +1,18 @@
 # 字体资产第三方声明
 
-`ui_font_assets` 的容器、校验和运行期生命周期由本项目维护。默认资产由以下固定输入生成：
+`ui_font_assets` 的容器、校验、CBIN 相对指针解析和运行期生命周期由本项目维护。默认资产来自以下固定输入：
 
 | 输入 | 上游 | 固定版本 | 许可证及随附文本 |
 | --- | --- | --- | --- |
-| Noto Sans CJK SC Regular | <https://github.com/notofonts/noto-cjk> | `Sans2.004` / commit `523d033d6cb47f4a80c58a35753646f5c3608a78`，源文件 SHA-256 `2c76254f6fc379fddfce0a7e84fb5385bb135d3e399294f6eeb6680d0365b74b` | SIL Open Font License 1.1 (`third_party/licenses/Noto-Sans-CJK-OFL-1.1.txt`) |
-| `lv_font_conv` | <https://github.com/lvgl/lv_font_conv> | `1.5.3` / commit `899ea1128d2e82bb015a319c8a7d18a82359ab3a`，npm tarball SHA-256 `9f64fb8eb553dbab1990402eae74afbafd80b4f39a8314a01484083b6ed1000d` | MIT (`third_party/licenses/lv-font-conv-MIT.txt`) |
+| `font_noto_qwen_20_4.bin` | <https://github.com/78/xiaozhi-fonts> | component `1.6.0`，ZIP SHA-256 `255868d6e225d08038f38add8f7f2bf2e3567ef7a3b0edcd9703d2101f56e7d5`，CBIN SHA-256 `601422de3a49c05265ed853c8054b73b532729e667a6d63f34bb72eab1935345` | 字体数据保留 Noto Sans CJK 的 SIL OFL 1.1；组件元数据声明 MIT，但固定包未附上游许可证文本（见 `third_party/licenses/xiaozhi-fonts-MIT.txt`） |
 
 Noto Sans CJK 源字体版权声明：
 
 > Copyright © 2014-2021 Adobe (http://www.adobe.com/).
 
-下载 URL、hash、字符范围、字号和 bpp 均固定在
-`firmware/apps/voice_terminal/tools/build_font_assets.py`。构建缓存、源 OTF、转换器归档、生成的 CBin、
+下载 URL、目标文件名和 hash 均固定在
+`firmware/apps/voice_terminal/tools/build_font_assets.py`。构建缓存、组件归档、提取的 CBIN、
 `font_assets.bin` 和 firmware binary 均位于 ignored build tree，不提交到仓库。发布固件时必须随产品的
-第三方声明提供 MIT 与 SIL Open Font License 1.1 文本。精确下载 URL、revision、hash 与许可证路径也记录在
-`third_party/sources.lock.yaml`；许可证文件逐字取自对应固定 tag 的官方上游。
+第三方声明提供 SIL Open Font License 1.1 文本。组件包的 MIT metadata 与缺失上游许可证文本的事实单独记录，
+不得用项目自行生成的版权行冒充上游声明；发布前必须完成许可证来源复核。精确下载 URL、版本、ZIP/CBIN hash
+与许可证路径记录在 `third_party/sources.lock.yaml`。

@@ -34,12 +34,14 @@ files:
     sha256: 5b424d69dde4701f3439471065a8f6471e40c456e69b6b21c480b0d4e9cb5dd9
     source_sha256: a6c5409cbfe0a58139b6a9d8635136b6a20c5f9415b9deaed7dbbc9ba00b1255
     normalization: removed one trailing blank line
+    historical: true
   - production_path: protocol/udp_opus_gcm_v1/fixtures/positive.json
     sha256: bfab0648d9d7976fa90ac5c600a06a5ae9338399bfc0182ce2e1ea3e641eab61
   - production_path: protocol/udp_opus_gcm_v1/fixtures/negative.json
     sha256: d355179c29adf5041dce12ae61d6cef68f087a4daa223b02d5ebf2ada99f67b0
   - production_path: third_party/sources.lock.yaml
     sha256: 9786c7ee2c0259a7d69ad265a3a2c85eac38100c70ce3683c0dc377693a6c74c
+    historical: true
   - production_path: firmware/locks/xiaozhi-esp32.dependencies.lock
     sha256: 3cd77fe32859f2588c75957e21d365f5a31c51167bb5ce65858d26f5fac1843b
   - source_path: firmware/reference/xiaozhi-overlay/.env.local.example

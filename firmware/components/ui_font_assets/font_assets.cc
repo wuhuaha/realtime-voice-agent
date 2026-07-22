@@ -8,21 +8,44 @@
 #include <esp_partition.h>
 #include <mbedtls/sha256.h>
 
+#include "ui_font_assets/cbin_font.h"
+
 namespace rva::ui {
 namespace {
 
 constexpr char kTag[] = "rva_font_assets";
 constexpr char kPartitionLabel[] = "font_assets";
 constexpr uint8_t kMagic[8] = {'R', 'V', 'A', 'F', 'N', 'T', '1', '\0'};
-constexpr uint8_t kExpectedSourceId[16] = {'n', 'o', 't', 'o', 'c', 'j', 'k', '-',
-                                           's', '2', '.', '0', '0', '4', '\0', '\0'};
+constexpr uint8_t kExpectedSourceId[16] = {'q', 'w', 'e', 'n', '2', '0', '-', '4',
+                                           '-', 'v', '1', '.', '6', '.', '0', '\0'};
 constexpr uint8_t kExpectedFontSha256[32] = {
-    0xe0, 0x16, 0x40, 0x8d, 0x52, 0x88, 0x1c, 0x4f, 0x3c, 0x71, 0x00,
-    0xc5, 0x9b, 0xf6, 0xbc, 0x65, 0x74, 0xef, 0x5c, 0x03, 0x98, 0x11,
-    0xca, 0xae, 0xa2, 0xdc, 0x09, 0x55, 0xa3, 0xa0, 0xa4, 0xb7,
+    0x60, 0x14, 0x22, 0xde, 0x3a, 0x49, 0xc0, 0x52, 0x65, 0xed, 0x85,
+    0x3c, 0x80, 0x54, 0xb7, 0x3b, 0x53, 0x27, 0x29, 0xe6, 0x67, 0xa6,
+    0xd6, 0x3f, 0x34, 0xbb, 0x72, 0xea, 0xb1, 0x93, 0x53, 0x45,
 };
 constexpr uint16_t kFormatVersion = 1;
 constexpr size_t kMaxFontBytes = 6U * 1024U * 1024U;
+
+bool GlyphUsable(const lv_font_t* font, uint32_t codepoint, const char* name) {
+    lv_font_glyph_dsc_t glyph{};
+    const bool found = lv_font_get_glyph_dsc(font, &glyph, codepoint, 0);
+    if (!found || glyph.resolved_font != font ||
+        glyph.adv_w == 0 || glyph.box_w == 0 || glyph.box_h == 0) {
+        ESP_LOGW(kTag,
+                 "font glyph invalid: %s U+%04lX found=%d resolved=%d adv=%u box=%ux%u gid=%lu",
+                 name, static_cast<unsigned long>(codepoint), found,
+                 glyph.resolved_font == font, static_cast<unsigned>(glyph.adv_w),
+                 static_cast<unsigned>(glyph.box_w), static_cast<unsigned>(glyph.box_h),
+                 static_cast<unsigned long>(glyph.gid.index));
+        return false;
+    }
+    if (font->static_bitmap != 0 && lv_font_get_glyph_static_bitmap(&glyph) == nullptr) {
+        ESP_LOGW(kTag, "font glyph bitmap unavailable: %s U+%04lX", name,
+                 static_cast<unsigned long>(codepoint));
+        return false;
+    }
+    return true;
+}
 
 struct __attribute__((packed)) FontAssetHeader final {
     uint8_t magic[8];
@@ -92,17 +115,21 @@ esp_err_t FontAssets::Initialize() {
         return ESP_ERR_INVALID_CRC;
     }
 
-    // LVGL 9.5's standard binary-font parser reads through bounded MEMFS and
-    // owns the resulting descriptors and glyph bitmap.
-    text_font_ = lv_binfont_create_from_buffer(
-        const_cast<uint8_t*>(font_bytes), header.font_size);
+    text_font_ = CreateCbinFont(font_bytes, header.font_size);
     if (text_font_ == nullptr) {
         ESP_LOGW(kTag, "font assets unavailable: descriptor_invalid");
         Deinitialize();
         return ESP_ERR_INVALID_RESPONSE;
     }
-    esp_partition_munmap(mapping_);
-    mapping_ = 0;
+    // A valid container is not sufficient: reject a descriptor whose relative
+    // pointers produce empty glyphs before it can blank the inherited UI font.
+    if (!GlyphUsable(text_font_, 'A', "latin") ||
+        !GlyphUsable(text_font_, 0x5F85, "cjk-wait") ||
+        !GlyphUsable(text_font_, 0x7F51, "cjk-network")) {
+        ESP_LOGW(kTag, "font assets unavailable: glyph_self_test_failed");
+        Deinitialize();
+        return ESP_ERR_INVALID_RESPONSE;
+    }
     text_font_->fallback = &lv_font_source_han_sans_sc_16_cjk;
     ESP_LOGI(kTag, "font assets ready: %lu bytes, source=%.16s",
              static_cast<unsigned long>(header.font_size), header.source_id);
@@ -110,7 +137,7 @@ esp_err_t FontAssets::Initialize() {
 }
 
 void FontAssets::Deinitialize() {
-    if (text_font_ != nullptr) lv_binfont_destroy(text_font_);
+    if (text_font_ != nullptr) DestroyCbinFont(text_font_);
     text_font_ = nullptr;
     if (mapping_ != 0) {
         esp_partition_munmap(mapping_);

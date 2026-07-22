@@ -24,15 +24,15 @@ sources:
     artifact_url: https://raw.githubusercontent.com/notofonts/noto-cjk/Sans2.004/Sans/OTF/SimplifiedChinese/NotoSansCJKsc-Regular.otf
     artifact_sha256: 2c76254f6fc379fddfce0a7e84fb5385bb135d3e399294f6eeb6680d0365b74b
     accessed_at: 2026-07-22
-    purpose: Source font for the embedded Simplified Chinese UI font asset
-  - id: lv-font-conv
-    url: https://github.com/lvgl/lv_font_conv.git
-    revision: 899ea1128d2e82bb015a319c8a7d18a82359ab3a
-    version: 1.5.3
+    purpose: License and copyright provenance for Noto-derived embedded Chinese font data
+  - id: xiaozhi-fonts
+    url: https://github.com/78/xiaozhi-fonts.git
+    version: 1.6.0
     license: MIT
-    license_file: third_party/licenses/lv-font-conv-MIT.txt
-    license_url: https://raw.githubusercontent.com/lvgl/lv_font_conv/1.5.3/LICENSE
-    artifact_url: https://registry.npmjs.org/lv_font_conv/-/lv_font_conv-1.5.3.tgz
-    artifact_sha256: 9f64fb8eb553dbab1990402eae74afbafd80b4f39a8314a01484083b6ed1000d
+    license_file: third_party/licenses/xiaozhi-fonts-MIT.txt
+    artifact_url: https://components-file.espressif.com/components/78/xiaozhi-fonts/1.6.0/78__xiaozhi-fonts-v1.6.0.zip
+    artifact_sha256: 255868d6e225d08038f38add8f7f2bf2e3567ef7a3b0edcd9703d2101f56e7d5
+    extracted_artifact_path: cbin/font_noto_qwen_20_4.bin
+    extracted_artifact_sha256: 601422de3a49c05265ed853c8054b73b532729e667a6d63f34bb72eab1935345
     accessed_at: 2026-07-22
-    purpose: Build-time converter for the embedded LVGL binary font asset
+    purpose: Pinned component archive supplying the embedded Qwen-coverage Noto CBIN font; upstream package metadata declares MIT but does not include a license text

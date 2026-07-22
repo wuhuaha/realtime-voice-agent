@@ -87,6 +87,27 @@ def test_manifest_rejects_duplicate_paths_and_invalid_digest(tmp_path: Path) -> 
     ]
 
 
+def test_manifest_historical_identity_does_not_track_current_file_bytes(tmp_path: Path) -> None:
+    manifest_root = tmp_path / "repository"
+    baseline = manifest_root / "migration" / "baseline"
+    baseline.mkdir(parents=True)
+    fixture = manifest_root / "fixture.txt"
+    fixture.write_text("current", encoding="utf-8")
+    manifest = {
+        "files": [
+            {
+                "production_path": "fixture.txt",
+                "sha256": "0" * 64,
+                "historical": True,
+            },
+        ],
+        "traceability": {},
+    }
+    (baseline / "source-manifest.yaml").write_text(yaml.safe_dump(manifest), encoding="utf-8")
+
+    assert VERIFY.validate_manifest(manifest_root) == []
+
+
 def test_manifest_requires_historical_source_path_for_production_firmware(tmp_path: Path) -> None:
     manifest_root = tmp_path / "repository"
     baseline = manifest_root / "migration" / "baseline"
@@ -133,7 +154,7 @@ def test_font_supply_chain_requires_notice_and_both_licenses(tmp_path: Path) -> 
         "Noto Sans CJK copyright notice is missing",
         "font third-party license is missing: "
         "third_party/licenses/Noto-Sans-CJK-OFL-1.1.txt",
-        "font third-party license is missing: third_party/licenses/lv-font-conv-MIT.txt",
+        "font third-party license is missing: third_party/licenses/xiaozhi-fonts-MIT.txt",
     ]
 
 

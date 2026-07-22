@@ -1,0 +1,12 @@
+Upstream license metadata notice
+
+The pinned Espressif Component Registry package `78/xiaozhi-fonts`
+version `1.6.0` declares `license: MIT` in its `idf_component.yml`
+metadata. The package does not include an upstream LICENSE file or a
+copyright notice. This file records that evidence gap; it is not a
+substitute license text and does not invent an attribution.
+
+The embedded `font_noto_qwen_20_4.bin` is Noto-derived font data. Its
+font license and copyright provenance are recorded separately in
+`third_party/licenses/Noto-Sans-CJK-OFL-1.1.txt` and
+`firmware/components/ui_font_assets/THIRD_PARTY_NOTICES.md`.
