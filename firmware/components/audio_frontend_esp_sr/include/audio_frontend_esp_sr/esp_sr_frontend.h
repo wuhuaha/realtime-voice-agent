@@ -52,6 +52,8 @@ private:
     afe_config_t* afe_config_ = nullptr;
     void* input_resampler_ = nullptr;
     std::vector<int16_t> resampled_input_;
+    size_t resampled_capacity_samples_per_channel_ = 0;
+    size_t resampled_output_samples_per_channel_ = 0;
     std::mutex resampler_mutex_;
     std::atomic<bool> started_{false};
     std::atomic<bool> vad_speech_{false};

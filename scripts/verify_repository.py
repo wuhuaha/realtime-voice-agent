@@ -63,6 +63,11 @@ RESEARCH_BOUNDARY_SCAN_NAMES = {
 RESEARCH_BOUNDARY_EVIDENCE_EXEMPTIONS = {
     "migration/baseline/source-manifest.yaml",
 }
+FONT_THIRD_PARTY_NOTICE = "Copyright © 2014-2021 Adobe (http://www.adobe.com/)."
+FONT_THIRD_PARTY_FILES = (
+    "third_party/licenses/Noto-Sans-CJK-OFL-1.1.txt",
+    "third_party/licenses/lv-font-conv-MIT.txt",
+)
 
 
 def sha256(path: Path) -> str:
@@ -251,6 +256,20 @@ def validate_firmware_composition(root: Path) -> list[str]:
     return errors
 
 
+def validate_font_supply_chain(root: Path) -> list[str]:
+    errors: list[str] = []
+    notice_path = root / "firmware" / "components" / "ui_font_assets" / "THIRD_PARTY_NOTICES.md"
+    if not notice_path.is_file():
+        errors.append("font third-party notice is missing")
+    elif FONT_THIRD_PARTY_NOTICE not in notice_path.read_text(encoding="utf-8"):
+        errors.append("Noto Sans CJK copyright notice is missing")
+
+    for relative in FONT_THIRD_PARTY_FILES:
+        if not (root / relative).is_file():
+            errors.append(f"font third-party license is missing: {relative}")
+    return errors
+
+
 def is_executable_or_config(path: Path) -> bool:
     lowered_name = path.name.lower()
     return (
@@ -339,7 +358,7 @@ def validate_protocol(root: Path) -> list[str]:
         controls = set(profile.get("controls", ()))
         if not controls or not controls <= control_ids:
             errors.append(f"media profile has invalid controls: {profile.get('id')}")
-    positive_path = root / "protocol" / "xiaozhi_udp_v1" / "fixtures" / "positive.json"
+    positive_path = root / "protocol" / "udp_opus_gcm_v1" / "fixtures" / "positive.json"
     positive = json.loads(positive_path.read_text(encoding="utf-8"))
     for vector in positive["vectors"]:
         datagram = bytes.fromhex(vector["datagram_hex"])
@@ -388,6 +407,7 @@ def main() -> int:
         *validate_optional_legacy_rollback(root),
         *validate_protocol(root),
         *validate_firmware_composition(root),
+        *validate_font_supply_chain(root),
         *validate_research_boundary(root, paths),
     ]
     if errors:

@@ -1,7 +1,8 @@
 # Lichuang Dev compatibility target
 
-本目录保存 pinned Xiaozhi upstream、Product overlay 和复现脚本，仅作为 native endpoint 迁移期的
-compatibility/rollback lane。新功能进入 `firmware/apps/voice_terminal` 与 `firmware/components`。
+本目录保存 pinned Xiaozhi upstream、Product overlay 和复现脚本，是与主线隔离的
+compatibility/rollback lane。新功能只进入 `firmware/apps/voice_terminal` 与 `firmware/components`；主线构建、
+部署和运行不得依赖本目录。
 
 ## 固定来源
 

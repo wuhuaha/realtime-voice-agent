@@ -3,7 +3,9 @@ idf_component_register(
         "ui_reducer.cc"
         "voice_ui.cc"
     INCLUDE_DIRS "include"
-    REQUIRES board_lichuang_s3
+    REQUIRES
+        board_lichuang_s3
+        ui_font_assets
     PRIV_REQUIRES
         espressif__esp_lvgl_port
         lvgl__lvgl

@@ -12,9 +12,9 @@ if (-not (Test-Path -LiteralPath $wireHeader)) {
     throw "Final checkout UDP wire helper is not prepared: $wireHeader"
 }
 $positive = Get-Content -Raw -LiteralPath (
-    Join-Path $repoRoot "protocol/xiaozhi_udp_v1/fixtures/positive.json") | ConvertFrom-Json
+    Join-Path $repoRoot "protocol/udp_opus_gcm_v1/fixtures/positive.json") | ConvertFrom-Json
 $negative = Get-Content -Raw -LiteralPath (
-    Join-Path $repoRoot "protocol/xiaozhi_udp_v1/fixtures/negative.json") | ConvertFrom-Json
+    Join-Path $repoRoot "protocol/udp_opus_gcm_v1/fixtures/negative.json") | ConvertFrom-Json
 
 $compiler = Get-Command clang++, g++ -ErrorAction SilentlyContinue | Select-Object -First 1
 if ($null -eq $compiler) {

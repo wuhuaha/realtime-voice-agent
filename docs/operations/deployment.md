@@ -3,6 +3,78 @@
 状态：目标生产拓扑；执行前须满足 release gate
 更新日期：2026-07-20
 
+## 0. Linux 单机交付基线
+
+`deployment/single-node/` 提供一套版本受控的 Linux Docker Compose 资产，包含一个 Redis、一个 Session Director
+和一个 Realtime Worker。它用于单机部署、集成验证和首版小容量交付，Worker capacity 默认 `5`，不是性能测量
+结论。
+
+仓库锁定 Python 依赖和基础镜像版本标签，但标签本身可变，因此默认配置不是 bit-for-bit reproducible。受控发布须把
+`VOICE_SERVER_IMAGE` 与 `VOICE_REDIS_IMAGE` 都设置为 CI/发布流程验证并记录的 `image@sha256:<digest>`；不得在
+没有实际 registry 证据时把示例 digest 当成发布身份。
+
+该 Compose **不提供 TLS、证书管理、入口限流或 HA**。容器发布 Director HTTP `8080/tcp`、Worker
+HTTP/WebSocket `8081/tcp` 和 Worker media `8092/udp`；公网设备使用的 `https://`/`wss://` 必须由仓库外的
+受信 TLS gateway 终止并转发到这些 TCP 端口。UDP 端口不能由 HTTP gateway 代理，主机防火墙/NAT 必须把同一个
+固定公网端口映射到 `8092/udp`。
+
+### 0.1 主机前置条件
+
+- Linux x86_64/arm64 主机、Docker Engine 和 Docker Compose `>=2.24.0`；目标架构必须存在依赖 wheel。
+- 外部 TLS gateway 已配置域名与证书，支持 WebSocket upgrade；Compose 本身不证明这项能力。
+- FunASR、LLM、TTS provider 可从 Worker 容器访问。
+- `8080/tcp`、`8081/tcp` 的暴露范围按入口拓扑收敛。容器内部端口固定为 `8080/8081/8092`；
+  `VOICE_UDP_PUBLIC_PORT` 同时控制主机 UDP publish port 和设备收到的 advertise port，NAT 外部端口也必须一致。
+
+### 0.2 配置与启动
+
+```bash
+cd deployment/single-node
+cp env.example .env
+chmod 600 .env
+# 编辑 .env：替换全部 replace-with-*、域名、device credentials 和 provider endpoint。
+docker compose config --quiet
+docker compose build --pull
+docker compose up -d
+docker compose ps
+```
+
+以上命令用于从当前 checkout 本地构建。使用已发布 digest 时，不重新构建：先设置两个 `image@sha256:<digest>`，再执行
+`docker compose pull` 和 `docker compose up -d --no-build`，并把实际 digest 与 Product commit 一起记录。
+
+`.env` 被 Git 忽略，镜像构建也不会读取它。Compose 对 Director 与 Worker 使用不同的显式环境白名单：Director
+获得 device credentials/Redis 配置但不获得 provider key，Worker 获得 provider 和内部授权配置但不获得 device
+credentials/Redis URL。启动前置检查和应用 runtime validation 都会拒绝 `replace-with-*` 占位值。不得把
+`docker compose config` 的完整展开输出写入日志或工单，因为 Compose 会展开环境变量。更新 secret 时修改主机
+`.env` 后重建受影响容器；不要把 secret 作为 Dockerfile `ARG`、镜像 `ENV` 或命令行参数。
+
+Redis 以镜像内置的 `redis` 用户运行，避免 `cap_drop: ALL` 时 root entrypoint 尝试 chown/gosu。官方镜像的 `/data`
+目录为该用户准备，新的 named volume 会从镜像挂载点初始化 ownership；从旧部署复用外部 volume 时，须先离线确认
+其 UID/GID 可写。Worker 不加入 Redis 所在的 `coordination` 网络，只能经 `worker-control` 访问 Director。
+
+### 0.3 健康与烟测
+
+```bash
+curl --fail http://127.0.0.1:8080/health/ready
+curl --fail http://127.0.0.1:8081/health/ready
+docker compose ps
+docker compose logs --tail=100 director worker
+```
+
+Worker readiness 包含 provider endpoint 的有界 DNS/TCP/TLS 网络连通探测、Director heartbeat 和 UDP socket
+（启用时）。网络探测不会发送合法 provider 请求，也不验证鉴权、模型存在性、配额、请求/响应 schema 或语义质量；
+`healthy` 只说明这些有限门禁通过，不代表 provider 可完成推理，也不代表 TLS 公网入口、真机语音、声学、弱网或
+容量已验证。日志不得粘贴到公开渠道；应用设计上不输出 secret，但运行环境和第三方错误仍按敏感运维数据处理。
+
+### 0.4 数据、停止与升级
+
+Redis AOF 位于 Compose named volume `redis-data`。普通停止使用 `docker compose down`，不会删除该 volume；
+`docker compose down -v` 会删除 coordination 数据，只能在明确接受会话 lease/grant 状态丢失时使用。
+
+单 Worker 升级无法做到媒体会话无中断。先调用 drain、等待 active session 归零，再执行 `docker compose build` 和
+`docker compose up -d`。该基线的 `restart: unless-stopped` 是进程恢复策略，不是 HA；主机、磁盘、Redis 或唯一
+Worker 故障都会造成服务降级或中断。
+
 ## 1. 推荐拓扑
 
 ```text
@@ -36,7 +108,7 @@ Director 可多副本无会话媒体状态；Worker 是 stateful realtime unit�
 ### Director
 
 - `VOICE_COORDINATION_BACKEND=redis`，生产禁止 `memory`。
-- `VOICE_REDIS_URL`、`VOICE_COORDINATION_PREFIX`。
+- `VOICE_REDIS_URL`、`VOICE_COORDINATION_PREFIX`。单机 Compose 内部固定由 Director 使用，不注入 Worker。
 - `VOICE_INTERNAL_TOKEN`、`VOICE_GRANT_SIGNING_KEY`、bootstrap credential。
 - heartbeat/route lease TTL 按网络和 drain 策略配置；grant 不长于 route lease。
 
@@ -46,7 +118,8 @@ Director 可多副本无会话媒体状态；Worker 是 stateful realtime unit�
 - 生产 `VOICE_WORKER_PUBLIC_WS_URL` 必须为 `wss://`；`ws://` 只允许受控开发环境。
 - `VOICE_WORKER_MAX_SESSIONS` 默认 `5`，部署可覆盖；不是测量 SLO。
 - `VOICE_DIRECTOR_URL`、heartbeat enabled/interval 和相同 signing/internal secret version。
-- UDP bind/advertise host/port；未通过 UDP release gate 时禁用或强制 WSS。
+- UDP bind/advertise host/port；单机 Compose 内部 bind 固定 `8092`，公网 publish 与 advertise 共用
+  `VOICE_UDP_PUBLIC_PORT`；未通过 UDP release gate 时禁用或强制 WSS。
 - `VOICE_RUNNER=livekit` 与 provider endpoint/model/secret。
 
 ### Transport policy
@@ -63,7 +136,8 @@ Director 可多副本无会话媒体状态；Worker 是 stateful realtime unit�
 5. 使用 deterministic/reference client 做 bootstrap + WSS smoke。
 6. 小流量 real-provider canary；再开放设备。
 
-Readiness 当前不探测 provider network；部署系统必须单独观察 provider error/latency，不能仅靠 `/health/ready`。
+Readiness 只探测 provider endpoint 的网络连通性，不证明 provider API 语义。部署系统必须另外执行带真实凭据的
+小流量 canary，并观察 provider error/latency；不能仅靠 `/health/ready` 放量。
 
 ## 5. Rolling update 与 drain
 

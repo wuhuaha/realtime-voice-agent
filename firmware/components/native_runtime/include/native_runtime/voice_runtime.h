@@ -90,6 +90,7 @@ private:
     void HandleControl(const std::vector<uint8_t>& frame);
     void HandleMedia(const std::vector<uint8_t>& frame);
     bool CancelActiveResponseOnSpeech();
+    bool CompleteResponseDrainIfDue(int64_t now_us);
     bool SendSessionOpen();
     bool ConfigureUdp(const protocol::SessionOpened& opened);
     bool StartPlaybackResampler();
@@ -102,6 +103,9 @@ private:
     VoiceRuntimeConfig config_;
     OpusCodec codec_;
     void* playback_resampler_ = nullptr;
+    std::unique_ptr<int16_t[]> playback_pcm_;
+    std::unique_ptr<int16_t[]> playback_resampled_;
+    size_t playback_resampled_capacity_ = 0;
     std::unique_ptr<wss::EspIdfWebsocketClientPort> client_port_;
     std::unique_ptr<wss::WssOwner> owner_;
     std::unique_ptr<wss::WssSession> session_;
@@ -133,7 +137,12 @@ private:
     std::atomic<MediaPreference> preferred_media_{MediaPreference::kWss};
     std::atomic<voice::core::MediaOwner> media_owner_{voice::core::MediaOwner::kNone};
     std::atomic<uint32_t> playback_generation_{1};
+    std::atomic<bool> playback_enabled_{false};
     std::atomic<int64_t> udp_expiry_deadline_us_{0};
+    std::atomic<int64_t> udp_heartbeat_interval_us_{0};
+    std::atomic<int64_t> udp_liveness_timeout_us_{0};
+    std::atomic<int64_t> udp_next_keepalive_us_{0};
+    std::atomic<int64_t> response_end_deadline_us_{0};
     std::atomic<bool> fallback_to_wss_{false};
     uint32_t uplink_sequence_ = 0;
     uint32_t uplink_timestamp_ = 0;

@@ -5,24 +5,23 @@
 
 ## 1. 权威层级
 
-迁移期同时提供 legacy 和 Product-native 两组 binding；每个 session 只 commit 一个控制协议和一个媒体 profile：
+Product 默认入口只接受 `rva-control-v1`；每个 session 只 commit 一个控制协议和一个媒体 profile：
 
 ```text
-xiaozhi-control-v1 over WSS
-  + wss-opus-v1        baseline
-  + udp-opus-gcm-v1    challenger, WSS control retained
-
 rva-control-v1 over WSS
-  + wss-opus-v2        native baseline (implementing)
-  + udp-opus-gcm-v1    shared challenger (implementing)
+  + wss-opus-v2        default media profile
+  + udp-opus-gcm-v1    authenticated low-latency media profile
+
+explicit compatibility only:
+  xiaozhi-control-v1 + wss-opus-v1 / udp-opus-gcm-v1
 ```
 
 权威顺序：
 
 1. `protocol/registry.yaml` 定义协议/profile 标识和固定 codec 参数。
-2. `protocol/xiaozhi_control_v1/messages.schema.json` 与 fixtures 定义 JSON wire。
-3. `protocol/xiaozhi_udp_v1/README.md` 与 fixtures 定义 UDP byte wire 和 AEAD 向量。
-4. `protocol/rva_control_v1/contract.yaml`、schema 与 fixtures 定义 RVA control 和 shared media header。
+2. `protocol/rva_control_v1/contract.yaml`、schema 与 fixtures 定义 RVA control 和 shared media header。
+3. `protocol/udp_opus_gcm_v1/README.md` 与 fixtures 定义 UDP byte wire 和 AEAD 向量。
+4. `protocol/xiaozhi_control_v1/messages.schema.json` 与 fixtures 只定义 legacy compatibility JSON wire。
 5. 本目录定义状态机、语义、安全、关闭和兼容政策。
 6. Python/C++ 实现、README 示例和 HTML 均不得反向改变 wire。
 
@@ -32,20 +31,21 @@ rva-control-v1 over WSS
 
 | ID | Control | Media carrier | Codec | 状态 |
 | --- | --- | --- | --- | --- |
-| `wss-opus-v1` | WSS JSON | 同一 WSS binary message | Opus 16 kHz mono 60 ms uplink | baseline |
-| `wss-opus-v2` | RVA WSS JSON | 同一 WSS typed binary message | Opus 16 kHz mono 60 ms | implementing |
-| `udp-opus-gcm-v1` | WSS JSON | authenticated UDP datagram | Opus 16 kHz mono 60 ms uplink | challenger |
+| `wss-opus-v2` | RVA WSS JSON | 同一 WSS typed binary message | Opus 16 kHz mono 60 ms | current default |
+| `udp-opus-gcm-v1` | RVA WSS JSON | authenticated UDP datagram | Opus 16 kHz mono 60 ms uplink | current selectable |
+| `wss-opus-v1` | Legacy WSS JSON | 同一 WSS binary message | Opus 16 kHz mono 60 ms uplink | compatibility only |
 
-Server output sample rate 由 hello 的 `audio_params.sample_rate` commit，v1 允许 16 kHz 或 24 kHz，mono、
-60 ms。一个 session 只能 commit 一个 profile。
+RVA 的 codec 参数由 `session.open` capability 与 `session.opened` 共同 commit；canonical v1 profile 使用
+16 kHz、mono、60 ms。兼容 binding 的 legacy downlink 仍可按其 hello contract 选择 16 kHz 或 24 kHz。
+一个 session 只能 commit 一个 profile。
 
 ## 3. 协商
 
-Client hello 可携带：
+RVA `session.open` 提交：
 
-- `transport_profiles`：有序、唯一 capability；省略表示仅支持 `wss-opus-v1`。
-- `transport_mode`：`auto`、`force_wss` 或 `force_udp_for_test`；省略为 `auto`。
-- `features`：兼容 feature map，不得绕过 schema、size 或 state 校验。
+- `supported_media_profiles`：有序、唯一的 capability，必须至少包含一个 RVA profile。
+- `preferred_media_profile`：必须位于 supported 与 connect grant allowed profiles 的交集中。
+- `capabilities` 与音频参数：不得绕过 schema、size 或 state 校验。
 
 Worker 从 device capability、connect grant allowed profiles、server policy、UDP readiness 和设备 veto 的交集选择。
 当前 `auto` 保守 commit WSS；UDP 只在显式测试/灰度条件满足时选择。Server hello 返回唯一
@@ -63,11 +63,11 @@ Worker 从 device capability、connect grant allowed profiles、server policy、
 
 ## 5. 兼容政策
 
-- `xiaozhi-control-v1` 对未知字段 fail closed；新增可选字段需要 schema、fixture 和双端兼容测试。
+- `rva-control-v1` 对未知字段和非法状态 fail closed；新增可选字段需要 schema、fixture 和双端兼容测试。
 - 破坏 required field、语义、framing 或 crypto 的改动必须发布新 protocol/profile id。
 - Endpoint 可忽略未协商的 capability，但不得静默降级到未授权 profile。
-- `mcp` 是有界 opaque 兼容扩展，不属于核心 schema；跨 endpoint 产品能力不得依赖未版本化 MCP payload。
-- WSS 和 UDP 必须分别进行 reference/new 四象限验证。
+- Legacy `mcp` 只允许在兼容 binding 内有界处理，不属于 Product schema；产品能力不得依赖它。
+- Legacy wire 修改必须通过兼容矩阵；RVA WSS 和 UDP 必须通过 canonical 双端合同测试。
 
 ## 6. 安全摘要
 
@@ -86,7 +86,10 @@ WSS/UDP HIL 和声学状态统一见 [Release readiness](../quality/release-read
 
 - [RVA Control v1](rva-control-v1.md)
 - [WSS Opus v2](wss-opus-v2.md)
-- [Xiaozhi Control v1](xiaozhi-control-v1.md)
-- [WSS Opus v1](wss-opus-v1.md)
 - [UDP Opus GCM v1](udp-opus-gcm-v1.md)
 - [生命周期与错误](lifecycle-errors.md)
+
+Legacy compatibility reference：
+
+- [Xiaozhi Control v1](xiaozhi-control-v1.md)
+- [WSS Opus v1](wss-opus-v1.md)

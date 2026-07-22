@@ -5,7 +5,7 @@ sources:
     revision: 7b190b78e4f8dfef14126f6cd478c134b3cd3cd8
     license: MIT
     accessed_at: 2026-07-20
-    purpose: ESP32-S3 voice endpoint upstream application
+    purpose: Historical migration source and legacy compatibility baseline; not the current endpoint implementation
     dependency_lock_sha256: 3cd77fe32859f2588c75957e21d365f5a31c51167bb5ce65858d26f5fac1843b
   - id: esp-idf
     url: https://github.com/espressif/esp-idf.git
@@ -14,3 +14,25 @@ sources:
     license: Apache-2.0
     accessed_at: 2026-07-20
     purpose: ESP32-S3 firmware toolchain and SDK
+  - id: noto-sans-cjk
+    url: https://github.com/notofonts/noto-cjk.git
+    revision: 523d033d6cb47f4a80c58a35753646f5c3608a78
+    version: Sans2.004
+    license: OFL-1.1
+    license_file: third_party/licenses/Noto-Sans-CJK-OFL-1.1.txt
+    license_url: https://raw.githubusercontent.com/notofonts/noto-cjk/Sans2.004/LICENSE
+    artifact_url: https://raw.githubusercontent.com/notofonts/noto-cjk/Sans2.004/Sans/OTF/SimplifiedChinese/NotoSansCJKsc-Regular.otf
+    artifact_sha256: 2c76254f6fc379fddfce0a7e84fb5385bb135d3e399294f6eeb6680d0365b74b
+    accessed_at: 2026-07-22
+    purpose: Source font for the embedded Simplified Chinese UI font asset
+  - id: lv-font-conv
+    url: https://github.com/lvgl/lv_font_conv.git
+    revision: 899ea1128d2e82bb015a319c8a7d18a82359ab3a
+    version: 1.5.3
+    license: MIT
+    license_file: third_party/licenses/lv-font-conv-MIT.txt
+    license_url: https://raw.githubusercontent.com/lvgl/lv_font_conv/1.5.3/LICENSE
+    artifact_url: https://registry.npmjs.org/lv_font_conv/-/lv_font_conv-1.5.3.tgz
+    artifact_sha256: 9f64fb8eb553dbab1990402eae74afbafd80b4f39a8314a01484083b6ed1000d
+    accessed_at: 2026-07-22
+    purpose: Build-time converter for the embedded LVGL binary font asset

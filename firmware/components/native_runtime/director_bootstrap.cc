@@ -8,6 +8,7 @@
 
 #include <esp_crt_bundle.h>
 #include <esp_http_client.h>
+#include <esp_log.h>
 
 #include "cJSON.h"
 #include "device_config/device_config.h"
@@ -16,6 +17,7 @@ namespace rva::runtime {
 namespace {
 
 constexpr size_t kMaximumResponseBytes = 8192;
+constexpr char kLogTag[] = "rva-bootstrap";
 
 struct JsonDeleter {
     void operator()(cJSON* value) const { cJSON_Delete(value); }
@@ -101,29 +103,55 @@ bool DirectorBootstrap::Request(
     configuration.user_data = &response;
     if (StartsWith(url, "https://")) configuration.crt_bundle_attach = esp_crt_bundle_attach;
     esp_http_client_handle_t client = esp_http_client_init(&configuration);
-    if (client == nullptr) return false;
+    if (client == nullptr) {
+        ESP_LOGE(kLogTag, "request failed: client_init");
+        return false;
+    }
     const std::string authorization = "Bearer " + authorization_token;
-    bool success = esp_http_client_set_header(client, "Content-Type", "application/json") == ESP_OK &&
-                   esp_http_client_set_header(client, "Authorization", authorization.c_str()) == ESP_OK &&
-                   esp_http_client_set_post_field(client, body.get(), static_cast<int>(std::strlen(body.get()))) == ESP_OK &&
-                   esp_http_client_perform(client) == ESP_OK &&
-                   esp_http_client_get_status_code(client) == 200 && !response.rejected && !response.bytes.empty();
+    const bool configured =
+        esp_http_client_set_header(client, "Content-Type", "application/json") == ESP_OK &&
+        esp_http_client_set_header(client, "Authorization", authorization.c_str()) == ESP_OK &&
+        esp_http_client_set_post_field(
+            client, body.get(), static_cast<int>(std::strlen(body.get()))) == ESP_OK;
+    const esp_err_t perform_result = configured ? esp_http_client_perform(client) : ESP_FAIL;
+    const int status_code = esp_http_client_get_status_code(client);
     esp_http_client_cleanup(client);
-    if (!success) return false;
+    if (!configured) {
+        ESP_LOGE(kLogTag, "request failed: client_config");
+        return false;
+    }
+    if (perform_result != ESP_OK) {
+        ESP_LOGE(kLogTag, "request failed: transport=%s status=%d bytes=%u",
+                 esp_err_to_name(perform_result), status_code,
+                 static_cast<unsigned>(response.bytes.size()));
+        return false;
+    }
+    if (status_code != 200 || response.rejected || response.bytes.empty()) {
+        ESP_LOGE(kLogTag, "request rejected: status=%d bytes=%u overflow=%d", status_code,
+                 static_cast<unsigned>(response.bytes.size()), response.rejected ? 1 : 0);
+        return false;
+    }
 
     Json root(cJSON_ParseWithLength(
         reinterpret_cast<const char*>(response.bytes.data()), response.bytes.size()));
+    if (root == nullptr) {
+        ESP_LOGE(kLogTag, "response invalid: json bytes=%u",
+                 static_cast<unsigned>(response.bytes.size()));
+        return false;
+    }
     BootstrapGrant parsed;
     std::string control_protocol;
-    if (root == nullptr || !GetString(root.get(), "worker_wss_url", 255, &parsed.worker_wss_url) ||
+    if (!GetString(root.get(), "worker_wss_url", 255, &parsed.worker_wss_url) ||
         !GetString(root.get(), "connect_grant", 4096, &parsed.connect_grant) || parsed.connect_grant.size() < 32 ||
         !GetString(root.get(), "session_epoch", 96, &parsed.session_epoch) || !IsIdentifier(parsed.session_epoch) ||
         !GetString(root.get(), "control_protocol", 32, &control_protocol) || control_protocol != "rva-control-v1") {
+        ESP_LOGE(kLogTag, "response invalid: required_fields");
         return false;
     }
     config::EndpointSnapshot endpoint;
     if (config::DeviceConfig::ParseEndpoint(parsed.worker_wss_url, &endpoint) != config::ConfigResult::kOk ||
         !EndsWith(parsed.worker_wss_url, "/v1/voice")) {
+        ESP_LOGE(kLogTag, "response invalid: worker_endpoint");
         return false;
     }
     const cJSON* allowed = cJSON_GetObjectItemCaseSensitive(root.get(), "allowed_profiles");
@@ -134,7 +162,12 @@ bool DirectorBootstrap::Request(
             supports_wss |= cJSON_IsString(item) && std::strcmp(item->valuestring, "wss-opus-v2") == 0;
         }
     }
-    if (!supports_wss) return false;
+    if (!supports_wss) {
+        ESP_LOGE(kLogTag, "response invalid: allowed_profiles");
+        return false;
+    }
+    ESP_LOGI(kLogTag, "bootstrap accepted: status=200 bytes=%u",
+             static_cast<unsigned>(response.bytes.size()));
     *grant = std::move(parsed);
     return true;
 }

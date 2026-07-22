@@ -1,6 +1,6 @@
-# Xiaozhi UDP Media Profile v1
+# UDP Opus GCM Media Profile v1
 
-状态：实验性 wire contract，profile 名称为 `udp-opus-gcm-v1`。
+状态：current wire contract，profile 名称为 `udp-opus-gcm-v1`。
 
 本目录只定义 WSS 控制会话建立后的 UDP 媒体封装。WSS 仍负责鉴权、
 transport selection、session 生命周期和 ASR/TTS/abort 控制消息。UDP 不单独恢复
@@ -37,10 +37,14 @@ Flags：
 | `0x01` | `AUDIO` | 双向 | 单个完整 Opus packet，1..1200 bytes |
 | `0x02` | `PROBE` | device -> server | empty |
 | `0x04` | `PROBE_ACK` | server -> device | empty |
-| `0x08` | `KEEPALIVE` | 双向预留 | empty |
+| `0x08` | `KEEPALIVE` | 双向 | empty |
 
 v1 不允许组合 flags。datagram 上限为 1280 bytes，不支持 fragmentation。发送端的 Opus
 payload 上限为 1200 bytes；接收端必须拒绝超过自身上限或长度不一致的包。
+
+设备按控制面下发的 `heartbeat_interval_ms` 发送经过认证的 `KEEPALIVE`；Server 对有效
+`KEEPALIVE` 返回同 session 的经过认证的 `KEEPALIVE`。设备在 `idle_timeout_ms` 内未收到任何
+经过认证的 UDP 包时必须废弃 UDP session，并通过仍存活的 WSS 控制连接重新建立为 WSS profile。
 
 ## AEAD
 

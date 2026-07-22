@@ -4,6 +4,7 @@
 
 #include <esp_err.h>
 #include <esp_ae_rate_cvt.h>
+#include <esp_log.h>
 #include <freertos/FreeRTOS.h>
 
 namespace rva::audio {
@@ -12,6 +13,8 @@ namespace {
 constexpr uint32_t kAfeSampleRateHz = 16000;
 constexpr uint8_t kAfeInputChannels = 2;
 constexpr char kInputFormat[] = "MR";
+constexpr size_t kMaximumResampledSamplesPerChannel = 4096;
+constexpr char kLogTag[] = "rva-afe";
 
 }  // namespace
 
@@ -107,7 +110,29 @@ PortResult EspSrFrontend::Start() {
             Stop();
             return PortResult::kResourceExhausted;
         }
-        resampled_input_.resize(afe_feed_samples * kAfeInputChannels);
+        const size_t input_samples_per_channel =
+            afe_feed_samples * config_.input_sample_rate_hz / kAfeSampleRateHz;
+        uint32_t required_output_samples = 0;
+        if (input_samples_per_channel > UINT32_MAX ||
+            esp_ae_rate_cvt_get_max_out_sample_num(
+                input_resampler_, static_cast<uint32_t>(input_samples_per_channel),
+                &required_output_samples) != ESP_AE_ERR_OK ||
+            required_output_samples < afe_feed_samples ||
+            required_output_samples > kMaximumResampledSamplesPerChannel) {
+            ESP_LOGE(kLogTag, "invalid input resampler capacity: %lu",
+                     static_cast<unsigned long>(required_output_samples));
+            Stop();
+            return PortResult::kInternalFailure;
+        }
+        const size_t payload_samples =
+            static_cast<size_t>(required_output_samples) * kAfeInputChannels;
+        resampled_input_.resize(payload_samples);
+        resampled_capacity_samples_per_channel_ = required_output_samples;
+        resampled_output_samples_per_channel_ = afe_feed_samples;
+        ESP_LOGI(kLogTag, "input resampler ready: in=%u expected=%u capacity=%lu",
+                 static_cast<unsigned>(input_samples_per_channel),
+                 static_cast<unsigned>(afe_feed_samples),
+                 static_cast<unsigned long>(required_output_samples));
     }
 
     vad_speech_.store(false);
@@ -128,6 +153,8 @@ PortResult EspSrFrontend::Stop() {
             input_resampler_ = nullptr;
         }
         resampled_input_.clear();
+        resampled_capacity_samples_per_channel_ = 0;
+        resampled_output_samples_per_channel_ = 0;
     }
     if (instance_ != nullptr && interface_ != nullptr) {
         interface_->reset_buffer(instance_);
@@ -156,17 +183,18 @@ PortResult EspSrFrontend::Feed(PcmView input) {
     std::lock_guard<std::mutex> lock(resampler_mutex_);
     if (input_resampler_ != nullptr) {
         uint32_t output_samples_per_channel =
-            static_cast<uint32_t>(resampled_input_.size() / kAfeInputChannels);
+            static_cast<uint32_t>(resampled_capacity_samples_per_channel_);
         const uint32_t input_samples_per_channel =
             static_cast<uint32_t>(input.sample_count / kAfeInputChannels);
+        int16_t* resampled = resampled_input_.data();
         const esp_ae_err_t result = esp_ae_rate_cvt_process(
             input_resampler_, const_cast<int16_t*>(input.samples), input_samples_per_channel,
-            resampled_input_.data(), &output_samples_per_channel);
+            resampled, &output_samples_per_channel);
         if (result != ESP_AE_ERR_OK ||
-            output_samples_per_channel != resampled_input_.size() / kAfeInputChannels) {
+            output_samples_per_channel != resampled_output_samples_per_channel_) {
             return PortResult::kInternalFailure;
         }
-        afe_input = resampled_input_.data();
+        afe_input = resampled;
     }
     return interface_->feed(instance_, afe_input) < 0 ? PortResult::kInternalFailure
                                                       : PortResult::kOk;

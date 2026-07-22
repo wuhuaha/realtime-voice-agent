@@ -2,7 +2,7 @@
 
 版本：1.0
 状态：accepted
-更新日期：2026-07-21
+更新日期：2026-07-22
 
 ## 1. 产品定义
 
@@ -20,7 +20,7 @@ TTS 和 interruption；ESP32 使用 `rva-control-v1`，媒体可选择 `wss-opus
 | --- | --- |
 | 终端用户 | 通过触摸或唤醒进入中文语音对话，看到实时状态和字幕，并能自然打断播放 |
 | 评测人员 | 在同一设备上 A/B 比较 WSS 与 UDP，记录延迟、稳定性、弱网和声学结果 |
-| 开发人员 | 在不依赖研究仓的情况下复现 Server、协议和固件构建，定位端云问题 |
+| 开发人员 | 从本仓独立复现 Server、协议和固件构建，定位端云问题 |
 | 运维人员 | 部署 Director 与多个 Worker，管理容量、drain、凭据、provider 和故障恢复 |
 
 ## 3. 产品范围
@@ -39,7 +39,7 @@ TTS 和 interruption；ESP32 使用 `rva-control-v1`，媒体可选择 `wss-opus
 
 ### 3.2 非目标
 
-- 不迁移 Direct WebRTC、AIMP、PCM DataChannel 或研究仓归档实现。
+- 不提供 Direct WebRTC、AIMP 或 PCM DataChannel。
 - 不为 ESP32 补齐 ICE、SDP、DTLS-SRTP、RTCP、SFU 或完整 WebRTC。
 - 不在首版实现 active turn 跨 Worker 热迁移、same-session transport 切换或断点续播。
 - 不把浏览器/手机标准 LiveKit Room 作为首个验收 endpoint；架构只保留未来接入边界。
@@ -126,7 +126,7 @@ Compatibility baseline 只用于回归对照，不能替代 native artifact 的�
 
 ## 8. 成功判定
 
-首版可发布必须同时满足：新仓独立可构建和部署；需求可追溯；WSS baseline 真机通过；UDP challenger
+首版可发布必须同时满足：仓库可独立构建和部署；需求可追溯；WSS baseline 真机通过；UDP challenger
 通过显式测试或被配置为不可默认选择；所有未通过项有阻塞、owner 和 waiver。不得用目录创建、host test、
 旧日志或 `build_passed` 代替 `device_verified`、`acoustic_verified` 或 `measured`。
 

@@ -43,6 +43,15 @@ bool UdpRuntime::SendProbe() {
            SendDatagram(datagram.data(), size);
 }
 
+bool UdpRuntime::SendKeepalive() {
+    std::lock_guard<std::mutex> lock(send_mutex_);
+    std::array<uint8_t, wire::kMaxDatagramBytes> datagram{};
+    size_t size = 0;
+    if (stop_requested_.load()) return false;
+    return session_.BuildKeepalive(datagram.data(), datagram.size(), &size) &&
+           SendDatagram(datagram.data(), size);
+}
+
 bool UdpRuntime::SendAudio(const uint8_t* opus, size_t opus_size,
                            uint32_t timestamp, uint32_t generation) {
     std::lock_guard<std::mutex> lock(send_mutex_);

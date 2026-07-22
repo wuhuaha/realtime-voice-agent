@@ -16,12 +16,25 @@ QUOTED_SECRET = re.compile(
 SCALAR_SECRET = re.compile(
     rf"(?i)^\s*{SECRET_NAME}\s*[:=]\s*(?P<value>[A-Za-z0-9/+_=-]{{16,}})\s*(?:#.*)?$"
 )
+HTML_SECRET_ATTRIBUTE = re.compile(
+    rf"(?i)(?:data-)?{SECRET_NAME}\s*=\s*(?P<quote>['\"])(?P<value>[^'\"]{{16,}})(?P=quote)"
+)
+CMAKE_SECRET = re.compile(
+    rf"(?i)\bset\s*\(\s*(?:[A-Za-z0-9_]*{SECRET_NAME}[A-Za-z0-9_]*)\s+"
+    rf"(?P<quote>['\"])(?P<value>[^'\"]{{16,}})(?P=quote)\s*\)"
+)
+KCONFIG_SECRET = re.compile(rf"(?i)^\s*config\s+[A-Za-z0-9_]*{SECRET_NAME}[A-Za-z0-9_]*\s*$")
+KCONFIG_DEFAULT = re.compile(
+    r"^\s*default\s+(?P<quote>['\"])(?P<value>[^'\"]{16,})(?P=quote)(?:\s+if\s+.+)?\s*$"
+)
 TEXT_SUFFIXES = {
     ".c",
     ".cc",
     ".cpp",
     ".example",
+    ".defaults",
     ".h",
+    ".html",
     ".hpp",
     ".json",
     ".md",
@@ -32,25 +45,38 @@ TEXT_SUFFIXES = {
     ".yaml",
     ".yml",
 }
+TEXT_FILENAMES = {"CMakeLists.txt", "Kconfig"}
 
 
 def scan(root: Path, paths: tuple[str, ...]) -> list[str]:
     findings: list[str] = []
     for raw_path in paths:
         path = root / raw_path
-        if path.suffix.lower() not in TEXT_SUFFIXES or not path.is_file():
+        if (
+            path.suffix.lower() not in TEXT_SUFFIXES
+            and path.name not in TEXT_FILENAMES
+        ) or not path.is_file():
             continue
         try:
             content = path.read_text(encoding="utf-8")
         except UnicodeDecodeError:
             continue
+        kconfig_secret = False
         for line_number, line in enumerate(content.splitlines(), start=1):
+            if path.name == "Kconfig" and line.lstrip().startswith("config "):
+                kconfig_secret = KCONFIG_SECRET.match(line) is not None
             for kind, pattern in PATTERNS.items():
                 if pattern.search(line):
                     findings.append(f"{raw_path}:{line_number}: possible {kind}")
                     break
             else:
-                match = QUOTED_SECRET.search(line) or SCALAR_SECRET.search(line)
+                match = (
+                    QUOTED_SECRET.search(line)
+                    or SCALAR_SECRET.search(line)
+                    or (HTML_SECRET_ATTRIBUTE.search(line) if path.suffix.lower() == ".html" else None)
+                    or (CMAKE_SECRET.search(line) if path.name == "CMakeLists.txt" else None)
+                    or (KCONFIG_DEFAULT.match(line) if kconfig_secret else None)
+                )
                 if match is None:
                     continue
                 value = match.group("value")

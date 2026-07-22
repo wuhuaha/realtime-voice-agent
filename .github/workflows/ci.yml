@@ -151,10 +151,33 @@ jobs:
           "$out/udp_session_test"
           g++ -std=c++20 -Wall -Wextra -Werror -O2 -pthread \
             -I firmware/components/transport_udp/include \
+            -I firmware/components/voice_contracts/include \
             firmware/components/transport_udp/playout_queue.cc \
             firmware/components/transport_udp/host_tests/playout_queue_test.cc \
             -o "$out/playout_queue_test"
           "$out/playout_queue_test"
+
+  native-firmware-build-size:
+    runs-on: ubuntu-latest
+    container:
+      image: espressif/idf:v5.5.2@sha256:05cbfc42ed2e987b8026722c15bf1d8523d3e4fd1b4ac04d2e4056f5e0918b99
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build native ESP32-S3 firmware with pinned ESP-IDF
+        working-directory: firmware/apps/voice_terminal
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git -c safe.directory="$IDF_PATH" -C "$IDF_PATH" rev-parse HEAD)" = "30aaf64524299d3bde422ca9a2848090d1bc5d0f"
+          idf.py -B build-ci build
+      - name: Enforce image size and partition fit
+        working-directory: firmware/apps/voice_terminal
+        shell: bash
+        run: |
+          set -euo pipefail
+          idf.py -B build-ci size
+          test -s build-ci/rva_voice_terminal.bin
+      # Build/size proves toolchain reproducibility only; target-board HIL remains a release gate.
 
   legacy-firmware-rollback-contracts:
     runs-on: windows-latest

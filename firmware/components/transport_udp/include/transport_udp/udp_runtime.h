@@ -33,6 +33,7 @@ public:
     ~UdpRuntime();
     bool Start();
     bool SendProbe();
+    bool SendKeepalive();
     bool SendAudio(const uint8_t* opus, size_t opus_size,
                    uint32_t timestamp, uint32_t generation);
     bool FenceGeneration(uint32_t generation);
@@ -43,6 +44,10 @@ public:
     [[nodiscard]] uint32_t playout_queue_dropped() const {
         return queue_dropped_.load();
     }
+    [[nodiscard]] int64_t last_authenticated_receive_us() const {
+        return session_.last_authenticated_receive_us();
+    }
+    [[nodiscard]] Stats stats() const { return session_.stats(); }
 private:
     static constexpr EventBits_t kExited = BIT0;
     static void TaskEntry(void* context);

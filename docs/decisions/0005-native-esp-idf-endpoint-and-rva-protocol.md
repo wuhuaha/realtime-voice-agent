@@ -2,6 +2,8 @@
 
 日期：2026-07-21
 状态：accepted
+实施状态：native endpoint、RVA control 与中性 transport 已成为当前主线；下述“背景”描述决策作出时的旧状态，
+不代表当前 production composition。精确发布证据以 [Release readiness](../quality/release-readiness.md) 为准。
 
 ## 背景
 

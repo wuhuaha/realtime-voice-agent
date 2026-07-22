@@ -257,6 +257,9 @@ def _cluster_environment(
         f"VOICE_DEVICE_BOOTSTRAP_TOKEN={BOOTSTRAP_TOKEN}",
         "VOICE_LAB_TOKEN=validator-horizontal-scale-lab-token",
         f"VOICE_WORKER_PUBLIC_WS_URL=ws://127.0.0.1:{worker_base_port}/v1/xiaozhi",
+        f"VOICE_RVA_PUBLIC_WS_URL=ws://127.0.0.1:{worker_base_port}/v1/voice",
+        "VOICE_RVA_ENABLED=true",
+        "VOICE_LEGACY_XIAOZHI_ENABLED=false",
         "VOICE_WORKER_BIND_HOST=127.0.0.1",
         "VOICE_HEARTBEAT_INTERVAL_SECONDS=1",
         "VOICE_XIAOZHI_UDP_ENABLED=false",
@@ -723,12 +726,13 @@ def test_two_worker_processes_spill_over_and_drain_with_redis(tmp_path: Path) ->
                     headers={"X-Internal-Token": INTERNAL_TOKEN},
                     json={
                         "worker_id": "worker-local-1",
-                        "public_wss_url": workers["worker-local-1"]["public_wss_url"],
+                        "public_wss_url": workers["worker-local-1"]["bindings"][0]["public_wss_url"],
                         "active_sessions": 0,
                         "max_sessions": 5,
                         "draining": False,
                         "healthy": True,
-                        "profiles": ["wss-opus-v1"],
+                        "profiles": ["wss-opus-v2"],
+                        "bindings": workers["worker-local-1"]["bindings"],
                         "released_leases": [
                             {
                                 "tenant_id": "scale-smoke",

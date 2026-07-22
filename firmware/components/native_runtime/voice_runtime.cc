@@ -13,6 +13,7 @@
 
 #include <esp_crt_bundle.h>
 #include <esp_ae_rate_cvt.h>
+#include <esp_log.h>
 #include <esp_random.h>
 #include <esp_timer.h>
 #include <esp_websocket_client.h>
@@ -26,6 +27,14 @@ constexpr EventBits_t kSupervisorStopped = BIT0;
 constexpr EventBits_t kCaptureStopped = BIT1;
 constexpr EventBits_t kUplinkStopped = BIT2;
 constexpr EventBits_t kPlaybackStopped = BIT3;
+constexpr uint32_t kAudioFailureLimit = 10;
+// Match esp_audio_codec's 40 KiB all-encoder test baseline; tune from HIL high-water data.
+constexpr uint32_t kUplinkTaskStackBytes = 40 * 1024;
+constexpr int64_t kResponseDrainGraceUs = 180000;
+constexpr size_t kDecodedSamplesPerFrame = 960;
+constexpr size_t kNominalResampledSamplesPerFrame = 1440;
+constexpr size_t kMaximumResampledSamplesPerFrame = 4096;
+constexpr char kLogTag[] = "rva-runtime";
 
 }  // namespace
 
@@ -52,7 +61,12 @@ bool VoiceRuntime::Start(
     preferred_media_ = preference;
     media_owner_ = voice::core::MediaOwner::kNone;
     playback_generation_ = 1;
+    playback_enabled_ = false;
     udp_expiry_deadline_us_ = 0;
+    udp_heartbeat_interval_us_ = 0;
+    udp_liveness_timeout_us_ = 0;
+    udp_next_keepalive_us_ = 0;
+    response_end_deadline_us_ = 0;
     fallback_to_wss_ = false;
     response_gate_.Reset();
     expected_session_epoch_ = grant.session_epoch;
@@ -110,17 +124,17 @@ bool VoiceRuntime::Start(
                              &supervisor_task_) == pdPASS;
     if (tasks_started) expected_task_bits_ |= kSupervisorStopped;
     if (tasks_started) {
-        tasks_started = xTaskCreate(CaptureTask, "rva-capture", 4096, this, 7,
+        tasks_started = xTaskCreate(CaptureTask, "rva-capture", 24576, this, 7,
                                     &capture_task_) == pdPASS;
         if (tasks_started) expected_task_bits_ |= kCaptureStopped;
     }
     if (tasks_started) {
-        tasks_started = xTaskCreate(UplinkTask, "rva-uplink", 6144, this, 6,
+        tasks_started = xTaskCreate(UplinkTask, "rva-uplink", kUplinkTaskStackBytes, this, 6,
                                     &uplink_task_) == pdPASS;
         if (tasks_started) expected_task_bits_ |= kUplinkStopped;
     }
     if (tasks_started) {
-        tasks_started = xTaskCreate(PlaybackTask, "rva-playback", 6144, this, 6,
+        tasks_started = xTaskCreate(PlaybackTask, "rva-playback", 10240, this, 6,
                                     &playback_task_) == pdPASS;
         if (tasks_started) expected_task_bits_ |= kPlaybackStopped;
     }
@@ -158,13 +172,14 @@ void VoiceRuntime::Stop() {
             task_events_, expected_task_bits_, pdFALSE, pdTRUE,
             pdMS_TO_TICKS(5000));
         if ((stopped & expected_task_bits_) != expected_task_bits_) {
-            // The tasks own codec/driver state while running. Forcing deletion here can
-            // leave a mutex locked or a driver call in flight, so keep their backing
-            // objects alive until every task has cooperatively left its bounded loop.
+            // Tasks own codec/driver state while running, so forced deletion is unsafe.
+            // A task that cannot leave its bounded loop also makes in-process recovery
+            // unsafe; fail closed with a controlled restart instead of deadlocking the
+            // application supervisor forever.
             events_.OnFailure("runtime_join_timeout");
-            xEventGroupWaitBits(
-                task_events_, expected_task_bits_, pdFALSE, pdTRUE,
-                portMAX_DELAY);
+            vTaskDelay(pdMS_TO_TICKS(50));
+            esp_restart();
+            return;
         }
     }
     if (owner_ != nullptr) owner_->SupervisorClose(1000);
@@ -217,6 +232,7 @@ void VoiceRuntime::PlaybackTask(void* context) {
 
 void VoiceRuntime::RunSupervisor() {
     uint32_t observed_dropped_events = 0;
+    uint32_t observed_udp_queue_dropped = 0;
     while (running_) {
         const uint32_t dropped_events = owner_->dropped_events();
         if (dropped_events != observed_dropped_events) {
@@ -225,14 +241,37 @@ void VoiceRuntime::RunSupervisor() {
             running_ = false;
             continue;
         }
-        const int64_t expiry_deadline_us = udp_expiry_deadline_us_.load();
-        if (media_owner_ == voice::core::MediaOwner::kUdp && expiry_deadline_us > 0 &&
-            esp_timer_get_time() >= expiry_deadline_us) {
-            events_.OnFailure("udp_grant_expired");
-            fallback_to_wss_ = true;
-            if (udp_runtime_ != nullptr) udp_runtime_->RequestStop();
-            running_ = false;
-            continue;
+        const int64_t now_us = esp_timer_get_time();
+        if (media_owner_ == voice::core::MediaOwner::kUdp && udp_runtime_ != nullptr) {
+            const int64_t expiry_deadline_us = udp_expiry_deadline_us_.load();
+            const int64_t liveness_timeout_us = udp_liveness_timeout_us_.load();
+            const int64_t last_receive_us = udp_runtime_->last_authenticated_receive_us();
+            const uint32_t queue_dropped =
+                udp_runtime_->playout_queue_dropped() + udp_runtime_->stats().queue_dropped;
+            const char* failure = nullptr;
+            if (expiry_deadline_us > 0 && now_us >= expiry_deadline_us) {
+                failure = "udp_grant_expired";
+            } else if (liveness_timeout_us > 0 && last_receive_us > 0 &&
+                       now_us - last_receive_us >= liveness_timeout_us) {
+                failure = "udp_media_inactive";
+            } else if (queue_dropped != observed_udp_queue_dropped) {
+                observed_udp_queue_dropped = queue_dropped;
+                failure = "udp_playout_overflow";
+            } else if (udp_next_keepalive_us_.load() > 0 &&
+                       now_us >= udp_next_keepalive_us_.load()) {
+                if (!udp_runtime_->SendKeepalive()) {
+                    failure = "udp_keepalive_send";
+                } else {
+                    udp_next_keepalive_us_ = now_us + udp_heartbeat_interval_us_.load();
+                }
+            }
+            if (failure != nullptr) {
+                events_.OnFailure(failure);
+                fallback_to_wss_ = true;
+                udp_runtime_->RequestStop();
+                running_ = false;
+                continue;
+            }
         }
         wss::OwnedClientEvent event;
         if (!owner_->Poll(&event)) {
@@ -297,6 +336,19 @@ void VoiceRuntime::HandleControl(const std::vector<uint8_t>& frame) {
             selected_owner == voice::core::MediaOwner::kUdp ? MediaPreference::kUdp
                                                              : MediaPreference::kWss);
         session_opened_ = true;
+        if (selected_owner == voice::core::MediaOwner::kUdp) {
+            const int64_t heartbeat_us = static_cast<int64_t>(opened->heartbeat_interval_ms) * 1000;
+            const int64_t idle_us = static_cast<int64_t>(opened->idle_timeout_ms) * 1000;
+            if (heartbeat_us <= 0 || idle_us < heartbeat_us) {
+                events_.OnFailure("udp_heartbeat_contract");
+                fallback_to_wss_ = true;
+                running_ = false;
+                return;
+            }
+            udp_heartbeat_interval_us_ = heartbeat_us;
+            udp_liveness_timeout_us_ = idle_us;
+            udp_next_keepalive_us_ = esp_timer_get_time() + heartbeat_us;
+        }
         return;
     }
     const wss::AdmissionResult admitted = session_->Accept(message);
@@ -305,7 +357,10 @@ void VoiceRuntime::HandleControl(const std::vector<uint8_t>& frame) {
         running_ = false;
         return;
     }
-    if (const auto* transcript = std::get_if<protocol::Transcript>(&message)) {
+    if (const auto* error = std::get_if<protocol::SessionError>(&message)) {
+        events_.OnFailure(error->retryable ? "session_error_retryable" : "session_error_terminal");
+        running_ = false;
+    } else if (const auto* transcript = std::get_if<protocol::Transcript>(&message)) {
         events_.OnTranscript(transcript->text.c_str(), transcript->final);
         if (transcript->final && !response_gate_.active()) {
             events_.OnConversationPhase(ConversationPhase::kThinking);
@@ -324,7 +379,9 @@ void VoiceRuntime::HandleControl(const std::vector<uint8_t>& frame) {
                 playback_generation_ = response->generation;
             }
             if (running_) {
+                response_end_deadline_us_ = 0;
                 response_gate_.Begin(response->response_id, response->generation);
+                playback_enabled_ = true;
                 events_.OnConversationPhase(ConversationPhase::kSpeaking);
             }
         } else if (response->type == protocol::ServerMessageType::kResponseCancelled) {
@@ -337,10 +394,15 @@ void VoiceRuntime::HandleControl(const std::vector<uint8_t>& frame) {
             } else {
                 playback_generation_ = response->generation + 1;
             }
-        }
-        if (response->type == protocol::ServerMessageType::kResponseEnd ||
-            response->type == protocol::ServerMessageType::kResponseCancelled) {
+            playback_enabled_ = false;
+            response_end_deadline_us_ = 0;
             response_gate_.End();
+        }
+        if (response->type == protocol::ServerMessageType::kResponseEnd) {
+            std::lock_guard<std::mutex> lock(playback_mutex_);
+            response_gate_.End();
+            response_end_deadline_us_ = esp_timer_get_time() + kResponseDrainGraceUs;
+        } else if (response->type == protocol::ServerMessageType::kResponseCancelled) {
             events_.OnConversationPhase(ConversationPhase::kListening);
         }
         if (response->type == protocol::ServerMessageType::kResponseText) {
@@ -360,8 +422,13 @@ void VoiceRuntime::HandleMedia(const std::vector<uint8_t>& frame) {
         return;
     }
     protocol::MediaHeader header;
-    if (session_->AcceptMedia(frame.data(), frame.size(), &header) != wss::AdmissionResult::kAccepted ||
-        header.payload_length == 0) {
+    const wss::AdmissionResult admitted = session_->AcceptMedia(frame.data(), frame.size(), &header);
+    if (admitted == wss::AdmissionResult::kStaleGeneration) {
+        return;
+    }
+    if (admitted != wss::AdmissionResult::kAccepted || header.payload_length == 0) {
+        events_.OnFailure("wss_media_admission");
+        running_ = false;
         return;
     }
     MediaPacket packet;
@@ -446,16 +513,25 @@ bool VoiceRuntime::ConfigureUdp(const protocol::SessionOpened& opened) {
 
 void VoiceRuntime::RunCapture() {
     const size_t samples_per_channel = frontend_.feed_samples_per_channel();
-    std::vector<int16_t> buffer(samples_per_channel * 2);
+    const size_t payload_samples = samples_per_channel * 2;
+    std::vector<int16_t> buffer(payload_samples);
+    uint32_t consecutive_failures = 0;
     while (running_) {
         audio::MutablePcmView capture{
             .samples = buffer.data(),
-            .capacity_samples = buffer.size(),
+            .capacity_samples = payload_samples,
         };
-        if (pipeline_.ReadCapture(&capture, 100) == audio::PortResult::kOk &&
-            pipeline_.FeedFrontend({capture.samples, capture.sample_count, capture.sample_rate_hz, capture.channel_count}) !=
-                audio::PortResult::kOk) {
-            events_.OnFailure("frontend_feed");
+        const audio::PortResult captured = pipeline_.ReadCapture(&capture, 100);
+        if (captured == audio::PortResult::kOk) {
+            const audio::PortResult fed = pipeline_.FeedFrontend(
+                {capture.samples, capture.sample_count, capture.sample_rate_hz, capture.channel_count});
+            consecutive_failures = fed == audio::PortResult::kOk ? 0 : consecutive_failures + 1;
+        } else {
+            consecutive_failures++;
+        }
+        if (consecutive_failures >= kAudioFailureLimit) {
+            events_.OnFailure("capture_pipeline_failure");
+            running_ = false;
         }
     }
     MarkTaskStopped(kCaptureStopped);
@@ -467,9 +543,18 @@ void VoiceRuntime::RunUplink() {
     std::array<int16_t, 960> accumulated{};
     size_t accumulated_samples = 0;
     std::array<uint8_t, protocol::kWssMaxPayloadBytes> opus{};
+    uint32_t consecutive_failures = 0;
     while (running_) {
         audio::MutablePcmView output{.samples = fetched.data(), .capacity_samples = fetched.size()};
-        if (pipeline_.FetchFrontend(&output, 100) != audio::PortResult::kOk) continue;
+        const audio::PortResult fetched_result = pipeline_.FetchFrontend(&output, 100);
+        if (fetched_result != audio::PortResult::kOk) {
+            if (++consecutive_failures >= kAudioFailureLimit) {
+                events_.OnFailure("frontend_fetch_failure");
+                running_ = false;
+            }
+            continue;
+        }
+        consecutive_failures = 0;
         if (frontend_.ConsumeSpeechStarted() && !CancelActiveResponseOnSpeech()) {
             events_.OnFailure("barge_in_cancel");
             running_ = false;
@@ -550,7 +635,28 @@ bool VoiceRuntime::CancelActiveResponseOnSpeech() {
     protocol::SessionIdentity session_identity;
     protocol::CancelTarget target;
     // 先标记再发送；发送失败会重连，避免不确定重试导致同一代重复取消。
-    if (!response_gate_.PrepareCancel(&target)) return true;
+    {
+        std::lock_guard<std::mutex> lock(playback_mutex_);
+        if (response_gate_.PrepareCancel(&target)) {
+            const uint32_t generation = playback_generation_.load();
+            xQueueReset(playback_queue_);
+            if (udp_runtime_ != nullptr && !udp_runtime_->FenceGeneration(generation)) return false;
+            playback_enabled_ = false;
+            // The remote cancel is sent after releasing the playback lock.
+        } else if (response_end_deadline_us_.load() > 0) {
+            const uint32_t generation = playback_generation_.load();
+            xQueueReset(playback_queue_);
+            if (udp_runtime_ != nullptr && !udp_runtime_->FenceGeneration(generation)) {
+                return false;
+            }
+            playback_enabled_ = false;
+            response_end_deadline_us_ = 0;
+            events_.OnConversationPhase(ConversationPhase::kListening);
+            return true;
+        } else {
+            return true;
+        }
+    }
     {
         std::lock_guard<std::mutex> lock(identity_mutex_);
         session_identity = opened_.session;
@@ -561,11 +667,37 @@ bool VoiceRuntime::CancelActiveResponseOnSpeech() {
            owner_ != nullptr && owner_->SendText(json, 250);
 }
 
+bool VoiceRuntime::CompleteResponseDrainIfDue(int64_t now_us) {
+    std::lock_guard<std::mutex> lock(playback_mutex_);
+    const int64_t deadline_us = response_end_deadline_us_.load();
+    if (deadline_us <= 0 || now_us < deadline_us) return true;
+
+    const uint32_t generation = playback_generation_.load();
+    xQueueReset(playback_queue_);
+    if (udp_runtime_ != nullptr && !udp_runtime_->FenceGeneration(generation)) return false;
+    playback_enabled_ = false;
+    response_end_deadline_us_ = 0;
+    response_gate_.End();
+    events_.OnConversationPhase(ConversationPhase::kListening);
+    return true;
+}
+
 void VoiceRuntime::RunPlayback() {
     MediaPacket packet;
-    std::array<int16_t, 960> pcm{};
-    std::array<int16_t, 1440> resampled{};
+    if (playback_pcm_ == nullptr || playback_resampled_ == nullptr ||
+        playback_resampled_capacity_ == 0) {
+        events_.OnFailure("playback_buffer");
+        running_ = false;
+        MarkTaskStopped(kPlaybackStopped);
+        vTaskDelete(nullptr);
+        return;
+    }
     while (running_) {
+        if (!CompleteResponseDrainIfDue(esp_timer_get_time())) {
+            events_.OnFailure("drain_generation");
+            running_ = false;
+            break;
+        }
         udp::PlayoutFrame udp_frame;
         const bool using_udp = media_owner_ == voice::core::MediaOwner::kUdp;
         if (using_udp) {
@@ -578,25 +710,26 @@ void VoiceRuntime::RunPlayback() {
         }
         size_t samples = 0;
         const bool decoded = using_udp && udp_frame.kind == udp::PlayoutKind::kPlc
-                                 ? codec_.DecodePlc60Ms(pcm.data(), pcm.size(), &samples)
+                                 ? codec_.DecodePlc60Ms(
+                                       playback_pcm_.get(), kDecodedSamplesPerFrame, &samples)
                                  : codec_.Decode60Ms(
                                        using_udp ? udp_frame.payload.data() : packet.bytes.data(),
                                        using_udp ? udp_frame.payload_size : packet.size,
-                                       pcm.data(), pcm.size(), &samples);
+                                       playback_pcm_.get(), kDecodedSamplesPerFrame, &samples);
         if (!decoded || samples == 0) {
             events_.OnFailure("opus_decode");
             continue;
         }
-        if (samples != pcm.size() || playback_resampler_ == nullptr) {
+        if (samples != kDecodedSamplesPerFrame || playback_resampler_ == nullptr) {
             events_.OnFailure("playback_frame_size");
             running_ = false;
             break;
         }
-        uint32_t resampled_samples = static_cast<uint32_t>(resampled.size());
+        uint32_t resampled_samples = static_cast<uint32_t>(playback_resampled_capacity_);
         if (esp_ae_rate_cvt_process(
-                playback_resampler_, pcm.data(), static_cast<uint32_t>(samples),
-                resampled.data(), &resampled_samples) != ESP_AE_ERR_OK ||
-            resampled_samples != resampled.size()) {
+                playback_resampler_, playback_pcm_.get(), static_cast<uint32_t>(samples),
+                playback_resampled_.get(), &resampled_samples) != ESP_AE_ERR_OK ||
+            resampled_samples != kNominalResampledSamplesPerFrame) {
             events_.OnFailure("playback_resample");
             running_ = false;
             break;
@@ -606,12 +739,14 @@ void VoiceRuntime::RunPlayback() {
         const size_t total_resampled_samples = static_cast<size_t>(resampled_samples);
         size_t offset = 0;
         while (offset < total_resampled_samples && running_) {
-            if (frame_generation != playback_generation_) break;
+            if (!playback_enabled_ || frame_generation != playback_generation_) break;
             const size_t count =
                 std::min(kInterruptibleSamples, total_resampled_samples - offset);
-            if (pipeline_.WritePlayback({resampled.data() + offset, count, 24000, 1}, 20) !=
+            if (pipeline_.WritePlayback(
+                    {playback_resampled_.get() + offset, count, 24000, 1}, 20) !=
                 audio::PortResult::kOk) {
                 events_.OnFailure("playback_write");
+                running_ = false;
                 break;
             }
             offset += count;
@@ -631,15 +766,43 @@ bool VoiceRuntime::StartPlaybackResampler() {
         .complexity = 2,
         .perf_type = ESP_AE_RATE_CVT_PERF_TYPE_SPEED,
     };
-    return esp_ae_rate_cvt_open(&config, &playback_resampler_) == ESP_AE_ERR_OK &&
-           playback_resampler_ != nullptr;
+    if (esp_ae_rate_cvt_open(&config, &playback_resampler_) != ESP_AE_ERR_OK ||
+        playback_resampler_ == nullptr) {
+        playback_resampler_ = nullptr;
+        return false;
+    }
+    uint32_t required_samples = 0;
+    if (esp_ae_rate_cvt_get_max_out_sample_num(
+            playback_resampler_, kDecodedSamplesPerFrame, &required_samples) != ESP_AE_ERR_OK ||
+        required_samples < kNominalResampledSamplesPerFrame ||
+        required_samples > kMaximumResampledSamplesPerFrame) {
+        ESP_LOGE(kLogTag, "invalid playback resampler capacity: %lu",
+                 static_cast<unsigned long>(required_samples));
+        StopPlaybackResampler();
+        return false;
+    }
+    playback_pcm_.reset(new (std::nothrow) int16_t[kDecodedSamplesPerFrame]);
+    playback_resampled_.reset(new (std::nothrow) int16_t[required_samples]);
+    if (playback_pcm_ == nullptr || playback_resampled_ == nullptr) {
+        ESP_LOGE(kLogTag, "playback buffer allocation failed");
+        StopPlaybackResampler();
+        return false;
+    }
+    playback_resampled_capacity_ = required_samples;
+    ESP_LOGI(kLogTag, "playback resampler ready: 960 -> nominal 1440, capacity=%lu",
+             static_cast<unsigned long>(required_samples));
+    return true;
 }
 
 void VoiceRuntime::StopPlaybackResampler() {
-    if (playback_resampler_ == nullptr) return;
-    esp_ae_rate_cvt_reset(playback_resampler_);
-    esp_ae_rate_cvt_close(playback_resampler_);
-    playback_resampler_ = nullptr;
+    if (playback_resampler_ != nullptr) {
+        esp_ae_rate_cvt_reset(playback_resampler_);
+        esp_ae_rate_cvt_close(playback_resampler_);
+        playback_resampler_ = nullptr;
+    }
+    playback_pcm_.reset();
+    playback_resampled_.reset();
+    playback_resampled_capacity_ = 0;
 }
 
 void VoiceRuntime::MarkTaskStopped(EventBits_t bit) {

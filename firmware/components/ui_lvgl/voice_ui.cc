@@ -3,12 +3,15 @@
 #include <cstring>
 #include <utility>
 
+#include <esp_log.h>
 #include <esp_lvgl_port.h>
 
 #include "board_lichuang_s3/display_config.h"
 
 namespace rva::ui {
 namespace {
+
+constexpr char kTag[] = "rva_voice_ui";
 
 lv_color_t Background() { return lv_color_hex(0x101516); }
 lv_color_t Surface() { return lv_color_hex(0x1B2324); }
@@ -35,6 +38,10 @@ bool VoiceUi::Start() {
     if (!hardware_.started() || config_.text_font == nullptr ||
         config_.large_font == nullptr || config_.icon_font == nullptr ||
         config_.microphone_glyph == nullptr) {
+        ESP_LOGE(kTag, "UI start failed: precondition (display=%d fonts=%d/%d/%d glyph=%d)",
+                 hardware_.started(), config_.text_font != nullptr,
+                 config_.large_font != nullptr, config_.icon_font != nullptr,
+                 config_.microphone_glyph != nullptr);
         return false;
     }
 
@@ -42,6 +49,7 @@ bool VoiceUi::Start() {
     event_queue_ = xQueueCreate(kEventQueueCapacity, sizeof(EventPacket));
     async_done_ = xSemaphoreCreateBinary();
     if (command_queue_ == nullptr || event_queue_ == nullptr || async_done_ == nullptr) {
+        ESP_LOGE(kTag, "UI start failed: queue_or_semaphore_allocation");
         Stop();
         return false;
     }
@@ -49,9 +57,21 @@ bool VoiceUi::Start() {
     lvgl_port_cfg_t port_config = ESP_LVGL_PORT_INIT_CONFIG();
     port_config.task_priority = 4;
     port_config.task_max_sleep_ms = 20;
-    if (lvgl_port_init(&port_config) != ESP_OK) {
+    const esp_err_t port_result = lvgl_port_init(&port_config);
+    if (port_result != ESP_OK) {
+        ESP_LOGE(kTag, "UI start failed: lvgl_port_init (%s)", esp_err_to_name(port_result));
         Stop();
         return false;
+    }
+    port_initialized_ = true;
+
+    const esp_err_t font_result = font_assets_.Initialize();
+    if (font_result == ESP_OK) {
+        config_.text_font = font_assets_.text_font();
+        config_.large_font = font_assets_.text_font();
+    } else {
+        ESP_LOGW(kTag, "Full Chinese font unavailable; using built-in fallback (%s)",
+                 esp_err_to_name(font_result));
     }
 
     const lvgl_port_display_cfg_t display_config = {
@@ -82,6 +102,7 @@ bool VoiceUi::Start() {
     };
     display_ = lvgl_port_add_disp(&display_config);
     if (display_ == nullptr) {
+        ESP_LOGE(kTag, "UI start failed: lvgl_port_add_disp");
         Stop();
         return false;
     }
@@ -94,6 +115,7 @@ bool VoiceUi::Start() {
         };
         touch_ = lvgl_port_add_touch(&touch_config);
         if (touch_ == nullptr) {
+            ESP_LOGE(kTag, "UI start failed: lvgl_port_add_touch");
             Stop();
             return false;
         }
@@ -101,16 +123,19 @@ bool VoiceUi::Start() {
 
     async_success_ = false;
     if (lv_async_call(InitializeAsync, this) != LV_RESULT_OK) {
+        ESP_LOGE(kTag, "UI start failed: initialize_async_schedule");
         Stop();
         return false;
     }
     lvgl_port_task_wake(LVGL_PORT_EVENT_USER, nullptr);
     if (xSemaphoreTake(async_done_, pdMS_TO_TICKS(kAsyncTimeoutMs)) != pdTRUE ||
         !async_success_) {
+        ESP_LOGE(kTag, "UI start failed: initialize_async_timeout_or_invalid_root");
         Stop();
         return false;
     }
     started_ = true;
+    ESP_LOGI(kTag, "UI started (touch=%d)", touch_ != nullptr);
     return true;
 }
 
@@ -134,9 +159,13 @@ bool VoiceUi::Stop() {
         success = lvgl_port_remove_disp(display_) == ESP_OK && success;
         display_ = nullptr;
     }
-    if (command_queue_ != nullptr || event_queue_ != nullptr || async_done_ != nullptr) {
+    // The binary-font descriptor uses LVGL allocation and must be destroyed
+    // after all objects but before the LVGL allocator is deinitialized.
+    font_assets_.Deinitialize();
+    if (port_initialized_) {
         const esp_err_t result = lvgl_port_deinit();
         success = (result == ESP_OK || result == ESP_ERR_INVALID_STATE) && success;
+        port_initialized_ = false;
     }
     if (command_queue_ != nullptr) {
         vQueueDelete(command_queue_);

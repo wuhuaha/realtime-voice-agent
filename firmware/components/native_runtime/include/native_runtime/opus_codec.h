@@ -22,6 +22,8 @@ private:
     void* decoder_ = nullptr;
     int encoder_input_bytes_ = 0;
     int encoder_output_bytes_ = 0;
+    uint8_t encoder_input_alignment_ = 1;
+    uint8_t encoder_output_alignment_ = 1;
 };
 
 }  // namespace rva::runtime

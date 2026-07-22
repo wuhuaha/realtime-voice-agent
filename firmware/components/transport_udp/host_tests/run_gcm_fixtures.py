@@ -11,7 +11,7 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parents[3]
 COMPONENT = HERE.parent
-FIXTURES = REPO / "protocol" / "xiaozhi_udp_v1" / "fixtures"
+FIXTURES = REPO / "protocol" / "udp_opus_gcm_v1" / "fixtures"
 
 
 def run(command: list[str], *, cwd: Path | None = None) -> None:

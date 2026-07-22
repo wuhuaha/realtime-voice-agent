@@ -1,6 +1,7 @@
 #pragma once
 
 #include <atomic>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -59,7 +60,9 @@ private:
     EventGroupHandle_t events_ = nullptr;
     size_t credential_index_ = 0;
     size_t attempts_ = 0;
+    std::mutex connection_mutex_;
     std::atomic<bool> started_{false};
+    bool reconnect_after_disconnect_ = false;
     bool wifi_initialized_ = false;
 };
 

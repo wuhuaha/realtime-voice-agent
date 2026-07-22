@@ -68,7 +68,7 @@ teardown 的唯一协调者。
 ## 6. UI 与配置
 
 Home UI 显示 AI、连接/对话状态、流式 ASR/response 和 `WSS`/`UDP` 文字模式。Idle+online 点击 mic 发出 start；
-listening/thinking/speaking 点击发出 stop。中文字体作为 Product-owned/generated asset 注入，不依赖 Xiaozhi font。
+listening/thinking/speaking 点击发出 stop。中文字体作为 Product-owned/generated asset 注入并由 native target 管理。
 
 Wi-Fi 与 endpoint 配置遵循：saved value 优先、失败可回到配置页、写入后重启可回读。Token 与 endpoint origin
 绑定；origin 改变不得转发旧 token。源码、tracked defaults、日志和 UI 不包含 Wi-Fi 密码、bearer 或 API key。

@@ -33,6 +33,7 @@ bool UdpSession::Configure(const SessionGrant& grant) {
     grant_ = grant;
     send_sequence_ = 0;
     generation_ = grant.initial_generation;
+    last_authenticated_receive_us_ = 0;
     replay_.Reset();
     jitter_.Reset(generation_);
     stats_ = {};
@@ -62,6 +63,7 @@ void UdpSession::RevokeLocked() {
     SecureErase(&plaintext_);
     SecureErase(&grant_);
     send_sequence_ = 0;
+    last_authenticated_receive_us_ = 0;
 }
 
 bool UdpSession::FenceGeneration(uint32_t generation) {
@@ -159,6 +161,12 @@ bool UdpSession::BuildProbe(uint8_t* output, size_t capacity, size_t* size) {
     return Build(wire::DatagramType::kProbe, nullptr, 0, 0, 0, output, capacity, size);
 }
 
+bool UdpSession::BuildKeepalive(uint8_t* output, size_t capacity, size_t* size) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return Build(wire::DatagramType::kKeepalive, nullptr, 0, 0, generation_,
+                 output, capacity, size);
+}
+
 bool UdpSession::BuildAudio(const uint8_t* opus, size_t opus_size, uint32_t timestamp,
                             uint32_t generation, uint8_t* output, size_t capacity, size_t* size) {
     std::lock_guard<std::mutex> lock(mutex_);
@@ -225,6 +233,7 @@ AdmissionResult UdpSession::Receive(const Endpoint& source, const uint8_t* datag
     }
     if (!bound_source_.valid()) bound_source_ = source;
     replay_.Commit(view->header.sequence);
+    last_authenticated_receive_us_ = now_us;
     if (view->header.generation < generation_) {
         SecureErase(&plaintext_);
         stats_.stale_generation++;
@@ -299,6 +308,11 @@ uint32_t UdpSession::generation() const {
 Stats UdpSession::stats() const {
     std::lock_guard<std::mutex> lock(mutex_);
     return stats_;
+}
+
+int64_t UdpSession::last_authenticated_receive_us() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return last_authenticated_receive_us_;
 }
 
 Endpoint UdpSession::server() const {

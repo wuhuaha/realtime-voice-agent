@@ -277,7 +277,9 @@ extern "C" void app_main() {
 #ifdef CONFIG_RVA_ENABLE_UI
     {
         display = std::make_unique<rva::board::lichuang_s3::LichuangDisplay>(i2c, pca9557);
-        if (display->Start() == ESP_OK) {
+        const esp_err_t display_result = display->Start();
+        if (display_result == ESP_OK) {
+            ESP_LOGI(kTag, "Display hardware started; initializing LVGL UI");
             ui = std::make_unique<rva::ui::VoiceUi>(
                 *display,
                 rva::ui::VoiceUiConfig{
@@ -286,7 +288,13 @@ extern "C" void app_main() {
                     LV_FONT_DEFAULT,
                     "MIC",
                 });
-            if (!ui->Start()) ui.reset();
+            if (!ui->Start()) {
+                ESP_LOGE(kTag, "Display stage failed: ui_start; continuing headless");
+                ui.reset();
+            }
+        } else {
+            ESP_LOGE(kTag, "Display stage failed: board_display_start (%s); continuing headless",
+                     esp_err_to_name(display_result));
         }
     }
 #endif

@@ -41,3 +41,24 @@ def test_ignores_dynamic_validator_and_constant_assertion(tmp_path: Path) -> Non
         encoding="utf-8",
     )
     assert CHECK.scan(tmp_path, ("contract.ps1",)) == []
+
+
+def test_scans_product_configuration_and_document_sources(tmp_path: Path) -> None:
+    secret_value = "actual-" + "configuration-secret-value"
+    candidates = {
+        "guide.html": f'<div data-token="{secret_value}"></div>\n',
+        "sdkconfig.defaults": 'CONFIG_WIFI_PASSWORD="actual-default-password"\n',
+        "Kconfig": f'config RVA_WIFI_PASSWORD\n    string\n    default "{secret_value}"\n',
+        "CMakeLists.txt": f'set(PROVIDER_API_KEY "{secret_value}")\n',
+    }
+    for name, content in candidates.items():
+        (tmp_path / name).write_text(content, encoding="utf-8")
+
+    findings = CHECK.scan(tmp_path, tuple(candidates))
+
+    assert findings == [
+        "guide.html:1: possible assigned_secret",
+        "sdkconfig.defaults:1: possible assigned_secret",
+        "Kconfig:3: possible assigned_secret",
+        "CMakeLists.txt:1: possible assigned_secret",
+    ]

@@ -76,7 +76,7 @@ def test_media_profiles_share_generation_aware_header() -> None:
 def test_shared_udp_profile_preserves_the_canonical_byte_wire() -> None:
     contract = yaml.safe_load((PROTOCOL / "contract.yaml").read_text(encoding="utf-8"))
     canonical = json.loads(
-        (ROOT / "protocol" / "xiaozhi_udp_v1" / "fixtures" / "positive.json").read_text(encoding="utf-8")
+        (ROOT / "protocol" / "udp_opus_gcm_v1" / "fixtures" / "positive.json").read_text(encoding="utf-8")
     )
     udp = next(profile for profile in contract["media_profiles"] if profile["id"] == "udp-opus-gcm-v1")
     first_header = bytes.fromhex(canonical["vectors"][0]["header_hex"])

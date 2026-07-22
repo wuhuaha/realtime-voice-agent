@@ -12,7 +12,8 @@
 - Upstream 与 dependency identity：`third_party/sources.lock.yaml`、`firmware/locks/`。
 - 最小来源 provenance：`migration/baseline/source-manifest.yaml`。
 - 回滚行为矩阵：`migration/baseline/behavior-matrix.yaml`。
-- UDP byte oracle：`protocol/xiaozhi_udp_v1/README.md` 与 canonical fixtures。
+- 当前 UDP byte authority：`protocol/udp_opus_gcm_v1/README.md` 与 canonical fixtures；迁移 manifest 中的旧路径只
+  保留来源 provenance，不是当前 consumer 入口。
 
 ## 必须保持的行为
 

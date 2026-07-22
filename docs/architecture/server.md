@@ -29,9 +29,9 @@ server/
         app.py
         config.py
         auth.py
-        bindings/xiaozhi/     # protocol/profile/codec/WSS facade
-        bindings/xiaozhi_runtime.py
-        transport/            # UDP wire/gateway
+        bindings/rva/         # current /v1/voice control and session binding
+        bindings/xiaozhi/     # isolated legacy compatibility facade
+        transport/            # protocol-neutral media wire/gateway
         voice/livekit/        # roomless runner and audio/text I/O
         providers/
         resources/
@@ -42,8 +42,8 @@ server/
     voice_testkit/
 ```
 
-这是职责目标，不要求为了目录外观预建空包。迁移期间部分实现仍可能位于较大的 `xiaozhi.py` 或兼容模块；
-拆分必须保持行为和测试，不得同时改变 wire、provider 和 runtime。
+目录反映依赖方向而不是展示层级：RVA binding 是当前产品入口，legacy binding 只能依赖共享 runtime/transport，
+共享实现不得从 legacy package 导入。拆分必须保持行为和测试，不得同时改变 wire、provider 和 runtime。
 
 ## 3. Director
 
@@ -109,11 +109,11 @@ LiveKit `AgentSession` 是 VAD、STT、EOU、interruption、turn 和 response �
 
 ### 4.4 Binding 与 transport
 
-- `xiaozhi` binding：headers、hello/control JSON、session state、profile commit 和 close mapping。
-- `wss-opus-v1`：WebSocket binary framing、Opus decode/encode、队列和 media age。
 - `rva` binding：`session.open/opened`、typed WSS media、transcript/response、exact cancel 和 generation fence。
 - `wss-opus-v2`：共享 32-byte media header、session/media identity、directional sequence 和 generation admission。
 - `udp-opus-gcm-v1`：grant、socket/session map、AEAD、replay、source pin、reorder、expiry 和 stats。
+- compatibility binding：旧 headers/JSON/WSS framing 的边界转换；不得拥有 provider、Agent turn 或共享 transport
+  实现，也不得成为新 endpoint 的依赖。
 - 所有 profile 对上暴露一致的 bounded audio/control port；不得把 WebSocket 或 `asyncio.DatagramTransport`
   泄漏到 Agent application。
 
@@ -151,9 +151,9 @@ provider error/429/timeout。日志不得替代 metrics，也不得记录 token�
 
 ## 8. 实现状态
 
-Director 已支持按 `control_protocol` 选择 Xiaozhi 或 RVA binding；grant 绑定 Worker、device、session epoch、
-fencing token、profiles、control protocol、expiry 和单次 `jti`。Worker 的 legacy/RVA registry 共用 process
-admission，并聚合 active lease、release、revoke 和 heartbeat。
+Director 默认选择 RVA binding，并可对显式兼容 client 选择 legacy binding；grant 绑定 Worker、device、session
+epoch、fencing token、profiles、control protocol、expiry 和单次 `jti`。Worker 的 binding registry 共用 process
+admission，并聚合 active lease、release、revoke 和 heartbeat，但新功能只进入 RVA 路径。
 
 `/v1/voice`、RVA WSS binding/runtime、strict parser、Opus、bounded queues、transcript/response 和 exact cancel 已有
 unit/contract evidence。真实 provider、部署和设备结论只在 [Release readiness](../quality/release-readiness.md) 更新。

@@ -10,11 +10,11 @@ from voice_testkit import MutableClock
 def heartbeat(worker_id: str, active: int, *, maximum: int = 5, draining: bool = False) -> WorkerHeartbeat:
     return WorkerHeartbeat(
         worker_id=worker_id,
-        public_wss_url=f"ws://{worker_id}.test/v1/xiaozhi",
+        public_wss_url=f"ws://{worker_id}.test/v1/voice",
         active_sessions=active,
         max_sessions=maximum,
         draining=draining,
-        profiles=("wss-opus-v1", "udp-opus-gcm-v1"),
+        profiles=("wss-opus-v2", "udp-opus-gcm-v1"),
     )
 
 

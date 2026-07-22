@@ -30,15 +30,18 @@ gateway/endpoint policy，不能把未被 Settings 消费的自造变量当作�
 
 ## 3. Firmware 本地配置
 
-| Variable | 说明 |
+| Kconfig/local input | 说明 |
 | --- | --- |
-| `XIAOZHI_WS_URL` | 开发/兼容 Worker WSS endpoint |
-| `XIAOZHI_LAB_TOKEN` | 开发 bearer；不得用于生产长期身份 |
-| `XIAOZHI_WIFI_SSID` | local fallback，只放 `.env.local` |
-| `XIAOZHI_WIFI_PASSWORD` | local fallback，只放 `.env.local` |
+| `RVA_DIRECTOR_BOOTSTRAP_URL` | Director HTTPS bootstrap endpoint |
+| `RVA_DEVICE_BOOTSTRAP_TOKEN` | bootstrap credential；开发值只放 ignored local input |
+| `RVA_WIFI_PRIMARY_SSID` / `RVA_WIFI_FALLBACK_SSID` | provisioning fallback；不得写入 tracked defaults |
+| `RVA_WIFI_PRIMARY_PASSWORD` / `RVA_WIFI_FALLBACK_PASSWORD` | Wi-Fi secret；不得进入源码、日志或 artifact metadata |
 
 生成配置头、sdkconfig、binary 可能含部署 secret，均视为敏感 artifact，不提交或公开分发。设备 NVS token 按
 WebSocket origin 绑定；endpoint origin 变化时清除旧 token。
+
+`firmware/targets/lichuang-dev/.env.local` 中的 `XIAOZHI_*` 字段只服务显式 compatibility/rollback 构建，不是
+native 配置接口，也不得被主线脚本或文档示例消费。
 
 ## 4. Runtime 短期材料
 
@@ -54,11 +57,11 @@ Redis 媒体数据结构、metrics label 或 error response 泄露。
 
 ```powershell
 Copy-Item .env.example .env
-Copy-Item firmware/targets/lichuang-dev/.env.local.example `
-  firmware/targets/lichuang-dev/.env.local
 ```
 
-填值后运行 repository/secret checks。不得使用 `git add .`；提交前检查 staged diff 和 staged secret scan。
+Firmware 开发值通过 `menuconfig` 或 ignored `sdkconfig.local` 注入。填值后运行 repository/secret checks。不得使用
+`git add .`；提交前检查 staged diff 和 staged secret scan。Compatibility target 的本地模板只在执行回滚演练时
+按其 README 单独创建。
 
 ## 6. 轮换
 

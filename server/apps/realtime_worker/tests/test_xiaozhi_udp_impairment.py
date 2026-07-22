@@ -8,7 +8,8 @@ import pytest
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from realtime_worker.auth import AuthContext
 from realtime_worker.bindings.xiaozhi import XiaozhiConnection
-from realtime_worker.bindings.xiaozhi_udp import (
+from realtime_worker.config import Settings
+from realtime_worker.transport.udp_gateway import (
     UDP_FLAG_AUDIO,
     UDP_FLAG_KEEPALIVE,
     UDP_FLAG_PROBE,
@@ -17,11 +18,19 @@ from realtime_worker.bindings.xiaozhi_udp import (
     UdpMediaSession,
     UdpPacketHeader,
 )
-from realtime_worker.config import Settings
 
 pytestmark = pytest.mark.integration
 
 _SOURCE = ("192.0.2.10", 41000)
+
+
+def _legacy_auth() -> AuthContext:
+    return AuthContext(
+        tenant_id="lab",
+        device_id="device-1",
+        allowed_profiles=("wss-opus-v1", "udp-opus-gcm-v1"),
+        control_protocol="xiaozhi-control-v1",
+    )
 
 
 class _CaptureTransport:
@@ -299,7 +308,7 @@ async def test_xiaozhi_ingress_generation_fence_discards_stale_udp_audio() -> No
     websocket = _NoopWebSocket()
     connection = XiaozhiConnection(
         websocket,  # type: ignore[arg-type]
-        AuthContext(tenant_id="lab", device_id="device-1"),
+        _legacy_auth(),
         Settings(lab_token="test-token"),
     )
     connection._listening = True  # noqa: SLF001

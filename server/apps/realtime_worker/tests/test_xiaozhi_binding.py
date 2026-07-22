@@ -34,6 +34,15 @@ from realtime_worker.config import Settings
 FIXTURES = Path(__file__).parent / "fixtures" / "xiaozhi"
 
 
+def legacy_auth_context() -> AuthContext:
+    return AuthContext(
+        tenant_id="lab",
+        device_id="device-1",
+        allowed_profiles=("wss-opus-v1", "udp-opus-gcm-v1"),
+        control_protocol="xiaozhi-control-v1",
+    )
+
+
 def fixture(name: str) -> dict[str, object]:
     return json.loads((FIXTURES / name).read_text(encoding="utf-8"))
 
@@ -145,7 +154,7 @@ def test_malformed_opus_is_rejected() -> None:
 def test_audio_diagnostics_are_disabled_by_default(caplog: pytest.LogCaptureFixture) -> None:
     connection = XiaozhiConnection(
         object(),  # type: ignore[arg-type]
-        AuthContext(tenant_id="lab", device_id="device-1"),
+        legacy_auth_context(),
         Settings(_env_file=None, lab_token="test-token"),
     )
 
@@ -196,7 +205,7 @@ async def test_output_backpressure_fails_within_the_configured_bound() -> None:
     )
     connection = XiaozhiConnection(
         object(),  # type: ignore[arg-type]
-        AuthContext(tenant_id="lab", device_id="device-1"),
+        legacy_auth_context(),
         settings,
     )
     for _ in range(4):
@@ -252,7 +261,7 @@ class _TextAwareRunner(_FakeRunner):
 async def test_runner_text_sinks_emit_xiaozhi_stt_and_sentence_start_wire() -> None:
     connection = XiaozhiConnection(
         object(),  # type: ignore[arg-type]
-        AuthContext(tenant_id="lab", device_id="device-1"),
+        legacy_auth_context(),
         Settings(lab_token="test-token"),
         runner_factory=lambda settings, emit, stop: _TextAwareRunner(emit),  # type: ignore[arg-type]
     )
@@ -276,7 +285,7 @@ async def test_runner_text_sinks_emit_xiaozhi_stt_and_sentence_start_wire() -> N
 async def test_text_sink_queue_overflow_reports_bounded_connection_failure() -> None:
     connection = XiaozhiConnection(
         object(),  # type: ignore[arg-type]
-        AuthContext(tenant_id="lab", device_id="device-1"),
+        legacy_auth_context(),
         Settings(lab_token="test-token", xiaozhi_media_queue_frames=4),
     )
     for index in range(4):
@@ -291,7 +300,7 @@ async def test_text_sink_queue_overflow_reports_bounded_connection_failure() -> 
 async def test_streaming_assistant_text_coalesces_while_waiting_for_writer() -> None:
     connection = XiaozhiConnection(
         object(),  # type: ignore[arg-type]
-        AuthContext(tenant_id="lab", device_id="device-1"),
+        legacy_auth_context(),
         Settings(lab_token="test-token", xiaozhi_media_queue_frames=4),
     )
 
@@ -324,7 +333,7 @@ async def test_abort_interrupts_same_producer_and_rejects_late_old_segments() ->
 
     connection = XiaozhiConnection(
         object(),  # type: ignore[arg-type]
-        AuthContext(tenant_id="lab", device_id="device-1"),
+        legacy_auth_context(),
         Settings(lab_token="test-token", xiaozhi_media_queue_frames=12),
         runner_factory=factory,  # type: ignore[arg-type]
     )
@@ -357,7 +366,7 @@ async def test_abort_interrupts_same_producer_and_rejects_late_old_segments() ->
 async def test_agent_stop_callback_storm_has_one_bounded_task_and_one_stop() -> None:
     connection = XiaozhiConnection(
         object(),  # type: ignore[arg-type]
-        AuthContext(tenant_id="lab", device_id="device-1"),
+        legacy_auth_context(),
         Settings(lab_token="test-token"),
     )
     for _ in range(100):
@@ -394,7 +403,7 @@ async def test_writer_prebuffers_then_uses_absolute_playback_cadence() -> None:
     websocket = _TimedWriter()
     connection = XiaozhiConnection(
         websocket,  # type: ignore[arg-type]
-        AuthContext(tenant_id="lab", device_id="device-1"),
+        legacy_auth_context(),
         Settings(lab_token="test-token"),
     )
     generation = connection._generation  # noqa: SLF001
@@ -421,7 +430,7 @@ async def test_writer_interrupt_wakes_pacing_wait_and_drops_stale_audio() -> Non
     websocket = _TimedWriter()
     connection = XiaozhiConnection(
         websocket,  # type: ignore[arg-type]
-        AuthContext(tenant_id="lab", device_id="device-1"),
+        legacy_auth_context(),
         Settings(lab_token="test-token"),
     )
     generation = connection._generation  # noqa: SLF001
@@ -448,7 +457,7 @@ async def test_writer_interrupt_wakes_pacing_wait_and_drops_stale_audio() -> Non
 async def test_writer_stall_turns_into_bounded_output_overload() -> None:
     connection = XiaozhiConnection(
         _StalledWriter(),  # type: ignore[arg-type]
-        AuthContext(tenant_id="lab", device_id="device-1"),
+        legacy_auth_context(),
         Settings(
             lab_token="test-token",
             xiaozhi_media_queue_frames=4,
@@ -505,7 +514,7 @@ async def test_unexpected_cancelled_child_is_a_runtime_failure_not_an_invalid_st
     websocket = _HandshakeWebSocket()
     connection = XiaozhiConnection(
         websocket,  # type: ignore[arg-type]
-        AuthContext(tenant_id="lab", device_id="device-1"),
+        legacy_auth_context(),
         Settings(lab_token="test-token"),
         runner_factory=fake_runner_factory,  # type: ignore[arg-type]
     )
@@ -522,7 +531,7 @@ async def test_shutdown_cancellation_is_clean_and_idempotent() -> None:
     websocket = _HandshakeWebSocket()
     connection = XiaozhiConnection(
         websocket,  # type: ignore[arg-type]
-        AuthContext(tenant_id="lab", device_id="device-1"),
+        legacy_auth_context(),
         Settings(lab_token="test-token"),
         runner_factory=fake_runner_factory,  # type: ignore[arg-type]
     )
@@ -545,7 +554,7 @@ async def test_runner_self_cancellation_does_not_escape_connection_cleanup() -> 
     runner = _SelfCancellingCloseRunner(lambda segment: asyncio.sleep(0))
     connection = XiaozhiConnection(
         websocket,  # type: ignore[arg-type]
-        AuthContext(tenant_id="lab", device_id="device-1"),
+        legacy_auth_context(),
         Settings(lab_token="test-token"),
     )
     connection._runner = runner  # noqa: SLF001
@@ -601,7 +610,7 @@ async def test_disconnect_and_registry_close_share_one_cleanup_completion() -> N
         runner_factory=factory,
     )
     run = asyncio.create_task(
-        registry.run(websocket, AuthContext(tenant_id="lab", device_id="device-1"))  # type: ignore[arg-type]
+        registry.run(websocket, legacy_auth_context())  # type: ignore[arg-type]
     )
     await websocket.hello_sent.wait()
     websocket.disconnect.set()
@@ -659,7 +668,7 @@ async def test_partial_runner_start_is_always_closed(failure: str) -> None:
 
     connection = XiaozhiConnection(
         websocket,  # type: ignore[arg-type]
-        AuthContext(tenant_id="lab", device_id="device-1"),
+        legacy_auth_context(),
         Settings(lab_token="test-token", xiaozhi_handshake_timeout_seconds=0.01),
         runner_factory=factory,
     )
@@ -705,7 +714,7 @@ async def test_repeated_hello_closes_the_owned_runner() -> None:
 
     connection = XiaozhiConnection(
         websocket,  # type: ignore[arg-type]
-        AuthContext(tenant_id="lab", device_id="device-1"),
+        legacy_auth_context(),
         Settings(lab_token="test-token"),
         runner_factory=factory,
     )
@@ -744,7 +753,7 @@ async def test_stop_queue_timeout_closes_connection_with_1013_and_releases_admis
     assert token is not None
     connection = _SaturatedStopConnection(
         websocket,  # type: ignore[arg-type]
-        AuthContext(tenant_id="lab", device_id="device-1"),
+        legacy_auth_context(),
         settings,
         runner_factory=fake_runner_factory,  # type: ignore[arg-type]
     )

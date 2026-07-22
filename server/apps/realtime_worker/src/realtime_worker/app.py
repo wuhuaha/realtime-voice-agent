@@ -18,10 +18,10 @@ from fastapi import FastAPI, Header, HTTPException, WebSocket, status
 from fastapi.responses import JSONResponse
 from voice_contracts import BindingAdvertisement, LeaseRenewal, WorkerHeartbeat
 
+from .admission import SharedSessionAdmission
 from .agent import create_runner
 from .auth import AuthContext, VerifiedAuth, WorkerAuthenticator, resolve_device_id
 from .bindings.rva import RvaRuntimeLimits, RvaWssConnection
-from .bindings.xiaozhi import SharedSessionAdmission, XiaozhiSessionRegistry, resolve_xiaozhi_device_id
 from .config import Settings
 from .transport import UdpMediaGateway
 
@@ -363,18 +363,24 @@ class WorkerHeartbeatLoop:
         if self._registry is not None:
             await self._registry.revoke_expired_leases(self._clock())
         udp_ready = self._udp_gateway is not None and self._udp_gateway.is_ready
-        udp_unavailable = (self._settings.xiaozhi_udp_enabled or self._settings.rva_udp_enabled) and not udp_ready
-        xiaozhi_profiles: tuple[str, ...] = ("wss-opus-v1",)
-        if self._settings.xiaozhi_udp_enabled and udp_ready:
-            xiaozhi_profiles = ("wss-opus-v1", "udp-opus-gcm-v1")
-        bindings = [
-            BindingAdvertisement(
-                control_protocol="xiaozhi-control-v1",
-                public_wss_url=self._settings.worker_public_ws_url,
-                profiles=xiaozhi_profiles,
+        udp_required = self._settings.rva_udp_enabled or (
+            self._settings.legacy_xiaozhi_enabled and self._settings.xiaozhi_udp_enabled
+        )
+        udp_unavailable = udp_required and not udp_ready
+        bindings: list[BindingAdvertisement] = []
+        profiles: list[str] = []
+        if self._settings.legacy_xiaozhi_enabled:
+            xiaozhi_profiles: tuple[str, ...] = ("wss-opus-v1",)
+            if self._settings.xiaozhi_udp_enabled and udp_ready:
+                xiaozhi_profiles = ("wss-opus-v1", "udp-opus-gcm-v1")
+            bindings.append(
+                BindingAdvertisement(
+                    control_protocol="xiaozhi-control-v1",
+                    public_wss_url=self._settings.worker_public_ws_url,
+                    profiles=xiaozhi_profiles,
+                )
             )
-        ]
-        profiles = list(xiaozhi_profiles)
+            profiles.extend(xiaozhi_profiles)
         if self._settings.rva_enabled:
             rva_profiles: tuple[str, ...] = ("wss-opus-v2",)
             if self._settings.rva_udp_enabled and udp_ready:
@@ -390,7 +396,11 @@ class WorkerHeartbeatLoop:
         pending_releases = self._registry.pending_lease_releases() if self._registry is not None else ()
         payload = WorkerHeartbeat(
             worker_id=self._settings.worker_id,
-            public_wss_url=self._settings.worker_public_ws_url,
+            public_wss_url=(
+                self._settings.rva_public_ws_url
+                if self._settings.rva_enabled
+                else self._settings.worker_public_ws_url
+            ),
             active_sessions=self._admission.active_count,
             max_sessions=self._settings.max_sessions,
             draining=self._admission.draining,
@@ -440,21 +450,27 @@ def create_app(
     admission = SharedSessionAdmission(settings.max_sessions)
     udp_gateway = (
         UdpMediaGateway(
-            bind_host=settings.xiaozhi_udp_bind_host,
-            bind_port=settings.xiaozhi_udp_bind_port,
-            advertised_host=settings.xiaozhi_udp_advertise_host,
-            advertised_port=settings.xiaozhi_udp_advertise_port,
-            lifetime_seconds=settings.xiaozhi_udp_session_lifetime_seconds,
-            probe_timeout_seconds=settings.xiaozhi_udp_probe_timeout_seconds,
-            queue_size=settings.xiaozhi_udp_queue_datagrams,
-            reorder_wait_seconds=settings.xiaozhi_udp_reorder_wait_ms / 1000,
+            bind_host=settings.udp_bind_host,
+            bind_port=settings.udp_bind_port,
+            advertised_host=settings.udp_advertise_host,
+            advertised_port=settings.udp_advertise_port,
+            lifetime_seconds=settings.udp_session_lifetime_seconds,
+            probe_timeout_seconds=settings.udp_probe_timeout_seconds,
+            queue_size=settings.udp_queue_datagrams,
+            reorder_wait_seconds=settings.udp_reorder_wait_ms / 1000,
         )
-        if settings.xiaozhi_udp_enabled or settings.rva_udp_enabled
+        if (settings.legacy_xiaozhi_enabled and settings.xiaozhi_udp_enabled) or settings.rva_udp_enabled
         else None
     )
-    xiaozhi_registry = XiaozhiSessionRegistry(settings, admission, udp_gateway=udp_gateway)
+    xiaozhi_registry = None
+    if settings.legacy_xiaozhi_enabled:
+        from .bindings.xiaozhi import XiaozhiSessionRegistry
+
+        xiaozhi_registry = XiaozhiSessionRegistry(settings, admission, udp_gateway=udp_gateway)
     rva_registry = RvaSessionRegistry(settings, admission, udp_gateway=udp_gateway)
-    lease_registry = CombinedLeaseRegistry(xiaozhi_registry, rva_registry)
+    lease_registry = CombinedLeaseRegistry(
+        *(registry for registry in (xiaozhi_registry, rva_registry) if registry is not None)
+    )
     provider_readiness = ProviderReadiness(settings)
     heartbeat = WorkerHeartbeatLoop(
         settings,
@@ -481,6 +497,8 @@ def create_app(
         app.state.admission = admission
         app.state.xiaozhi_session_registry = xiaozhi_registry
         app.state.rva_session_registry = rva_registry
+        app.state.udp_media_gateway = udp_gateway
+        # Temporary compatibility for diagnostics that used the legacy state name.
         app.state.xiaozhi_udp_gateway = udp_gateway
         app.state.worker_heartbeat = heartbeat
         if udp_gateway is not None:
@@ -495,7 +513,10 @@ def create_app(
             await heartbeat.close()
             await provider_readiness.close()
             await active_grant_consumer.close()
-            await asyncio.gather(xiaozhi_registry.close(), rva_registry.close())
+            registries = [rva_registry.close()]
+            if xiaozhi_registry is not None:
+                registries.append(xiaozhi_registry.close())
+            await asyncio.gather(*registries)
             if udp_gateway is not None:
                 await udp_gateway.close()
 
@@ -509,7 +530,9 @@ def create_app(
     async def ready() -> JSONResponse:
         udp_ready = udp_gateway is None or udp_gateway.is_ready
         required_udp_ready = (
-            settings.xiaozhi_transport_policy != "force_udp_for_test" or udp_ready
+            not settings.legacy_xiaozhi_enabled
+            or settings.xiaozhi_transport_policy != "force_udp_for_test"
+            or udp_ready
         ) and (not settings.rva_udp_enabled or udp_ready)
         coordination_ready = not settings.director_url or heartbeat.last_success
         ready_value = (
@@ -530,8 +553,9 @@ def create_app(
                 "rva_enabled": settings.rva_enabled,
                 "rva_udp_enabled": settings.rva_udp_enabled,
                 "rva_udp_ready": udp_ready if settings.rva_udp_enabled else False,
-                "xiaozhi_udp_enabled": settings.xiaozhi_udp_enabled,
-                "xiaozhi_udp_ready": udp_ready,
+                "legacy_xiaozhi_enabled": settings.legacy_xiaozhi_enabled,
+                "xiaozhi_udp_enabled": settings.legacy_xiaozhi_enabled and settings.xiaozhi_udp_enabled,
+                "xiaozhi_udp_ready": udp_ready if settings.legacy_xiaozhi_enabled else False,
                 "xiaozhi_transport_policy": settings.xiaozhi_transport_policy,
             },
         )
@@ -549,25 +573,28 @@ def create_app(
             await heartbeat.send_once()
         return {"draining": True}
 
-    @app.websocket("/v1/xiaozhi")
-    async def xiaozhi(websocket: WebSocket) -> None:
-        device_id = resolve_xiaozhi_device_id(
-            websocket.headers.get("device-id"),
-            websocket.headers.get("client-id"),
-        )
-        verified = authenticator.verify(
-            websocket.headers.get("authorization"),
-            device_id,
-            control_protocol="xiaozhi-control-v1",
-        )
-        if verified is None or websocket.headers.get("protocol-version") != "1":
-            await websocket.close(code=status.WS_1008_POLICY_VIOLATION, reason="invalid_credentials")
-            return
-        if not await consume_director_grant(verified):
-            await websocket.close(code=status.WS_1008_POLICY_VIOLATION, reason="grant_rejected")
-            return
-        await websocket.accept()
-        await xiaozhi_registry.run(websocket, verified.context)
+    if xiaozhi_registry is not None:
+        from .bindings.xiaozhi import resolve_xiaozhi_device_id
+
+        @app.websocket("/v1/xiaozhi")
+        async def xiaozhi(websocket: WebSocket) -> None:
+            device_id = resolve_xiaozhi_device_id(
+                websocket.headers.get("device-id"),
+                websocket.headers.get("client-id"),
+            )
+            verified = authenticator.verify(
+                websocket.headers.get("authorization"),
+                device_id,
+                control_protocol="xiaozhi-control-v1",
+            )
+            if verified is None or websocket.headers.get("protocol-version") != "1":
+                await websocket.close(code=status.WS_1008_POLICY_VIOLATION, reason="invalid_credentials")
+                return
+            if not await consume_director_grant(verified):
+                await websocket.close(code=status.WS_1008_POLICY_VIOLATION, reason="grant_rejected")
+                return
+            await websocket.accept()
+            await xiaozhi_registry.run(websocket, verified.context)
 
     if settings.rva_enabled:
 

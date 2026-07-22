@@ -10,6 +10,10 @@
 namespace rva::wss {
 namespace {
 
+constexpr int kCloseOpcode = 0x08;
+constexpr int kPingOpcode = 0x09;
+constexpr int kPongOpcode = 0x0a;
+
 esp_websocket_client_handle_t Native(void* handle) {
     return static_cast<esp_websocket_client_handle_t>(handle);
 }
@@ -92,6 +96,13 @@ void EspIdfWebsocketClientPort::HandleNativeEvent(int32_t event_id, void* event_
     if (event_id != WEBSOCKET_EVENT_DATA || event_data == nullptr) return;
 
     const auto* data = static_cast<const esp_websocket_event_data_t*>(event_data);
+    // esp_websocket_client owns the WebSocket control-frame lifecycle, including
+    // automatic PONG replies and separate close/disconnect events. Empty PING/PONG
+    // frames are therefore transport activity, not malformed RVA application data.
+    if (data->op_code == kCloseOpcode || data->op_code == kPingOpcode ||
+        data->op_code == kPongOpcode) {
+        return;
+    }
     if (data->data_len <= 0 || data->payload_len <= 0 || data->payload_offset < 0) {
         sink->OnClientCallback({ClientEventType::kError});
         return;

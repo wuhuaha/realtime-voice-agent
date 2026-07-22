@@ -72,7 +72,7 @@ class WorkerHeartbeat(ContractModel):
     max_sessions: int = Field(default=5, ge=1, le=1024)
     draining: bool = False
     healthy: bool = True
-    profiles: tuple[TransportProfile, ...] = ("wss-opus-v1",)
+    profiles: tuple[TransportProfile, ...] = ("wss-opus-v2",)
     bindings: tuple[BindingAdvertisement, ...] = ()
     active_leases: tuple[LeaseRenewal, ...] = ()
     released_leases: tuple[LeaseRenewal, ...] = Field(default=(), max_length=64)
@@ -108,7 +108,7 @@ class WorkerHeartbeat(ContractModel):
             return self.bindings
         return (
             BindingAdvertisement(
-                control_protocol="xiaozhi-control-v1",
+                control_protocol="rva-control-v1",
                 public_wss_url=self.public_wss_url,
                 profiles=self.profiles,
             ),
@@ -160,7 +160,7 @@ class ConnectGrantClaims(ContractModel):
     session_epoch: Identifier
     fencing_token: int = Field(ge=1)
     profiles: tuple[TransportProfile, ...]
-    control_protocol: ControlProtocol = "xiaozhi-control-v1"
+    control_protocol: ControlProtocol = "rva-control-v1"
     iat: float
     exp: float
     jti: Identifier
@@ -181,8 +181,8 @@ class ConnectGrantClaims(ContractModel):
 class BootstrapRequest(ContractModel):
     tenant_id: Identifier = "default"
     device_id: Identifier
-    supported_profiles: tuple[TransportProfile, ...] = ("wss-opus-v1",)
-    control_protocol: ControlProtocol = "xiaozhi-control-v1"
+    supported_profiles: tuple[TransportProfile, ...] = ("wss-opus-v2",)
+    control_protocol: ControlProtocol = "rva-control-v1"
 
 
 class BootstrapResponse(ContractModel):

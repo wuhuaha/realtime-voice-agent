@@ -1,6 +1,6 @@
 # RVA Control Protocol v1
 
-状态：implementing
+状态：current
 Protocol ID：`rva-control-v1`
 Machine-readable authority：`protocol/rva_control_v1/contract.yaml`、`messages.schema.json`
 

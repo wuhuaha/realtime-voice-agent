@@ -1,15 +1,18 @@
 # realtime-voice-agent
 
 面向嵌入式设备、浏览器和移动端的实时语音 Agent 端云工程。首个 endpoint 是立创实战派 ESP32-S3；
-设备通过 Product 自有 `rva-control-v1` 与 `wss-opus-v2` / `udp-opus-gcm-v1` 接入 roomless LiveKit
+设备通过项目定义的 `rva-control-v1` 与 `wss-opus-v2` / `udp-opus-gcm-v1` 接入 roomless LiveKit
 `AgentSession`。服务端由 Session Director、可水平扩展的 Realtime Worker 和 provider adapters 组成。
+
+默认产品路径是 native ESP-IDF endpoint、`/v1/voice` 和 RVA wire。隔离的 compatibility target、route、
+schema 与 provenance 仅用于兼容验证和回滚，不作为产品默认入口或新功能依赖。
 
 ## 当前能力
 
 - Director 提供 Worker registry、capacity、route lease、fencing 和单次 connect grant。
 - Worker 统一拥有 active session、Opus、Agent runtime、playback generation 和有界 teardown。
 - Native ESP-IDF endpoint 将 board、audio/AFE、transport、config 和可选 LVGL UI 分离为独立组件。
-- Legacy Xiaozhi binding/target 仅在 native parity 和兼容期结束前作为回滚线保留，不是新功能开发入口。
+- Legacy compatibility binding/target 只在退役门禁完成前作为回滚线保留，不承载新功能。
 - `VOICE_WORKER_MAX_SESSIONS=5` 是可配置启动值，不代表容量 SLO。
 
 发布状态和未运行项以 [Release readiness](docs/quality/release-readiness.md) 为准。任何 build、host test 或
@@ -23,7 +26,7 @@ server/         session_director, realtime_worker, shared contracts and tests
 firmware/       native application, reusable components and compatibility target
 docs/           product, architecture, protocol, security, quality and operations
 tests/          repository and cross-endpoint contract gates
-migration/      minimal immutable provenance for the compatibility baseline
+migration/      compatibility evidence and rollback provenance
 third_party/    pinned upstream sources and license inventory
 ```
 

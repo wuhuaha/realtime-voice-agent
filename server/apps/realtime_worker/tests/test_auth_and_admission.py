@@ -4,8 +4,8 @@ import logging
 import time
 
 import pytest
+from realtime_worker.admission import SharedSessionAdmission
 from realtime_worker.auth import WorkerAuthenticator
-from realtime_worker.bindings.xiaozhi import SharedSessionAdmission
 from realtime_worker.config import Settings
 from voice_contracts import ConnectGrantClaims, GrantCodec
 
@@ -27,8 +27,8 @@ def grant(
     jti: str = "jti-1",
     fencing_token: int = 3,
     session_epoch: str = "epoch-1",
-    control_protocol: str = "xiaozhi-control-v1",
-    profiles: tuple[str, ...] = ("wss-opus-v1",),
+    control_protocol: str = "rva-control-v1",
+    profiles: tuple[str, ...] = ("wss-opus-v2",),
 ) -> str:
     now = time.time()
     claims = ConnectGrantClaims(
@@ -52,7 +52,7 @@ def test_director_grant_is_verified_and_worker_bound_before_shared_consumption()
 
     accepted = auth.verify(f"Bearer {token}", "device-1")
     assert accepted is not None
-    assert accepted.context.allowed_profiles == ("wss-opus-v1",)
+    assert accepted.context.allowed_profiles == ("wss-opus-v2",)
     assert accepted.context.expires_at is not None
     assert accepted.director_grant == token
     assert WorkerAuthenticator(worker_settings("worker-b")).verify(f"Bearer {grant()}", "device-1") is None
@@ -66,7 +66,7 @@ def test_director_grant_preserves_colon_mac_device_principal() -> None:
         worker_id="worker-a",
         session_epoch="epoch-mac",
         fencing_token=1,
-        profiles=("wss-opus-v1",),
+        profiles=("wss-opus-v2",),
         iat=now,
         exp=now + 30,
         jti="jti-mac",
@@ -132,6 +132,20 @@ def test_control_protocol_and_profile_are_bound_before_grant_consumption() -> No
     assert auth.verify(f"Bearer {token}", "device-1", control_protocol="xiaozhi-control-v1") is None
 
 
+def test_legacy_grant_requires_explicit_xiaozhi_control_selection() -> None:
+    auth = WorkerAuthenticator(worker_settings())
+    token = grant(control_protocol="xiaozhi-control-v1", profiles=("wss-opus-v1",))
+
+    assert auth.verify(f"Bearer {token}", "device-1") is None
+    accepted = auth.verify(
+        f"Bearer {token}",
+        "device-1",
+        control_protocol="xiaozhi-control-v1",
+    )
+    assert accepted is not None
+    assert accepted.context.allowed_profiles == ("wss-opus-v1",)
+
+
 def test_rva_lab_auth_only_grants_rva_wss_profile() -> None:
     accepted = WorkerAuthenticator(worker_settings()).verify(
         "Bearer lab-test-token",
@@ -179,7 +193,12 @@ def test_production_and_director_lifecycle_settings_fail_closed() -> None:
 )
 def test_worker_public_url_rejects_invalid_wire_endpoint(public_url: str) -> None:
     with pytest.raises(ValueError, match="VOICE_WORKER_PUBLIC_WS_URL"):
-        worker_settings().model_copy(update={"worker_public_ws_url": public_url}).validate_runtime()
+        worker_settings().model_copy(
+            update={
+                "legacy_xiaozhi_enabled": True,
+                "worker_public_ws_url": public_url,
+            }
+        ).validate_runtime()
 
 
 @pytest.mark.parametrize(

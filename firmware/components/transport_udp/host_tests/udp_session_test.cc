@@ -149,6 +149,13 @@ int main() {
     assert(probe && probe->header.type == wire::DatagramType::kProbe);
     assert(probe->header.sequence == 0 && probe->header.generation == 0);
 
+    assert(session.BuildKeepalive(
+        uplink_datagram.data(), uplink_datagram.size(), &uplink_size));
+    const auto keepalive = wire::ParseDatagram(
+        uplink_datagram.data(), uplink_size, wire::Direction::kUplink);
+    assert(keepalive && keepalive->header.type == wire::DatagramType::kKeepalive);
+    assert(keepalive->header.sequence == 1 && keepalive->header.generation == 1);
+
     std::array<uint8_t, wire::kMaxDatagramBytes> datagram{};
     size_t size = Downlink(downlink, grant, wire::DatagramType::kProbeAck,
                            0, 1, nullptr, 0, datagram);
@@ -178,6 +185,7 @@ int main() {
     datagram[size - 1] ^= 1;
     assert(session.Receive(Server(), datagram.data(), size, 1000) ==
            AdmissionResult::kAcceptedAudio);
+    assert(session.last_authenticated_receive_us() == 1000);
     assert(session.PopPlayout(1000).kind == PlayoutKind::kAudio);
     assert(session.Receive(Server(), datagram.data(), size, 1000) == AdmissionResult::kReplay);
 
@@ -289,6 +297,7 @@ int main() {
     assert(session.Receive(Server(), datagram.data(), size, 310000) ==
            AdmissionResult::kFutureGeneration);
     assert(session.Configure(grant));
+    assert(session.last_authenticated_receive_us() == 0);
     assert(UdpSessionTestPeer::BufferedCount(session) == 0);
     assert(UdpSessionTestPeer::BuffersAreZero(session));
 

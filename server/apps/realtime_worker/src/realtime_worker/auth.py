@@ -23,11 +23,11 @@ def _device_ref(device_id: str) -> str:
 class AuthContext:
     tenant_id: str
     device_id: str
-    allowed_profiles: tuple[TransportProfile, ...] = ("wss-opus-v1", "udp-opus-gcm-v1")
+    allowed_profiles: tuple[TransportProfile, ...] = ("wss-opus-v2", "udp-opus-gcm-v1")
     session_epoch: str | None = None
     fencing_token: int | None = None
     expires_at: float | None = None
-    control_protocol: ControlProtocol = "xiaozhi-control-v1"
+    control_protocol: ControlProtocol = "rva-control-v1"
 
 
 @dataclass(frozen=True, slots=True)
@@ -50,7 +50,7 @@ class WorkerAuthenticator:
         authorization: str | None,
         device_id: str | None,
         *,
-        control_protocol: ControlProtocol = "xiaozhi-control-v1",
+        control_protocol: ControlProtocol = "rva-control-v1",
     ) -> VerifiedAuth | None:
         if authorization is None:
             logger.warning("worker_auth_rejected reason=missing_authorization worker_id=%s", self._worker_id)

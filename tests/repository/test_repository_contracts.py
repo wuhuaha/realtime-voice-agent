@@ -114,6 +114,29 @@ def test_repository_firmware_composition_is_explicit() -> None:
     assert VERIFY.validate_firmware_composition(ROOT) == []
 
 
+def test_repository_font_supply_chain_is_complete() -> None:
+    assert VERIFY.validate_font_supply_chain(ROOT) == []
+
+
+def test_font_supply_chain_requires_notice_and_both_licenses(tmp_path: Path) -> None:
+    notice = (
+        tmp_path
+        / "firmware"
+        / "components"
+        / "ui_font_assets"
+        / "THIRD_PARTY_NOTICES.md"
+    )
+    notice.parent.mkdir(parents=True)
+    notice.write_text("missing upstream notice\n", encoding="utf-8")
+
+    assert VERIFY.validate_font_supply_chain(tmp_path) == [
+        "Noto Sans CJK copyright notice is missing",
+        "font third-party license is missing: "
+        "third_party/licenses/Noto-Sans-CJK-OFL-1.1.txt",
+        "font third-party license is missing: third_party/licenses/lv-font-conv-MIT.txt",
+    ]
+
+
 def test_legacy_rollback_provenance_is_optional(tmp_path: Path) -> None:
     assert VERIFY.validate_optional_legacy_rollback(tmp_path) == []
 

@@ -15,8 +15,10 @@ from realtime_worker.app import create_app
 from realtime_worker.audio import PCM_SAMPLES, PcmFrame
 from realtime_worker.auth import AuthContext
 from realtime_worker.bindings.xiaozhi import XiaozhiConnection, XiaozhiOpusCodec
-from realtime_worker.bindings.xiaozhi_udp import (
+from realtime_worker.config import Settings
+from realtime_worker.transport.udp_gateway import (
     UDP_FLAG_AUDIO,
+    UDP_FLAG_KEEPALIVE,
     UDP_FLAG_PROBE,
     UDP_FLAG_PROBE_ACK,
     UDP_HEADER_BYTES,
@@ -27,9 +29,17 @@ from realtime_worker.bindings.xiaozhi_udp import (
     UdpMediaGateway,
     UdpPacketHeader,
 )
-from realtime_worker.config import Settings
 
 FIXTURES = Path(__file__).parent / "fixtures" / "xiaozhi"
+
+
+def _legacy_auth() -> AuthContext:
+    return AuthContext(
+        tenant_id="lab",
+        device_id="device-1",
+        allowed_profiles=("wss-opus-v1", "udp-opus-gcm-v1"),
+        control_protocol="xiaozhi-control-v1",
+    )
 
 
 def _hello() -> dict[str, object]:
@@ -101,6 +111,12 @@ def test_replay_window_enforces_canonical_maximum_forward_jump() -> None:
     window.commit(0)
     assert window.can_accept(UDP_MAX_SEQUENCE_FORWARD_JUMP)
     assert not window.can_accept(UDP_MAX_SEQUENCE_FORWARD_JUMP + 1)
+
+
+def test_legacy_xiaozhi_udp_import_is_only_a_neutral_transport_alias() -> None:
+    from realtime_worker.bindings.xiaozhi_udp import UdpMediaGateway as LegacyGateway
+
+    assert LegacyGateway is UdpMediaGateway
 
 
 @pytest.mark.asyncio
@@ -245,6 +261,48 @@ async def test_udp_gateway_reacks_authenticated_probe_retry() -> None:
         await session.wait_ready(1)
     await gateway.close()
     assert session.stats.invalid == 0
+
+
+@pytest.mark.asyncio
+async def test_udp_gateway_echoes_authenticated_keepalive_for_path_liveness() -> None:
+    gateway = UdpMediaGateway(
+        bind_host="127.0.0.1",
+        bind_port=0,
+        advertised_host="127.0.0.1",
+        lifetime_seconds=60,
+        probe_timeout_seconds=1,
+        queue_size=8,
+        reorder_wait_seconds=0.05,
+    )
+    await gateway.start()
+    session = gateway.create_session(lambda *_: asyncio.sleep(0), lambda exc: None)
+    grant = session.grant.as_control_payload()
+    endpoint = (str(grant["server"]), int(grant["port"]))
+    loop = asyncio.get_running_loop()
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as udp:
+            udp.setblocking(False)
+            await loop.sock_sendto(udp, _packet(grant, flags=UDP_FLAG_PROBE, sequence=0, payload=b""), endpoint)
+            await asyncio.wait_for(loop.sock_recvfrom(udp, 1500), timeout=1)
+            await session.wait_ready(1)
+
+            await loop.sock_sendto(
+                udp,
+                _packet(grant, flags=UDP_FLAG_KEEPALIVE, sequence=1, payload=b"", generation=7),
+                endpoint,
+            )
+            reply, source = await asyncio.wait_for(loop.sock_recvfrom(udp, 1500), timeout=1)
+            header, payload = _decrypt_downlink(grant, reply)
+
+        assert source == endpoint
+        assert header.flags == UDP_FLAG_KEEPALIVE
+        assert header.generation == 7
+        assert header.timestamp == 960
+        assert payload == b""
+        assert session.stats.authenticated == 2
+        assert session.stats.sent == 2
+    finally:
+        await gateway.close()
 
 
 @pytest.mark.asyncio
@@ -527,13 +585,13 @@ async def test_probe_timeout_closes_without_constructing_agent_runner() -> None:
     websocket = _ProbeTimeoutWebSocket()
     connection = XiaozhiConnection(
         websocket,  # type: ignore[arg-type]
-        AuthContext(tenant_id="lab", device_id="device-1"),
+        _legacy_auth(),
         Settings(
             lab_token="test-token",
             xiaozhi_udp_enabled=True,
-            xiaozhi_udp_advertise_host="127.0.0.1",
+            udp_advertise_host="127.0.0.1",
             xiaozhi_transport_policy="force_udp_for_test",
-            xiaozhi_udp_probe_timeout_seconds=0.01,
+            udp_probe_timeout_seconds=0.01,
         ),
         runner_factory=runner_factory,  # type: ignore[arg-type]
         udp_gateway=gateway,
@@ -568,11 +626,11 @@ async def test_disconnect_during_probe_never_constructs_agent_runner() -> None:
     websocket = _DisconnectDuringProbeWebSocket()
     connection = XiaozhiConnection(
         websocket,  # type: ignore[arg-type]
-        AuthContext(tenant_id="lab", device_id="device-1"),
+        _legacy_auth(),
         Settings(
             lab_token="test-token",
             xiaozhi_udp_enabled=True,
-            xiaozhi_udp_advertise_host="127.0.0.1",
+            udp_advertise_host="127.0.0.1",
             xiaozhi_transport_policy="force_udp_for_test",
         ),
         runner_factory=runner_factory,  # type: ignore[arg-type]
@@ -601,11 +659,11 @@ async def test_disconnect_during_udp_setup_closes_partial_runner(disconnect_stag
 
     connection = XiaozhiConnection(
         websocket,  # type: ignore[arg-type]
-        AuthContext(tenant_id="lab", device_id="device-1"),
+        _legacy_auth(),
         Settings(
             lab_token="test-token",
             xiaozhi_udp_enabled=True,
-            xiaozhi_udp_advertise_host="127.0.0.1",
+            udp_advertise_host="127.0.0.1",
             xiaozhi_transport_policy="force_udp_for_test",
             xiaozhi_handshake_timeout_seconds=0.05,
         ),
@@ -645,11 +703,11 @@ async def test_disconnect_cleanup_is_bounded_when_runner_start_swallows_cancel(
 
     connection = XiaozhiConnection(
         websocket,  # type: ignore[arg-type]
-        AuthContext(tenant_id="lab", device_id="device-1"),
+        _legacy_auth(),
         Settings(
             lab_token="test-token",
             xiaozhi_udp_enabled=True,
-            xiaozhi_udp_advertise_host="127.0.0.1",
+            udp_advertise_host="127.0.0.1",
             xiaozhi_transport_policy="force_udp_for_test",
             xiaozhi_handshake_timeout_seconds=1,
         ),
@@ -687,10 +745,11 @@ async def test_disconnect_cleanup_is_bounded_when_runner_start_swallows_cancel(
 def test_udp_profile_completes_authenticated_opus_turn_and_teardown() -> None:
     settings = Settings(
         lab_token="test-token",
+        legacy_xiaozhi_enabled=True,
         xiaozhi_udp_enabled=True,
-        xiaozhi_udp_bind_host="127.0.0.1",
-        xiaozhi_udp_bind_port=0,
-        xiaozhi_udp_advertise_host="127.0.0.1",
+        udp_bind_host="127.0.0.1",
+        udp_bind_port=0,
+        udp_advertise_host="127.0.0.1",
         xiaozhi_transport_policy="force_udp_for_test",
         xiaozhi_queue_timeout_seconds=1,
     )
@@ -759,10 +818,11 @@ def test_udp_profile_completes_authenticated_opus_turn_and_teardown() -> None:
 def test_force_udp_fails_closed_when_capability_is_missing() -> None:
     settings = Settings(
         lab_token="test-token",
+        legacy_xiaozhi_enabled=True,
         xiaozhi_udp_enabled=True,
-        xiaozhi_udp_bind_host="127.0.0.1",
-        xiaozhi_udp_bind_port=0,
-        xiaozhi_udp_advertise_host="127.0.0.1",
+        udp_bind_host="127.0.0.1",
+        udp_bind_port=0,
+        udp_advertise_host="127.0.0.1",
         xiaozhi_transport_policy="force_udp_for_test",
     )
     app = create_app(settings)
@@ -777,10 +837,11 @@ def test_force_udp_fails_closed_when_capability_is_missing() -> None:
 def test_auto_policy_honors_client_selected_udp() -> None:
     settings = Settings(
         lab_token="test-token",
+        legacy_xiaozhi_enabled=True,
         xiaozhi_udp_enabled=True,
-        xiaozhi_udp_bind_host="127.0.0.1",
-        xiaozhi_udp_bind_port=0,
-        xiaozhi_udp_advertise_host="127.0.0.1",
+        udp_bind_host="127.0.0.1",
+        udp_bind_port=0,
+        udp_advertise_host="127.0.0.1",
         xiaozhi_transport_policy="auto",
     )
     app = create_app(settings)
@@ -793,10 +854,11 @@ def test_auto_policy_honors_client_selected_udp() -> None:
 def test_auto_policy_honors_client_selected_wss() -> None:
     settings = Settings(
         lab_token="test-token",
+        legacy_xiaozhi_enabled=True,
         xiaozhi_udp_enabled=True,
-        xiaozhi_udp_bind_host="127.0.0.1",
-        xiaozhi_udp_bind_port=0,
-        xiaozhi_udp_advertise_host="127.0.0.1",
+        udp_bind_host="127.0.0.1",
+        udp_bind_port=0,
+        udp_advertise_host="127.0.0.1",
         xiaozhi_transport_policy="auto",
     )
     hello = _hello()
@@ -811,10 +873,11 @@ def test_auto_policy_honors_client_selected_wss() -> None:
 def test_force_policy_conflict_and_missing_capability_fail_closed() -> None:
     settings = Settings(
         lab_token="test-token",
+        legacy_xiaozhi_enabled=True,
         xiaozhi_udp_enabled=True,
-        xiaozhi_udp_bind_host="127.0.0.1",
-        xiaozhi_udp_bind_port=0,
-        xiaozhi_udp_advertise_host="127.0.0.1",
+        udp_bind_host="127.0.0.1",
+        udp_bind_port=0,
+        udp_advertise_host="127.0.0.1",
         xiaozhi_transport_policy="force_wss",
     )
     hello = _hello()
@@ -830,10 +893,11 @@ def test_force_policy_conflict_and_missing_capability_fail_closed() -> None:
 def test_udp_gateway_failure_marks_forced_udp_readiness_unavailable() -> None:
     settings = Settings(
         lab_token="test-token",
+        legacy_xiaozhi_enabled=True,
         xiaozhi_udp_enabled=True,
-        xiaozhi_udp_bind_host="127.0.0.1",
-        xiaozhi_udp_bind_port=0,
-        xiaozhi_udp_advertise_host="127.0.0.1",
+        udp_bind_host="127.0.0.1",
+        udp_bind_port=0,
+        udp_advertise_host="127.0.0.1",
         xiaozhi_transport_policy="force_udp_for_test",
     )
     app = create_app(settings)
@@ -871,7 +935,7 @@ async def test_udp_socket_error_is_recoverable_for_two_sessions(caplog: pytest.L
     protocol = gateway._protocol  # noqa: SLF001
     assert protocol is not None
 
-    with caplog.at_level(logging.WARNING, logger="realtime_worker.bindings.xiaozhi_udp"):
+    with caplog.at_level(logging.WARNING, logger="realtime_worker.transport.udp_gateway"):
         protocol.error_received(OSError("transient UDP send error"))
 
     assert gateway.is_ready

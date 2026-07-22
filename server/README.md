@@ -65,6 +65,9 @@ GET  /health/live
 GET  /health/ready
 ```
 
+`/v1/voice` 是默认且唯一的新功能入口。`/v1/xiaozhi` 必须由兼容需求显式选择，只允许依赖共享 runtime/transport，
+共享模块不得反向依赖 legacy binding。
+
 Worker `max_sessions` 默认 `5`，可用 `VOICE_WORKER_MAX_SESSIONS` 覆盖。生产多 Director/多 Worker 必须使用
 `VOICE_COORDINATION_BACKEND=redis`；memory backend只允许测试和单进程开发。
 

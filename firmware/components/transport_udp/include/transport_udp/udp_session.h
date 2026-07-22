@@ -22,6 +22,7 @@ public:
     ~UdpSession();
     bool Configure(const SessionGrant& grant);
     bool BuildProbe(uint8_t* output, size_t capacity, size_t* size);
+    bool BuildKeepalive(uint8_t* output, size_t capacity, size_t* size);
     bool BuildAudio(const uint8_t* opus, size_t opus_size, uint32_t timestamp,
                     uint32_t generation, uint8_t* output, size_t capacity, size_t* size);
     AdmissionResult Receive(const Endpoint& source, const uint8_t* datagram,
@@ -30,6 +31,7 @@ public:
     [[nodiscard]] bool ready() const;
     [[nodiscard]] uint32_t generation() const;
     [[nodiscard]] Stats stats() const;
+    [[nodiscard]] int64_t last_authenticated_receive_us() const;
     [[nodiscard]] Endpoint server() const;
 private:
     friend class UdpRuntime;
@@ -66,6 +68,7 @@ private:
     Endpoint bound_source_{};
     uint32_t send_sequence_ = 0;
     uint32_t generation_ = 1;
+    int64_t last_authenticated_receive_us_ = 0;
     bool playback_active_ = false;
     bool configured_ = false;
     bool ready_ = false;

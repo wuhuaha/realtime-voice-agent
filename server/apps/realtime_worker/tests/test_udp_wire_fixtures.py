@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
-from realtime_worker.bindings.xiaozhi_udp import (
+from realtime_worker.transport.udp_gateway import (
     UDP_HEADER_BYTES,
     UDP_MAX_DATAGRAM_BYTES,
     UDP_MAX_PAYLOAD_BYTES,
@@ -16,7 +16,7 @@ from realtime_worker.bindings.xiaozhi_udp import (
 
 pytestmark = pytest.mark.contract
 
-FIXTURES = Path(__file__).resolve().parents[4] / "protocol" / "xiaozhi_udp_v1" / "fixtures"
+FIXTURES = Path(__file__).resolve().parents[4] / "protocol" / "udp_opus_gcm_v1" / "fixtures"
 
 
 def _load(name: str) -> dict[str, object]:

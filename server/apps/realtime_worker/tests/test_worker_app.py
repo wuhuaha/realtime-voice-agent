@@ -7,9 +7,10 @@ import httpx
 import pytest
 from fastapi.testclient import TestClient
 from realtime_worker import app as app_module
+from realtime_worker.admission import SharedSessionAdmission
 from realtime_worker.app import DirectorGrantConsumer, RvaSessionRegistry, WorkerHeartbeatLoop, create_app
 from realtime_worker.auth import AuthContext
-from realtime_worker.bindings.xiaozhi import SharedSessionAdmission, XiaozhiSessionRegistry
+from realtime_worker.bindings.xiaozhi import XiaozhiSessionRegistry
 from realtime_worker.config import Settings
 from voice_contracts import LeaseRenewal
 from voice_testkit import MutableClock
@@ -30,10 +31,68 @@ def settings(**changes: object) -> Settings:
     return Settings(_env_file=None, **values)
 
 
-def test_worker_exposes_xiaozhi_and_health_without_direct_routes() -> None:
+def test_shared_udp_gateway_uses_neutral_environment_prefix(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("VOICE_UDP_BIND_HOST", "127.0.0.2")
+    monkeypatch.setenv("VOICE_UDP_BIND_PORT", "18092")
+    monkeypatch.setenv("VOICE_UDP_ADVERTISE_HOST", "voice.example.test")
+    monkeypatch.setenv("VOICE_UDP_ADVERTISE_PORT", "28092")
+
+    value = Settings(_env_file=None)
+
+    assert value.udp_bind_host == "127.0.0.2"
+    assert value.udp_bind_port == 18092
+    assert value.udp_advertise_host == "voice.example.test"
+    assert value.udp_advertise_port == 28092
+
+
+def test_shared_udp_gateway_accepts_deprecated_xiaozhi_environment_prefix(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    for name in (
+        "VOICE_UDP_BIND_HOST",
+        "VOICE_UDP_BIND_PORT",
+        "VOICE_UDP_ADVERTISE_HOST",
+        "VOICE_UDP_ADVERTISE_PORT",
+        "VOICE_UDP_PROBE_TIMEOUT_SECONDS",
+        "VOICE_UDP_SESSION_LIFETIME_SECONDS",
+        "VOICE_UDP_QUEUE_DATAGRAMS",
+        "VOICE_UDP_REORDER_WAIT_MS",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("VOICE_XIAOZHI_UDP_BIND_HOST", "127.0.0.3")
+    monkeypatch.setenv("VOICE_XIAOZHI_UDP_BIND_PORT", "18093")
+    monkeypatch.setenv("VOICE_XIAOZHI_UDP_ADVERTISE_HOST", "legacy.example.test")
+    monkeypatch.setenv("VOICE_XIAOZHI_UDP_ADVERTISE_PORT", "28093")
+    monkeypatch.setenv("VOICE_XIAOZHI_UDP_PROBE_TIMEOUT_SECONDS", "4")
+    monkeypatch.setenv("VOICE_XIAOZHI_UDP_SESSION_LIFETIME_SECONDS", "700")
+    monkeypatch.setenv("VOICE_XIAOZHI_UDP_QUEUE_DATAGRAMS", "40")
+    monkeypatch.setenv("VOICE_XIAOZHI_UDP_REORDER_WAIT_MS", "35")
+
+    value = Settings(_env_file=None)
+
+    assert value.udp_bind_host == "127.0.0.3"
+    assert value.udp_bind_port == 18093
+    assert value.udp_advertise_host == "legacy.example.test"
+    assert value.udp_advertise_port == 28093
+    assert value.udp_probe_timeout_seconds == 4
+    assert value.udp_session_lifetime_seconds == 700
+    assert value.udp_queue_datagrams == 40
+    assert value.udp_reorder_wait_ms == 35
+
+
+def test_shared_udp_gateway_prefers_neutral_environment_prefix(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("VOICE_UDP_BIND_PORT", "18092")
+    monkeypatch.setenv("VOICE_XIAOZHI_UDP_BIND_PORT", "18093")
+
+    assert Settings(_env_file=None).udp_bind_port == 18092
+
+
+def test_worker_exposes_only_rva_and_health_by_default() -> None:
     app = create_app(settings())
     paths = {route.path for route in app.routes}
-    assert "/v1/xiaozhi" in paths
+    assert "/v1/xiaozhi" not in paths
     assert "/v1/voice" in paths
     assert "/v1/direct" not in paths
     assert "/v1/device/bootstrap" not in paths
@@ -46,6 +105,18 @@ def test_worker_exposes_xiaozhi_and_health_without_direct_routes() -> None:
         assert ready.json()["provider_network_ready"] is True
         assert ready.json()["coordination_ready"] is True
         assert ready.json()["rva_enabled"] is True
+        assert ready.json()["legacy_xiaozhi_enabled"] is False
+
+
+def test_legacy_xiaozhi_route_requires_explicit_enablement() -> None:
+    app = create_app(settings(legacy_xiaozhi_enabled=True))
+
+    assert "/v1/xiaozhi" in {route.path for route in app.routes}
+
+
+def test_legacy_xiaozhi_udp_cannot_be_enabled_without_compatibility_binding() -> None:
+    with pytest.raises(ValueError, match="VOICE_LEGACY_XIAOZHI_ENABLED"):
+        create_app(settings(xiaozhi_udp_enabled=True, udp_advertise_host="voice.example.test"))
 
 
 def test_worker_drain_rejects_readiness_and_requires_internal_credential() -> None:
@@ -115,13 +186,8 @@ async def test_worker_heartbeat_reports_capacity_and_applies_director_drain() ->
     assert requests[0]["max_sessions"] == 5
     assert requests[0]["active_sessions"] == 0
     assert requests[0]["healthy"] is True
-    assert requests[0]["profiles"] == ["wss-opus-v1", "wss-opus-v2"]
+    assert requests[0]["profiles"] == ["wss-opus-v2"]
     assert requests[0]["bindings"] == [
-        {
-            "control_protocol": "xiaozhi-control-v1",
-            "public_wss_url": "ws://worker-a.test/v1/xiaozhi",
-            "profiles": ["wss-opus-v1"],
-        },
         {
             "control_protocol": "rva-control-v1",
             "public_wss_url": "ws://127.0.0.1:8081/v1/voice",
@@ -138,6 +204,40 @@ async def test_worker_heartbeat_reports_capacity_and_applies_director_drain() ->
     ]
     assert admission.draining is True
     assert revoked == [{"epoch-1"}]
+
+
+@pytest.mark.asyncio
+async def test_heartbeat_advertises_legacy_binding_only_when_explicitly_enabled() -> None:
+    requests: list[dict[str, object]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(json.loads(request.read()))
+        return httpx.Response(
+            200,
+            json={
+                "accepted": True,
+                "draining": False,
+                "heartbeat_expires_at": 123.0,
+                "lease_expires_at": 153.0,
+                "rejected_session_epochs": [],
+            },
+        )
+
+    worker_settings = settings(
+        director_url="http://director.test",
+        heartbeat_enabled=True,
+        legacy_xiaozhi_enabled=True,
+        worker_public_ws_url="ws://worker-a.test/v1/xiaozhi",
+    )
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        heartbeat = WorkerHeartbeatLoop(worker_settings, SharedSessionAdmission(5), client=client)
+        await heartbeat.send_once()
+
+    assert requests[0]["profiles"] == ["wss-opus-v1", "wss-opus-v2"]
+    assert [binding["control_protocol"] for binding in requests[0]["bindings"]] == [
+        "xiaozhi-control-v1",
+        "rva-control-v1",
+    ]
 
 
 @pytest.mark.asyncio
@@ -164,7 +264,7 @@ async def test_heartbeat_with_failed_udp_gateway_removes_udp_and_reports_unhealt
         director_url="http://director.test",
         heartbeat_enabled=True,
         rva_udp_enabled=True,
-        xiaozhi_udp_advertise_host="voice.example.test",
+        udp_advertise_host="voice.example.test",
     )
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
         heartbeat = WorkerHeartbeatLoop(
@@ -176,7 +276,7 @@ async def test_heartbeat_with_failed_udp_gateway_removes_udp_and_reports_unhealt
         await heartbeat.send_once()
 
     assert requests[0]["healthy"] is False
-    assert requests[0]["profiles"] == ["wss-opus-v1", "wss-opus-v2"]
+    assert requests[0]["profiles"] == ["wss-opus-v2"]
     assert all(
         "udp-opus-gcm-v1" not in binding["profiles"]
         for binding in requests[0]["bindings"]  # type: ignore[union-attr]

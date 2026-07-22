@@ -8,6 +8,7 @@
 #include <lvgl.h>
 
 #include "board_lichuang_s3/board_display.h"
+#include "ui_font_assets/font_assets.h"
 #include "ui_lvgl/ui_state.h"
 
 namespace rva::ui {
@@ -101,8 +102,10 @@ private:
     lv_obj_t* textarea_ = nullptr;
     lv_obj_t* keyboard_ = nullptr;
     UiState state_{};
+    FontAssets font_assets_;
     bool started_ = false;
     bool async_success_ = false;
+    bool port_initialized_ = false;
 };
 
 }  // namespace rva::ui

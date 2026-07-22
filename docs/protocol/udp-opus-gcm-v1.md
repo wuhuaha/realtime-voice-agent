@@ -1,15 +1,15 @@
 # UDP Opus GCM Media Profile v1
 
-状态：challenger
+状态：current selectable（发布仍受 HIL/弱网门禁约束）
 Profile ID：`udp-opus-gcm-v1`
 
 ## 1. 边界
 
-UDP 只传媒体，WSS 始终负责鉴权、profile commit、grant、ASR/TTS/abort 和 session lifecycle。它是针对
-TCP HOL 的受控 challenger，不是缩小版 WebRTC，不包含 ICE/STUN/TURN、SDP、DTLS、RTCP、NACK、RTX、
+UDP 只传媒体，WSS 始终负责鉴权、profile commit、grant、transcript/response/cancel 和 session lifecycle。它是
+针对 TCP HOL 的可选媒体 profile，不是缩小版 WebRTC，不包含 ICE/STUN/TURN、SDP、DTLS、RTCP、NACK、RTX、
 GCC、Room/SFU 或 mid-session NAT migration。
 
-字节级权威为 `protocol/xiaozhi_udp_v1/README.md` 和其 positive/negative fixtures。
+字节级权威为 `protocol/udp_opus_gcm_v1/README.md` 和其 positive/negative fixtures。
 
 ## 2. Grant
 
@@ -75,7 +75,10 @@ NAT/Wi-Fi 改变使用 fresh session，不做 rebinding。
 
 - UDP 必须在 probe timeout 内 ready，否则整个 session 关闭并 fresh reopen。
 - WSS 断开、grant expiry、sequence exhaustion、UDP socket fatal error 或 Worker drain 立即撤销 media session。
-- KEEPALIVE 是预留 liveness signal，不替代 WSS lifecycle。
+- 设备按 grant 下发的 `heartbeat_interval_ms` 发送经认证的 KEEPALIVE，Server 对有效
+  KEEPALIVE 回送同 session 的经认证 KEEPALIVE。
+- 设备在 `idle_timeout_ms` 内未收到任何经认证的 UDP 包时，必须废弃 UDP session，并通过
+  仍存活的 WSS 控制连接重新建立 WSS profile。KEEPALIVE 不替代 WSS lifecycle。
 - `auto` 不得在 UDP 失败时同 session 偷切 WSS；新 bootstrap 可以按策略选择 WSS。
 
 ## 8. 观测

@@ -11,12 +11,12 @@ from fastapi.testclient import TestClient
 from realtime_worker.app import create_app
 from realtime_worker.audio import PCM_SAMPLES, PcmFrame
 from realtime_worker.bindings.rva import RvaOpusCodec
-from realtime_worker.bindings.xiaozhi_udp import (
+from realtime_worker.config import Settings
+from realtime_worker.transport.udp_gateway import (
     UDP_FLAG_PROBE,
     UDP_FLAG_PROBE_ACK,
     UdpPacketHeader,
 )
-from realtime_worker.config import Settings
 from starlette.websockets import WebSocketDisconnect
 from voice_contracts import ConnectGrantClaims, GrantCodec
 
@@ -98,10 +98,10 @@ def test_rva_udp_handshake_uses_schema_grant_and_canonical_probe_ack() -> None:
     app = create_app(
         settings(
             rva_udp_enabled=True,
-            xiaozhi_udp_bind_host="127.0.0.1",
-            xiaozhi_udp_bind_port=0,
-            xiaozhi_udp_advertise_host="127.0.0.1",
-            xiaozhi_udp_probe_timeout_seconds=1,
+            udp_bind_host="127.0.0.1",
+            udp_bind_port=0,
+            udp_advertise_host="127.0.0.1",
+            udp_probe_timeout_seconds=1,
         )
     )
     opened_request = session_open()
@@ -235,7 +235,7 @@ def test_rva_udp_preference_falls_back_to_wss_when_server_udp_is_disabled() -> N
 
 
 def test_rva_route_can_be_disabled() -> None:
-    app = create_app(settings(rva_enabled=False))
+    app = create_app(settings(rva_enabled=False, legacy_xiaozhi_enabled=True))
 
     assert "/v1/voice" not in {route.path for route in app.routes}
 
@@ -289,7 +289,7 @@ def test_rva_route_fails_closed_when_director_rejects_consumption() -> None:
 
 
 def test_shared_admission_rejects_same_principal_across_xiaozhi_and_rva() -> None:
-    app = create_app(settings())
+    app = create_app(settings(legacy_xiaozhi_enabled=True))
     xiaozhi_hello = {
         "type": "hello",
         "version": 1,
@@ -314,7 +314,10 @@ def test_shared_admission_rejects_same_principal_across_xiaozhi_and_rva() -> Non
 
 def test_capacity_rejection_does_not_consume_director_grant() -> None:
     consumer = FakeGrantConsumer()
-    app = create_app(settings(max_sessions=1), grant_consumer=consumer)  # type: ignore[arg-type]
+    app = create_app(
+        settings(max_sessions=1, legacy_xiaozhi_enabled=True),
+        grant_consumer=consumer,  # type: ignore[arg-type]
+    )
     token = connect_grant(control_protocol="rva-control-v1", profiles=("wss-opus-v2",))
     hello = {
         "type": "hello",

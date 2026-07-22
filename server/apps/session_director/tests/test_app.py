@@ -27,12 +27,12 @@ def test_heartbeat_bootstrap_and_drain_contract() -> None:
             headers=internal,
             json={
                 "worker_id": "worker-a",
-                "public_wss_url": "ws://worker-a.test/v1/xiaozhi",
+                "public_wss_url": "ws://worker-a.test/v1/voice",
                 "active_sessions": 0,
                 "max_sessions": 5,
                 "draining": False,
                 "healthy": True,
-                "profiles": ["wss-opus-v1", "udp-opus-gcm-v1"],
+                "profiles": ["wss-opus-v2", "udp-opus-gcm-v1"],
             },
         )
         assert heartbeat.status_code == 200
@@ -40,12 +40,12 @@ def test_heartbeat_bootstrap_and_drain_contract() -> None:
         bootstrap = client.post(
             "/v1/session/bootstrap",
             headers={"Authorization": "Bearer validator-device-token"},
-            json={"tenant_id": "tenant-1", "device_id": "device-1", "supported_profiles": ["wss-opus-v1"]},
+            json={"tenant_id": "tenant-1", "device_id": "device-1", "supported_profiles": ["wss-opus-v2"]},
         )
         assert bootstrap.status_code == 200
         body = bootstrap.json()
         assert body["worker_id"] == "worker-a"
-        assert body["allowed_profiles"] == ["wss-opus-v1"]
+        assert body["allowed_profiles"] == ["wss-opus-v2"]
         assert body["connect_grant"].count(".") == 2
 
         consumed = client.post(

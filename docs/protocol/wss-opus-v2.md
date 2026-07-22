@@ -1,6 +1,6 @@
 # WSS Opus Media Profile v2
 
-状态：implementing
+状态：current default
 Profile ID：`wss-opus-v2`
 Control：`rva-control-v1`
 

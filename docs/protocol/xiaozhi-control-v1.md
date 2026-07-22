@@ -1,6 +1,6 @@
 # Xiaozhi Control Protocol v1
 
-状态：accepted
+状态：legacy compatibility only
 Wire ID：`xiaozhi-control-v1`
 Path：`/v1/xiaozhi`
 

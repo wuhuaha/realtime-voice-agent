@@ -54,7 +54,9 @@ def test_run_local_assigns_unique_worker_and_udp_ports() -> None:
     assert "$UdpBasePort + $index" in content
     assert "VOICE_WORKER_ID" in content
     assert "VOICE_WORKER_PUBLIC_WS_URL" in content
-    assert "VOICE_XIAOZHI_UDP_BIND_PORT" in content
+    assert "VOICE_UDP_BIND_PORT" in content
+    assert "VOICE_UDP_ADVERTISE_PORT" in content
+    assert "VOICE_RVA_PUBLIC_WS_URL" in content
     assert "-WindowStyle Hidden" in content
     assert "server-processes.json" in content
     assert "VOICE_WORKER_BIND_HOST = $WorkerBindHost" in content

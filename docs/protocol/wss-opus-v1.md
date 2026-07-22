@@ -1,11 +1,11 @@
 # WSS Opus Media Profile v1
 
-状态：baseline
+状态：legacy compatibility only
 Profile ID：`wss-opus-v1`
 
 ## 1. 适用边界
 
-WSS profile 面向防火墙兼容、实现简单和当前 ESP32 稳定基线。它复用 `xiaozhi-control-v1` 的同一连接：text
+本 profile 只保留为 legacy compatibility baseline。它复用 `xiaozhi-control-v1` 的同一连接：text
 message 为 JSON control，binary message 为媒体。它不提供 RTP/RTCP、NACK、FEC 协商或独立媒体恢复。
 
 ## 2. Framing

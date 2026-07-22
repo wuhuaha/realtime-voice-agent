@@ -26,12 +26,19 @@ bool OpusCodec::Start() {
     encoder_config.enable_fec = false;
     encoder_config.enable_dtx = true;
     encoder_config.enable_vbr = true;
-    if (esp_opus_enc_open(&encoder_config, sizeof(encoder_config), &encoder_) != ESP_AUDIO_ERR_OK ||
+    esp_audio_enc_frame_info_t frame_info{};
+    if (esp_opus_enc_get_frame_info_by_cfg(&encoder_config, &frame_info) != ESP_AUDIO_ERR_OK ||
+        frame_info.in_frame_size <= 0 || frame_info.out_frame_size <= 0 ||
+        esp_opus_enc_open(&encoder_config, sizeof(encoder_config), &encoder_) != ESP_AUDIO_ERR_OK ||
         esp_opus_enc_get_frame_size(encoder_, &encoder_input_bytes_, &encoder_output_bytes_) != ESP_AUDIO_ERR_OK ||
-        encoder_input_bytes_ != 960 * static_cast<int>(sizeof(int16_t))) {
+        encoder_input_bytes_ != 960 * static_cast<int>(sizeof(int16_t)) ||
+        encoder_input_bytes_ != frame_info.in_frame_size ||
+        encoder_output_bytes_ != frame_info.out_frame_size) {
         Stop();
         return false;
     }
+    encoder_input_alignment_ = frame_info.in_frame_align == 0 ? 1 : frame_info.in_frame_align;
+    encoder_output_alignment_ = frame_info.out_frame_align == 0 ? 1 : frame_info.out_frame_align;
     esp_opus_dec_cfg_t decoder_config = ESP_OPUS_DEC_CONFIG_DEFAULT();
     decoder_config.sample_rate = 16000;
     decoder_config.channel = 1;
@@ -53,6 +60,10 @@ void OpusCodec::Stop() {
         esp_opus_dec_close(decoder_);
         decoder_ = nullptr;
     }
+    encoder_input_bytes_ = 0;
+    encoder_output_bytes_ = 0;
+    encoder_input_alignment_ = 1;
+    encoder_output_alignment_ = 1;
 }
 
 bool OpusCodec::Encode60Ms(
@@ -61,8 +72,13 @@ bool OpusCodec::Encode60Ms(
     uint8_t* output,
     size_t capacity,
     size_t* output_size) {
+    const uintptr_t input_address = reinterpret_cast<uintptr_t>(pcm);
+    const uintptr_t output_address = reinterpret_cast<uintptr_t>(output);
     if (encoder_ == nullptr || pcm == nullptr || samples != 960 || output == nullptr || output_size == nullptr ||
-        capacity < static_cast<size_t>(encoder_output_bytes_) || capacity > std::numeric_limits<uint32_t>::max()) {
+        encoder_input_bytes_ <= 0 || encoder_output_bytes_ <= 0 ||
+        capacity < static_cast<size_t>(encoder_output_bytes_) ||
+        input_address % encoder_input_alignment_ != 0 ||
+        output_address % encoder_output_alignment_ != 0) {
         return false;
     }
     esp_audio_enc_in_frame_t input{
@@ -71,7 +87,7 @@ bool OpusCodec::Encode60Ms(
     };
     esp_audio_enc_out_frame_t encoded{
         .buffer = output,
-        .len = static_cast<uint32_t>(capacity),
+        .len = static_cast<uint32_t>(encoder_output_bytes_),
         .encoded_bytes = 0,
         .pts = 0,
     };

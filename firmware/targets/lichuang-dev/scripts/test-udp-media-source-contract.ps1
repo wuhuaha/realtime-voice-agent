@@ -39,8 +39,8 @@ $udpHeader = (Get-Content -Raw -LiteralPath $paths.UdpHeader).Replace("`r`n", "`
 $build = (Get-Content -Raw -LiteralPath (Join-Path $PSScriptRoot "build.ps1")).Replace("`r`n", "`n")
 $configAssertion = Get-Content -Raw -LiteralPath (
     Join-Path $PSScriptRoot "assert-generated-config.ps1")
-$positiveFixturePath = Join-Path $repoRoot "protocol/xiaozhi_udp_v1/fixtures/positive.json"
-$negativeFixturePath = Join-Path $repoRoot "protocol/xiaozhi_udp_v1/fixtures/negative.json"
+$positiveFixturePath = Join-Path $repoRoot "protocol/udp_opus_gcm_v1/fixtures/positive.json"
+$negativeFixturePath = Join-Path $repoRoot "protocol/udp_opus_gcm_v1/fixtures/negative.json"
 $errors = [System.Collections.Generic.List[string]]::new()
 
 function Add-MissingMarkers {

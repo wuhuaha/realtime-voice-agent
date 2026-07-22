@@ -1,7 +1,7 @@
 # 系统架构
 
 状态：accepted target architecture
-更新日期：2026-07-20
+更新日期：2026-07-22
 
 ## 1. 架构目标
 
@@ -31,7 +31,7 @@ flowchart LR
 
 ### Realtime Worker
 
-- 终止当前 `/v1/voice` RVA WSS control；兼容期内隔离保留 `/v1/xiaozhi` legacy binding。
+- 终止 `/v1/voice` RVA WSS control；仅在显式兼容配置下隔离提供 `/v1/xiaozhi` legacy binding。
 - commit `wss-opus-v2` 或 `udp-opus-gcm-v1`，并持有对应媒体 transport。
 - 一个 active session 内唯一持有 AgentSession、codec、provider stream、playback generation 和 teardown。
 - 执行本地 `max_sessions` admission，默认 `5`，可按部署配置覆盖。
@@ -118,12 +118,13 @@ PCM/Opus -> selected transport -> endpoint playout。Abort/近讲打断递增 ge
 Server 已实现 Director、memory/Redis store、双 control binding、shared admission/lease、Realtime Worker、roomless
 Agent runtime 和 providers。RVA contract、binding/runtime 与 Server full suite 已有软件证据。
 
-Native ESP-IDF endpoint 的 board/audio/config/WSS/UI/UDP 组件正在完成 composition 与 HIL。当前实现、构建和
-发布差距只在 [Release readiness](../quality/release-readiness.md) 维护，架构文档不记录临时环境或 artifact 编年史。
+Native ESP-IDF endpoint 已完成 board/audio/config/WSS/UI/UDP 组件化实现，composition 的完整性由 build、
+host test 与 HIL 分层验证。当前实现、构建和发布差距只在
+[Release readiness](../quality/release-readiness.md) 维护，架构文档不记录临时环境或 artifact 编年史。
 
 ## 8. 演进边界
 
 - 浏览器/手机出现真实需求时，可新增标准 LiveKit Room binding；不把 Room/SFU 引入 ESP32 profile。
 - Worker endpoint 无法在目标网络可靠暴露时，重新评估 Edge Media Gateway；在此之前不预建媒体转发层。
 - 第二个真实 Agent application 消费者出现后再提取业务 Agent package。
-- Direct WebRTC/AIMP 不属于本仓迁移范围。
+- Direct WebRTC/AIMP 不属于当前产品范围。

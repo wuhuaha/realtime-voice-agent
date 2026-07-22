@@ -12,7 +12,7 @@ def claims(clock: MutableClock, **changes: object) -> ConnectGrantClaims:
         "worker_id": "worker-1",
         "session_epoch": "epoch-1",
         "fencing_token": 7,
-        "profiles": ("wss-opus-v1", "udp-opus-gcm-v1"),
+        "profiles": ("wss-opus-v2", "udp-opus-gcm-v1"),
         "iat": clock(),
         "exp": clock() + 30,
         "jti": "jti-1",
@@ -37,6 +37,12 @@ def test_grant_is_bound_to_worker_device_and_expiry() -> None:
     clock.advance(30)
     with pytest.raises(GrantError, match="expired"):
         codec.verify(token)
+
+
+def test_grant_defaults_to_native_rva_control() -> None:
+    value = claims(MutableClock())
+    assert value.control_protocol == "rva-control-v1"
+    assert value.profiles == ("wss-opus-v2", "udp-opus-gcm-v1")
 
 
 def test_grant_tampering_fails_before_claims_are_accepted() -> None:

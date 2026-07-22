@@ -17,9 +17,9 @@ baseline:
     evidence: contract_verified
     role: canonical_compatibility_oracle
     authoritative_files:
-      - protocol/xiaozhi_udp_v1/README.md
-      - protocol/xiaozhi_udp_v1/fixtures/positive.json
-      - protocol/xiaozhi_udp_v1/fixtures/negative.json
+      - protocol/udp_opus_gcm_v1/README.md
+      - protocol/udp_opus_gcm_v1/fixtures/positive.json
+      - protocol/udp_opus_gcm_v1/fixtures/negative.json
 
   - id: native-parity-gate
     behavior: Native endpoint must match the affected legacy behavior before compatibility code is retired.

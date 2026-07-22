@@ -27,7 +27,7 @@ async def test_redis_store_enforces_route_owner_capacity_and_fencing() -> None:
         await store.heartbeat(
             WorkerHeartbeat(
                 worker_id="worker-a",
-                public_wss_url="ws://worker-a.test/v1/xiaozhi",
+                public_wss_url="ws://worker-a.test/v1/voice",
                 active_sessions=0,
                 max_sessions=5,
             ),
@@ -110,7 +110,7 @@ async def test_redis_store_enforces_route_owner_capacity_and_fencing() -> None:
             worker_id="worker-a",
             session_epoch="replacement",
             fencing_token=replacement.fencing_token,
-            profiles=("wss-opus-v1",),
+            profiles=("wss-opus-v2",),
             iat=1_700_000_001,
             exp=1_700_000_020,
             jti="redis-jti-1",
@@ -137,7 +137,7 @@ async def test_redis_heartbeat_and_drain_interleaving_preserves_drain() -> None:
     now = time.time()
     heartbeat = WorkerHeartbeat(
         worker_id="worker-a",
-        public_wss_url="ws://worker-a.test/v1/xiaozhi",
+        public_wss_url="ws://worker-a.test/v1/voice",
         active_sessions=0,
         max_sessions=5,
         draining=False,

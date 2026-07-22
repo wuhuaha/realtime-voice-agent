@@ -465,7 +465,7 @@ function Require-ConfiguredSecret {
 
 $DirectorPort = Get-ConfiguredInteger 'VOICE_DIRECTOR_BIND_PORT' $DirectorPort 8080
 $WorkerBasePort = Get-ConfiguredInteger 'VOICE_WORKER_BIND_PORT' $WorkerBasePort 8081
-$UdpBasePort = Get-ConfiguredInteger 'VOICE_XIAOZHI_UDP_BIND_PORT' $UdpBasePort 8092
+$UdpBasePort = Get-ConfiguredInteger 'VOICE_UDP_BIND_PORT' $UdpBasePort 8092
 $DirectorBindHost = if ($BaseEnvironment.ContainsKey('VOICE_DIRECTOR_BIND_HOST')) {
     $BaseEnvironment['VOICE_DIRECTOR_BIND_HOST']
 } else { '127.0.0.1' }
@@ -485,17 +485,25 @@ if ($BaseEnvironment['VOICE_RUNNER'] -eq 'livekit') {
     Require-ConfiguredSecret 'VOICE_LLM_API_KEY'
 }
 
-if (-not $BaseEnvironment.ContainsKey('VOICE_WORKER_PUBLIC_WS_URL')) {
-    throw 'VOICE_WORKER_PUBLIC_WS_URL is required so devices receive an explicit reachable endpoint.'
+$LegacyXiaozhiEnabled = $BaseEnvironment.ContainsKey('VOICE_LEGACY_XIAOZHI_ENABLED') -and
+    $BaseEnvironment['VOICE_LEGACY_XIAOZHI_ENABLED'].Equals('true', [StringComparison]::OrdinalIgnoreCase)
+$RvaEnabled = -not $BaseEnvironment.ContainsKey('VOICE_RVA_ENABLED') -or
+    $BaseEnvironment['VOICE_RVA_ENABLED'].Equals('true', [StringComparison]::OrdinalIgnoreCase)
+$PublicWorkerUri = $null
+$PublicRvaUri = $null
+if ($LegacyXiaozhiEnabled) {
+    try { $PublicWorkerUri = [Uri]$BaseEnvironment['VOICE_WORKER_PUBLIC_WS_URL'] }
+    catch { throw 'VOICE_WORKER_PUBLIC_WS_URL must be configured as an absolute ws:// or wss:// URL.' }
+    if ($PublicWorkerUri.Scheme -notin @('ws', 'wss') -or -not $PublicWorkerUri.IsAbsoluteUri) {
+        throw 'VOICE_WORKER_PUBLIC_WS_URL must be configured as an absolute ws:// or wss:// URL.'
+    }
 }
-try {
-    $PublicWorkerUri = [Uri]$BaseEnvironment['VOICE_WORKER_PUBLIC_WS_URL']
-}
-catch {
-    throw 'VOICE_WORKER_PUBLIC_WS_URL must be an absolute ws:// or wss:// URL.'
-}
-if ($PublicWorkerUri.Scheme -notin @('ws', 'wss') -or -not $PublicWorkerUri.IsAbsoluteUri) {
-    throw 'VOICE_WORKER_PUBLIC_WS_URL must be an absolute ws:// or wss:// URL.'
+if ($RvaEnabled) {
+    try { $PublicRvaUri = [Uri]$BaseEnvironment['VOICE_RVA_PUBLIC_WS_URL'] }
+    catch { throw 'VOICE_RVA_PUBLIC_WS_URL must be configured as an absolute ws:// or wss:// URL.' }
+    if ($PublicRvaUri.Scheme -notin @('ws', 'wss') -or -not $PublicRvaUri.IsAbsoluteUri) {
+        throw 'VOICE_RVA_PUBLIC_WS_URL must be configured as an absolute ws:// or wss:// URL.'
+    }
 }
 
 if (-not (Test-Path -LiteralPath $Python)) {
@@ -665,18 +673,26 @@ try {
         if ($workerPort -gt 65535 -or $udpPort -gt 65535) {
             throw 'WorkerCount causes a local port to exceed 65535.'
         }
-        $publicUriBuilder = [UriBuilder]$PublicWorkerUri
-        $publicUriBuilder.Port = $workerPort
-        $workerProcess = Start-LocalProcess -Name "realtime-worker-$workerNumber" -Arguments @('-m', 'realtime_worker') -Overrides @{
+        $workerOverrides = @{
             VOICE_DIRECTOR_URL = "http://127.0.0.1:$DirectorPort"
             VOICE_HEARTBEAT_ENABLED = 'true'
             VOICE_WORKER_ID = "worker-local-$workerNumber"
             VOICE_WORKER_BIND_HOST = $WorkerBindHost
             VOICE_WORKER_BIND_PORT = $workerPort
-            VOICE_WORKER_PUBLIC_WS_URL = $publicUriBuilder.Uri.AbsoluteUri
-            VOICE_XIAOZHI_UDP_BIND_PORT = $udpPort
-            VOICE_XIAOZHI_UDP_ADVERTISE_PORT = $udpPort
+            VOICE_UDP_BIND_PORT = $udpPort
+            VOICE_UDP_ADVERTISE_PORT = $udpPort
         }
+        if ($LegacyXiaozhiEnabled) {
+            $publicUriBuilder = [UriBuilder]$PublicWorkerUri
+            $publicUriBuilder.Port = $workerPort
+            $workerOverrides.VOICE_WORKER_PUBLIC_WS_URL = $publicUriBuilder.Uri.AbsoluteUri
+        }
+        if ($RvaEnabled) {
+            $publicRvaUriBuilder = [UriBuilder]$PublicRvaUri
+            $publicRvaUriBuilder.Port = $workerPort
+            $workerOverrides.VOICE_RVA_PUBLIC_WS_URL = $publicRvaUriBuilder.Uri.AbsoluteUri
+        }
+        $workerProcess = Start-LocalProcess -Name "realtime-worker-$workerNumber" -Arguments @('-m', 'realtime_worker') -Overrides $workerOverrides
         Wait-LocalHealth `
             -Process $workerProcess `
             -Name "realtime-worker-$workerNumber" `

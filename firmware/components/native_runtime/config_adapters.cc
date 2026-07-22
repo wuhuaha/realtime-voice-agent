@@ -135,11 +135,17 @@ bool WifiStation::StartProvisioning() {
 
 bool WifiStation::Connect(config::WifiPlan plan) {
     if (!Initialize() || plan.credentials().empty()) return false;
+    std::lock_guard<std::mutex> lock(connection_mutex_);
     plan_ = std::move(plan);
     credential_index_ = 0;
     attempts_ = 0;
     xEventGroupClearBits(events_, kConnectedBit | kFailedBit);
-    esp_wifi_disconnect();
+    wifi_ap_record_t current_ap{};
+    if (esp_wifi_sta_get_ap_info(&current_ap) == ESP_OK) {
+        reconnect_after_disconnect_ = true;
+        if (esp_wifi_disconnect() == ESP_OK) return true;
+        reconnect_after_disconnect_ = false;
+    }
     return ConnectCurrent();
 }
 
@@ -220,7 +226,15 @@ void WifiStation::HandleEvent(esp_event_base_t base, int32_t id) {
         return;
     }
     if (base == WIFI_EVENT && id == WIFI_EVENT_STA_DISCONNECTED) {
+        std::lock_guard<std::mutex> lock(connection_mutex_);
         if (plan_.credentials().empty()) return;
+        if (reconnect_after_disconnect_) {
+            reconnect_after_disconnect_ = false;
+            credential_index_ = 0;
+            attempts_ = 0;
+            if (!ConnectCurrent()) xEventGroupSetBits(events_, kFailedBit);
+            return;
+        }
         if (++attempts_ >= plan_.credentials().size() * 3) {
             xEventGroupSetBits(events_, kFailedBit);
             return;
