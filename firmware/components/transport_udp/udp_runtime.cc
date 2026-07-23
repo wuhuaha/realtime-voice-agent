@@ -1,24 +1,51 @@
 #include "transport_udp/udp_runtime.h"
 
 #include <cstdlib>
+#include <new>
 
+#include <esp_heap_caps.h>
+#include <esp_log.h>
 #include <esp_timer.h>
+#include <freertos/idf_additions.h>
 
 namespace rva::udp {
+namespace {
+
+constexpr char kLogTag[] = "rva-udp-runtime";
+constexpr uint32_t kRuntimeTaskStackBytes = 4096;
+
+}  // namespace
+
+void* UdpRuntime::operator new(size_t size) {
+    void* pointer = heap_caps_malloc(size, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    if (pointer == nullptr) throw std::bad_alloc();
+    return pointer;
+}
+
+void UdpRuntime::operator delete(void* pointer) noexcept {
+    heap_caps_free(pointer);
+}
 
 UdpRuntime::UdpRuntime(UdpSession& session, DatagramIoPort& io)
     : session_(session), io_(io) {}
 
 UdpRuntime::~UdpRuntime() {
     RequestStop();
-    if (!JoinAndClose(1000)) std::abort();
+    if (!JoinAndClose(1000)) {
+        ESP_LOGE(kLogTag, "destructor close timed out; owner must fail closed");
+    }
 }
 
 bool UdpRuntime::Start() {
     if (closed_.load()) return false;
     if (task_.load() != nullptr) return true;
-    events_ = xEventGroupCreate();
+    events_ = xEventGroupCreateWithCaps(MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (events_ == nullptr) {
+        ESP_LOGW(kLogTag,
+                 "start failed: event group allocation internal_free=%lu largest=%lu psram_free=%lu",
+                 static_cast<unsigned long>(heap_caps_get_free_size(MALLOC_CAP_INTERNAL)),
+                 static_cast<unsigned long>(heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL)),
+                 static_cast<unsigned long>(heap_caps_get_free_size(MALLOC_CAP_SPIRAM)));
         JoinAndClose(0);
         return false;
     }
@@ -27,7 +54,13 @@ bool UdpRuntime::Start() {
     media_age_dropped_.store(0);
     playout_queue_.Open(session_.generation());
     TaskHandle_t created = nullptr;
-    if (xTaskCreate(TaskEntry, "rva_udp", 4096, this, 4, &created) != pdPASS) {
+    if (xTaskCreateWithCaps(TaskEntry, "rva_udp", kRuntimeTaskStackBytes, this, 4,
+                            &created, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) != pdPASS) {
+        ESP_LOGW(kLogTag,
+                 "start failed: task allocation internal_free=%lu largest=%lu psram_free=%lu",
+                 static_cast<unsigned long>(heap_caps_get_free_size(MALLOC_CAP_INTERNAL)),
+                 static_cast<unsigned long>(heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL)),
+                 static_cast<unsigned long>(heap_caps_get_free_size(MALLOC_CAP_SPIRAM)));
         JoinAndClose(0);
         return false;
     }
@@ -104,13 +137,13 @@ bool UdpRuntime::JoinAndClose(uint32_t timeout_ms) {
         const EventBits_t bits = xEventGroupWaitBits(
             events_, kExited, pdFALSE, pdFALSE, pdMS_TO_TICKS(timeout_ms));
         if ((bits & kExited) == 0) return false;
-        vTaskDelete(task);
+        vTaskDeleteWithCaps(task);
         task_.store(nullptr);
     }
     if (!closed_.exchange(true)) io_.Close();
     playout_queue_.Close();
     if (events_ != nullptr) {
-        vEventGroupDelete(events_);
+        vEventGroupDeleteWithCaps(events_);
         events_ = nullptr;
     }
     return true;

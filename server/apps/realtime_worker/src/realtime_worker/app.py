@@ -20,7 +20,7 @@ from voice_contracts import BindingAdvertisement, LeaseRenewal, WorkerHeartbeat
 
 from .admission import SharedSessionAdmission
 from .agent import create_runner
-from .auth import AuthContext, VerifiedAuth, WorkerAuthenticator, resolve_device_id
+from .auth import AuthContext, VerifiedAuth, WorkerAuthenticator, device_ref, resolve_device_id
 from .bindings.rva import RvaRuntimeLimits, RvaWssConnection
 from .config import Settings
 from .lifecycle import run_with_hard_deadline
@@ -344,7 +344,22 @@ class DirectorGrantConsumer:
             headers={"X-Internal-Token": self._settings.internal_token.get_secret_value()},
             json={"token": token, "worker_id": self._settings.worker_id, "device_id": device_id},
         )
-        return response.status_code == status.HTTP_200_OK
+        if response.status_code == status.HTTP_200_OK:
+            logger.info(
+                "director_grant_consume_accepted worker_id=%s device_ref=%s",
+                self._settings.worker_id,
+                _route_device_ref(self._settings, device_id),
+            )
+            return True
+        logger.warning(
+            "director_grant_consume_rejected reason=%s status_code=%d worker_id=%s device_ref=%s token_length=%d",
+            _director_reject_reason(response),
+            response.status_code,
+            self._settings.worker_id,
+            _route_device_ref(self._settings, device_id),
+            len(token),
+        )
+        return False
 
     async def close(self) -> None:
         if self._owns_client:
@@ -678,11 +693,32 @@ def create_app(
                 device_id,
                 control_protocol="xiaozhi-control-v1",
             )
-            if verified is None or websocket.headers.get("protocol-version") != "1":
+            if verified is None:
+                _log_websocket_rejected(
+                    settings,
+                    binding="xiaozhi-control-v1",
+                    reason="invalid_credentials",
+                    device_id=device_id,
+                )
+                await websocket.close(code=status.WS_1008_POLICY_VIOLATION, reason="invalid_credentials")
+                return
+            if websocket.headers.get("protocol-version") != "1":
+                _log_websocket_rejected(
+                    settings,
+                    binding="xiaozhi-control-v1",
+                    reason="unsupported_protocol_version",
+                    auth=verified.context,
+                )
                 await websocket.close(code=status.WS_1008_POLICY_VIOLATION, reason="invalid_credentials")
                 return
             reservation = await xiaozhi_registry.reserve(verified.context)
             if reservation is None:
+                _log_websocket_rejected(
+                    settings,
+                    binding="xiaozhi-control-v1",
+                    reason="session_overloaded",
+                    auth=verified.context,
+                )
                 await websocket.close(code=1_013, reason="session_overloaded")
                 return
             try:
@@ -692,13 +728,26 @@ def create_app(
                 raise
             if not grant_consumed:
                 await xiaozhi_registry.release_reservation(reservation)
+                _log_websocket_rejected(
+                    settings,
+                    binding="xiaozhi-control-v1",
+                    reason="grant_rejected",
+                    auth=verified.context,
+                )
                 await websocket.close(code=status.WS_1008_POLICY_VIOLATION, reason="grant_rejected")
                 return
             try:
                 await websocket.accept()
             except BaseException:
+                _log_websocket_rejected(
+                    settings,
+                    binding="xiaozhi-control-v1",
+                    reason="accept_failed",
+                    auth=verified.context,
+                )
                 await xiaozhi_registry.abort_startup(verified.context, reservation)
                 raise
+            _log_websocket_accepted(settings, binding="xiaozhi-control-v1", auth=verified.context)
             await xiaozhi_registry.run(websocket, verified.context, reservation)
 
     if settings.rva_enabled:
@@ -714,11 +763,32 @@ def create_app(
             enabled_profiles = {"wss-opus-v2"}
             if settings.rva_udp_enabled:
                 enabled_profiles.add("udp-opus-gcm-v1")
-            if verified is None or not enabled_profiles.intersection(verified.context.allowed_profiles):
+            if verified is None:
+                _log_websocket_rejected(
+                    settings,
+                    binding="rva-control-v1",
+                    reason="invalid_credentials",
+                    device_id=device_id,
+                )
+                await websocket.close(code=status.WS_1008_POLICY_VIOLATION, reason="invalid_credentials")
+                return
+            if not enabled_profiles.intersection(verified.context.allowed_profiles):
+                _log_websocket_rejected(
+                    settings,
+                    binding="rva-control-v1",
+                    reason="no_compatible_profile",
+                    auth=verified.context,
+                )
                 await websocket.close(code=status.WS_1008_POLICY_VIOLATION, reason="invalid_credentials")
                 return
             reservation = await rva_registry.reserve(verified.context)
             if reservation is None:
+                _log_websocket_rejected(
+                    settings,
+                    binding="rva-control-v1",
+                    reason="session_overloaded",
+                    auth=verified.context,
+                )
                 await websocket.close(code=1_013, reason="session_overloaded")
                 return
             try:
@@ -728,13 +798,100 @@ def create_app(
                 raise
             if not grant_consumed:
                 await rva_registry.release_reservation(reservation)
+                _log_websocket_rejected(
+                    settings,
+                    binding="rva-control-v1",
+                    reason="grant_rejected",
+                    auth=verified.context,
+                )
                 await websocket.close(code=status.WS_1008_POLICY_VIOLATION, reason="grant_rejected")
                 return
             try:
                 await websocket.accept()
             except BaseException:
+                _log_websocket_rejected(
+                    settings,
+                    binding="rva-control-v1",
+                    reason="accept_failed",
+                    auth=verified.context,
+                )
                 await rva_registry.abort_startup(verified.context, reservation)
                 raise
+            _log_websocket_accepted(settings, binding="rva-control-v1", auth=verified.context)
             await rva_registry.run(websocket, verified.context, reservation)
 
     return app
+
+
+def _safe_reason(value: object) -> str | None:
+    if not isinstance(value, str) or not 1 <= len(value) <= 64:
+        return None
+    if all(character.islower() or character.isdigit() or character == "_" for character in value):
+        return value
+    return None
+
+
+def _director_reject_reason(response: httpx.Response) -> str:
+    try:
+        body = response.json()
+    except ValueError:
+        body = None
+    reason: object = None
+    if isinstance(body, dict):
+        reason = body.get("reason")
+        detail = body.get("detail")
+        if reason is None and isinstance(detail, dict):
+            reason = detail.get("reason")
+        elif reason is None:
+            reason = detail
+    return _safe_reason(reason) or f"http_{response.status_code}"
+
+
+def _route_device_ref(settings: Settings, device_id: str | None) -> str:
+    if device_id is None:
+        return "missing"
+    return device_ref(
+        f"worker:{settings.worker_id}",
+        device_id,
+        settings.internal_token.get_secret_value(),
+    )
+
+
+def _auth_device_ref(settings: Settings, auth: AuthContext) -> str:
+    return device_ref(auth.tenant_id, auth.device_id, settings.internal_token.get_secret_value())
+
+
+def _profiles_for_log(profiles: tuple[str, ...]) -> str:
+    return ",".join(profiles) or "none"
+
+
+def _log_websocket_rejected(
+    settings: Settings,
+    *,
+    binding: str,
+    reason: str,
+    auth: AuthContext | None = None,
+    device_id: str | None = None,
+) -> None:
+    session_epoch = auth.session_epoch if auth is not None and auth.session_epoch is not None else "none"
+    profiles = _profiles_for_log(tuple(auth.allowed_profiles)) if auth is not None else "unknown"
+    logger.warning(
+        "worker_websocket_rejected binding=%s reason=%s worker_id=%s device_ref=%s session_epoch=%s profiles=%s",
+        binding,
+        reason,
+        settings.worker_id,
+        _auth_device_ref(settings, auth) if auth is not None else _route_device_ref(settings, device_id),
+        session_epoch,
+        profiles,
+    )
+
+
+def _log_websocket_accepted(settings: Settings, *, binding: str, auth: AuthContext) -> None:
+    logger.info(
+        "worker_websocket_accepted binding=%s worker_id=%s device_ref=%s session_epoch=%s profiles=%s",
+        binding,
+        settings.worker_id,
+        _auth_device_ref(settings, auth),
+        auth.session_epoch or "none",
+        _profiles_for_log(tuple(auth.allowed_profiles)),
+    )

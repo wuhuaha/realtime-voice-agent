@@ -5,6 +5,10 @@
 #include <new>
 #include <utility>
 
+#ifdef ESP_PLATFORM
+#include <esp_heap_caps.h>
+#endif
+
 namespace rva::wss {
 namespace {
 
@@ -16,10 +20,41 @@ size_t MaximumPayload(ClientEventType type) {
 
 }  // namespace
 
+CallbackPayloadBuffer::~CallbackPayloadBuffer() {
+#ifdef ESP_PLATFORM
+    heap_caps_free(data_);
+#else
+    delete[] data_;
+#endif
+    data_ = nullptr;
+    capacity_ = 0;
+}
+
+bool CallbackPayloadBuffer::Allocate(size_t capacity) noexcept {
+    if (data_ != nullptr && capacity_ >= capacity) return true;
+#ifdef ESP_PLATFORM
+    heap_caps_free(data_);
+    data_ = static_cast<uint8_t*>(heap_caps_malloc(capacity, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+#else
+    delete[] data_;
+    data_ = new (std::nothrow) uint8_t[capacity];
+#endif
+    capacity_ = data_ == nullptr ? 0 : capacity;
+    return data_ != nullptr;
+}
+
 CallbackEventQueue::CallbackEventQueue(size_t capacity, size_t byte_capacity)
     : capacity_(std::min(capacity, kMaximumCallbackEvents)),
-      byte_capacity_(std::min(byte_capacity, kMaximumQueuedCallbackBytes)) {
-    events_.reserve(capacity_);
+      byte_capacity_(std::min(byte_capacity, kMaximumQueuedCallbackBytes)),
+      slot_capacity_(std::min(
+          kMaximumCallbackFragmentBytes,
+          capacity_ == 0 ? size_t{0} : std::max<size_t>(1, byte_capacity_ / capacity_))) {
+    for (size_t index = 0; index < capacity_; ++index) {
+        if (!slots_[index].data.Allocate(slot_capacity_)) {
+            capacity_ = index;
+            break;
+        }
+    }
 }
 
 bool CallbackEventQueue::TryPush(const ClientEventView& event) noexcept {
@@ -29,51 +64,62 @@ bool CallbackEventQueue::TryPush(const ClientEventView& event) noexcept {
     if ((carries_data &&
          (event.data == nullptr || event.data_size == 0 || event.payload_size == 0 ||
           event.payload_size > maximum || event.payload_offset > event.payload_size ||
-          event.data_size > event.payload_size - event.payload_offset)) ||
+          event.data_size > event.payload_size - event.payload_offset ||
+          event.data_size > slot_capacity_)) ||
         (!carries_data && (event.data_size != 0 || event.payload_offset != 0 || event.payload_size != 0))) {
         std::lock_guard<std::mutex> lock(mutex_);
         ++dropped_events_;
         return false;
     }
-    OwnedClientEvent owned;
-    owned.type = event.type;
-    owned.payload_offset = event.payload_offset;
-    owned.payload_size = event.payload_size;
-    owned.data_size = event.data_size;
-    if (carries_data) {
-        owned.data.reset(new (std::nothrow) uint8_t[event.data_size]);
-        if (owned.data == nullptr) {
-            std::lock_guard<std::mutex> lock(mutex_);
-            ++dropped_events_;
-            return false;
-        }
-        std::memcpy(owned.data.get(), event.data, event.data_size);
-    }
 
     std::lock_guard<std::mutex> lock(mutex_);
-    if (capacity_ == 0 || events_.size() >= capacity_ ||
-        owned.data_size > byte_capacity_ - std::min(byte_capacity_, queued_bytes_)) {
+    if (capacity_ == 0 || size_ >= capacity_ ||
+        event.data_size > byte_capacity_ - std::min(byte_capacity_, queued_bytes_)) {
         ++dropped_events_;
         return false;
     }
-    queued_bytes_ += owned.data_size;
-    events_.push_back(std::move(owned));
+    const size_t tail = (head_ + size_) % capacity_;
+    Slot& slot = slots_[tail];
+    slot.type = event.type;
+    slot.payload_offset = event.payload_offset;
+    slot.payload_size = event.payload_size;
+    slot.data_size = event.data_size;
+    if (carries_data) {
+        std::memcpy(slot.data.data(), event.data, event.data_size);
+    }
+    slot.used = true;
+    queued_bytes_ += event.data_size;
+    ++size_;
     return true;
 }
 
 bool CallbackEventQueue::TryPop(OwnedClientEvent* event) {
     if (event == nullptr) return false;
     std::lock_guard<std::mutex> lock(mutex_);
-    if (events_.empty()) return false;
-    queued_bytes_ -= events_.front().data_size;
-    *event = std::move(events_.front());
-    events_.erase(events_.begin());
+    if (size_ == 0 || capacity_ == 0) return false;
+    Slot& slot = slots_[head_];
+    if (!slot.used) return false;
+    event->type = slot.type;
+    event->payload_offset = slot.payload_offset;
+    event->payload_size = slot.payload_size;
+    event->data_size = slot.data_size;
+    if (slot.data_size > 0) {
+        std::memcpy(event->data.data(), slot.data.data(), slot.data_size);
+    }
+    queued_bytes_ -= slot.data_size;
+    slot.type = ClientEventType::kError;
+    slot.payload_offset = 0;
+    slot.payload_size = 0;
+    slot.data_size = 0;
+    slot.used = false;
+    head_ = (head_ + 1) % capacity_;
+    --size_;
     return true;
 }
 
 size_t CallbackEventQueue::size() const {
     std::lock_guard<std::mutex> lock(mutex_);
-    return events_.size();
+    return size_;
 }
 
 size_t CallbackEventQueue::queued_bytes() const {
@@ -88,7 +134,8 @@ uint32_t CallbackEventQueue::dropped_events() const {
 
 AssembleResult FrameAssembler::Consume(const OwnedClientEvent& event, std::vector<uint8_t>* frame) {
     if (frame == nullptr || MaximumPayload(event.type) == 0 || event.payload_size > MaximumPayload(event.type) ||
-        event.data == nullptr || event.data_size == 0 ||
+        event.data_size == 0 ||
+        event.data_size > event.data.size() ||
         event.payload_offset + event.data_size > event.payload_size) {
         Reset();
         return AssembleResult::kRejected;
@@ -103,7 +150,7 @@ AssembleResult FrameAssembler::Consume(const OwnedClientEvent& event, std::vecto
         Reset();
         return AssembleResult::kRejected;
     }
-    buffer_.insert(buffer_.end(), event.data.get(), event.data.get() + event.data_size);
+    buffer_.insert(buffer_.end(), event.data.data(), event.data.data() + event.data_size);
     if (buffer_.size() != expected_size_) return AssembleResult::kIncomplete;
     *frame = std::move(buffer_);
     Reset();

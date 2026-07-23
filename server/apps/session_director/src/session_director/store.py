@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import time
+from dataclasses import dataclass
 from typing import Protocol
 
 from redis.asyncio import Redis
@@ -26,6 +27,12 @@ class WorkerNotFoundError(LookupError):
 
 class WorkerCapacityError(RuntimeError):
     pass
+
+
+@dataclass(frozen=True, slots=True)
+class GrantConsumeResult:
+    consumed: bool
+    reason: str
 
 
 class CoordinationStorePort(Protocol):
@@ -62,6 +69,8 @@ class CoordinationStorePort(Protocol):
     async def release_route_claim(self, worker_id: str, release: LeaseRenewal) -> bool: ...
 
     async def consume_grant(self, claims: ConnectGrantClaims, *, now: float) -> bool: ...
+
+    async def consume_grant_result(self, claims: ConnectGrantClaims, *, now: float) -> GrantConsumeResult: ...
 
     async def ping(self) -> bool: ...
 
@@ -184,22 +193,31 @@ class InMemoryCoordinationStore:
             return True
 
     async def consume_grant(self, claims: ConnectGrantClaims, *, now: float) -> bool:
+        return (await self.consume_grant_result(claims, now=now)).consumed
+
+    async def consume_grant_result(self, claims: ConnectGrantClaims, *, now: float) -> GrantConsumeResult:
         route_key = encode_route_key(claims.tenant_id, claims.device_id)
         async with self._lock:
             self._consumed_jti = {jti: expiry for jti, expiry in self._consumed_jti.items() if expiry > now}
             current = self._leases.get(route_key)
-            if (
-                current is None
-                or current.expires_at <= now
-                or claims.exp <= now
-                or current.worker_id != claims.worker_id
-                or current.session_epoch != claims.session_epoch
-                or current.fencing_token != claims.fencing_token
-                or claims.jti in self._consumed_jti
-            ):
-                return False
+            if current is None:
+                return GrantConsumeResult(False, "no_route")
+            if current.expires_at <= now:
+                return GrantConsumeResult(False, "route_expired")
+            if claims.exp <= now:
+                return GrantConsumeResult(False, "grant_expired")
+            if current.tenant_id != claims.tenant_id or current.device_id != claims.device_id:
+                return GrantConsumeResult(False, "route_principal_mismatch")
+            if current.worker_id != claims.worker_id:
+                return GrantConsumeResult(False, "worker_mismatch")
+            if current.session_epoch != claims.session_epoch:
+                return GrantConsumeResult(False, "session_epoch_mismatch")
+            if current.fencing_token != claims.fencing_token:
+                return GrantConsumeResult(False, "fencing_token_mismatch")
+            if claims.jti in self._consumed_jti:
+                return GrantConsumeResult(False, "grant_replay")
             self._consumed_jti[claims.jti] = claims.exp
-            return True
+            return GrantConsumeResult(True, "consumed")
 
     async def ping(self) -> bool:
         return True
@@ -287,20 +305,17 @@ return current
 
 _CONSUME_GRANT_LUA = """
 local current = redis.call('GET', KEYS[1])
-if not current then return 0 end
+if not current then return 'no_route' end
 local route = cjson.decode(current)
-if tonumber(route['expires_at']) <= tonumber(ARGV[1])
-   or tonumber(ARGV[7]) <= tonumber(ARGV[1])
-   or route['tenant_id'] ~= ARGV[2]
-   or route['device_id'] ~= ARGV[3]
-   or route['worker_id'] ~= ARGV[4]
-   or route['session_epoch'] ~= ARGV[5]
-   or tonumber(route['fencing_token']) ~= tonumber(ARGV[6]) then
-  return 0
-end
+if tonumber(route['expires_at']) <= tonumber(ARGV[1]) then return 'route_expired' end
+if tonumber(ARGV[7]) <= tonumber(ARGV[1]) then return 'grant_expired' end
+if route['tenant_id'] ~= ARGV[2] or route['device_id'] ~= ARGV[3] then return 'route_principal_mismatch' end
+if route['worker_id'] ~= ARGV[4] then return 'worker_mismatch' end
+if route['session_epoch'] ~= ARGV[5] then return 'session_epoch_mismatch' end
+if tonumber(route['fencing_token']) ~= tonumber(ARGV[6]) then return 'fencing_token_mismatch' end
 local consumed = redis.call('SET', KEYS[2], '1', 'NX', 'PX', ARGV[8])
-if not consumed then return 0 end
-return 1
+if not consumed then return 'grant_replay' end
+return 'consumed'
 """
 
 
@@ -462,8 +477,11 @@ class RedisCoordinationStore:
         return bool(released)
 
     async def consume_grant(self, claims: ConnectGrantClaims, *, now: float) -> bool:
+        return (await self.consume_grant_result(claims, now=now)).consumed
+
+    async def consume_grant_result(self, claims: ConnectGrantClaims, *, now: float) -> GrantConsumeResult:
         ttl_ms = max(1, round((claims.exp - now) * 1000))
-        consumed = await self._redis.eval(
+        result = await self._redis.eval(
             _CONSUME_GRANT_LUA,
             2,
             self._route_key(claims.tenant_id, claims.device_id),
@@ -477,7 +495,8 @@ class RedisCoordinationStore:
             str(claims.exp),
             str(ttl_ms),
         )
-        return bool(consumed)
+        reason = result.decode("utf-8") if isinstance(result, bytes) else str(result)
+        return GrantConsumeResult(reason == "consumed", reason)
 
     async def ping(self) -> bool:
         try:

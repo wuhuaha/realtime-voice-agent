@@ -20,6 +20,22 @@ config RVA_SNTP_SERVER
     string "SNTP server used for TLS and UDP grant expiry"
     default "pool.ntp.org"
 
+config RVA_AUTO_START_CONVERSATION
+    bool "Automatically open a voice session after provisioning"
+    default y
+    help
+        When enabled the device opens and retries the voice session after
+        Wi-Fi and Director provisioning are ready. This keeps the runtime
+        lifecycle independent from touch input during bring-up and soak tests.
+
+config RVA_MIC_BUTTON_CONTROLS_SESSION
+    bool "Allow MIC button to start or stop the voice session"
+    default n
+    help
+        When disabled the MIC button is visual-only and will not publish
+        start/stop lifecycle events. Settings and provisioning controls remain
+        available. Re-enable after the transport and audio chain are stable.
+
 config RVA_WIFI_PRIMARY_SSID
     string "Provisioned primary Wi-Fi SSID"
     default ""

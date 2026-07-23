@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import logging
 import socket
 import time
 
@@ -83,8 +84,10 @@ class FatalGrantConsume(BaseException):
     pass
 
 
-def test_rva_lab_route_completes_native_handshake() -> None:
+def test_rva_lab_route_completes_native_handshake(caplog: pytest.LogCaptureFixture) -> None:
     app = create_app(settings())
+    caplog.set_level(logging.INFO, logger="realtime_worker.app")
+    caplog.set_level(logging.INFO, logger="realtime_worker.bindings.rva.runtime")
     with TestClient(app) as client:
         with client.websocket_connect(
             "/v1/voice",
@@ -97,6 +100,12 @@ def test_rva_lab_route_completes_native_handshake() -> None:
             assert opened["selected_media_profile"] == "wss-opus-v2"
             assert app.state.admission.active_count == 1
     assert app.state.admission.active_count == 0
+    assert "worker_websocket_accepted binding=rva-control-v1" in caplog.text
+    assert "rva_session_opened" in caplog.text
+    assert "selected_media_profile=wss-opus-v2" in caplog.text
+    assert "close_reason=normal" in caplog.text
+    assert "lab-test-token" not in caplog.text
+    assert "device-001" not in caplog.text
 
 
 def test_rva_udp_handshake_uses_schema_grant_and_canonical_probe_ack() -> None:
@@ -261,10 +270,11 @@ def test_xiaozhi_grant_is_rejected_by_rva_route_before_consumption() -> None:
     assert consumer.calls == []
 
 
-def test_rva_route_rejects_grant_without_wss_v2_before_consumption() -> None:
+def test_rva_route_rejects_grant_without_wss_v2_before_consumption(caplog: pytest.LogCaptureFixture) -> None:
     consumer = FakeGrantConsumer()
     app = create_app(settings(), grant_consumer=consumer)  # type: ignore[arg-type]
     token = connect_grant(control_protocol="rva-control-v1", profiles=("udp-opus-gcm-v1",))
+    caplog.set_level(logging.WARNING, logger="realtime_worker.app")
     with TestClient(app) as client:
         with pytest.raises(WebSocketDisconnect) as rejected:
             with client.websocket_connect(
@@ -275,12 +285,17 @@ def test_rva_route_rejects_grant_without_wss_v2_before_consumption() -> None:
 
     assert rejected.value.code == 1_008
     assert consumer.calls == []
+    assert "reason=no_compatible_profile" in caplog.text
+    assert "device_ref=" in caplog.text
+    assert "device-001" not in caplog.text
+    assert token not in caplog.text
 
 
-def test_rva_route_fails_closed_when_director_rejects_consumption() -> None:
+def test_rva_route_fails_closed_when_director_rejects_consumption(caplog: pytest.LogCaptureFixture) -> None:
     consumer = FakeGrantConsumer(accepted=False)
     app = create_app(settings(), grant_consumer=consumer)  # type: ignore[arg-type]
     token = connect_grant(control_protocol="rva-control-v1", profiles=("wss-opus-v2",))
+    caplog.set_level(logging.WARNING, logger="realtime_worker.app")
     with TestClient(app) as client:
         with pytest.raises(WebSocketDisconnect) as rejected:
             with client.websocket_connect(
@@ -291,6 +306,51 @@ def test_rva_route_fails_closed_when_director_rejects_consumption() -> None:
 
     assert rejected.value.code == 1_008
     assert consumer.calls == [(token, "device-001")]
+    assert "reason=grant_rejected" in caplog.text
+    assert "device_ref=" in caplog.text
+    assert "device-001" not in caplog.text
+    assert token not in caplog.text
+
+
+def test_rva_udp_probe_timeout_has_specific_close_reason_and_safe_logs(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    app = create_app(
+        settings(
+            rva_udp_enabled=True,
+            udp_bind_host="127.0.0.1",
+            udp_bind_port=0,
+            udp_advertise_host="127.0.0.1",
+            udp_probe_timeout_seconds=0.05,
+        )
+    )
+    opened_request = session_open()
+    opened_request["supported_media_profiles"] = ["udp-opus-gcm-v1", "wss-opus-v2"]
+    opened_request["preferred_media_profile"] = "udp-opus-gcm-v1"
+    caplog.set_level(logging.INFO, logger="realtime_worker.bindings.rva.runtime")
+    caplog.set_level(logging.INFO, logger="realtime_worker.transport.udp_gateway")
+    with TestClient(app) as client:
+        with client.websocket_connect(
+            "/v1/voice",
+            headers={"Authorization": "Bearer lab-test-token", "Device-Id": "device-001"},
+        ) as websocket:
+            websocket.send_json(opened_request)
+            opened = websocket.receive_json()
+            assert opened["selected_media_profile"] == "udp-opus-gcm-v1"
+            with pytest.raises(WebSocketDisconnect) as closed:
+                websocket.receive_json()
+
+    assert closed.value.code == 1_008
+    assert closed.value.reason == "udp_probe_timeout"
+    assert "rva_session_opened" in caplog.text
+    assert "selected_media_profile=udp-opus-gcm-v1" in caplog.text
+    assert "udp_wait_ready_started" in caplog.text
+    assert "reason=udp_probe_timeout" in caplog.text
+    assert "close_reason=udp_probe_timeout" in caplog.text
+    assert "lab-test-token" not in caplog.text
+    assert "device-001" not in caplog.text
+    assert "uplink_key" not in caplog.text
+    assert "downlink_key" not in caplog.text
 
 
 @pytest.mark.asyncio

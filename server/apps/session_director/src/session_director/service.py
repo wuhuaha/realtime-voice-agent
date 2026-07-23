@@ -26,7 +26,9 @@ class NoCapacityError(RuntimeError):
 
 
 class GrantConsumeError(RuntimeError):
-    pass
+    def __init__(self, reason: str) -> None:
+        super().__init__(reason)
+        self.reason = reason
 
 
 class DirectorService:
@@ -71,9 +73,10 @@ class DirectorService:
         try:
             claims = self._grant_codec.verify(token, worker_id=worker_id, device_id=device_id)
         except GrantError as exc:
-            raise GrantConsumeError("invalid grant") from exc
-        if not await self._store.consume_grant(claims, now=self._clock()):
-            raise GrantConsumeError("grant route mismatch or replay")
+            raise GrantConsumeError(_grant_error_reason(exc)) from exc
+        result = await self._store.consume_grant_result(claims, now=self._clock())
+        if not result.consumed:
+            raise GrantConsumeError(result.reason)
         return claims
 
     async def bootstrap(self, request: BootstrapRequest) -> BootstrapResponse:
@@ -171,3 +174,19 @@ class DirectorService:
                 ),
             )
         )
+
+
+def _grant_error_reason(error: GrantError) -> str:
+    reasons = {
+        "malformed grant": "malformed_grant",
+        "malformed grant encoding": "malformed_grant_encoding",
+        "malformed grant header": "malformed_grant_header",
+        "unsupported grant header": "unsupported_grant_header",
+        "invalid grant signature": "invalid_grant_signature",
+        "invalid grant claims": "invalid_grant_claims",
+        "grant expired": "grant_expired",
+        "invalid grant lifetime": "invalid_grant_lifetime",
+        "grant belongs to another worker": "worker_mismatch",
+        "grant belongs to another device": "device_mismatch",
+    }
+    return reasons.get(str(error), "invalid_grant")

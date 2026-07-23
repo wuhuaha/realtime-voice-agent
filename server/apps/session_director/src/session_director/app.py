@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import hashlib
 import hmac
+import logging
 import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -30,6 +32,8 @@ from .store import (
     RedisCoordinationStore,
     WorkerNotFoundError,
 )
+
+logger = logging.getLogger(__name__)
 
 
 def _bearer_matches(authorization: str | None, expected: str) -> bool:
@@ -137,7 +141,7 @@ def create_app(
     async def consume_grant(
         request: GrantConsumeRequest,
         _: None = Depends(require_internal),
-    ) -> GrantConsumeResponse:
+    ) -> GrantConsumeResponse | JSONResponse:
         try:
             claims = await service().consume_grant(
                 request.token,
@@ -145,7 +149,24 @@ def create_app(
                 device_id=request.device_id,
             )
         except GrantConsumeError as exc:
-            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="grant_rejected") from exc
+            logger.warning(
+                "director_grant_consume_rejected reason=%s worker_id=%s device_ref=%s token_length=%d",
+                exc.reason,
+                request.worker_id,
+                _device_ref(f"grant-consume:{request.worker_id}", request.device_id, settings),
+                len(request.token),
+            )
+            return JSONResponse(
+                status_code=status.HTTP_409_CONFLICT,
+                content={"detail": "grant_rejected", "reason": exc.reason},
+            )
+        logger.info(
+            "director_grant_consumed worker_id=%s device_ref=%s session_epoch=%s fencing_token=%d",
+            request.worker_id,
+            _device_ref(claims.tenant_id, claims.device_id, settings),
+            claims.session_epoch,
+            claims.fencing_token,
+        )
         return GrantConsumeResponse(
             session_epoch=claims.session_epoch,
             fencing_token=claims.fencing_token,
@@ -177,6 +198,12 @@ def _device_matches(
 def _require_internal(value: str | None, settings: DirectorSettings) -> None:
     if value is None or not hmac.compare_digest(value, settings.internal_token.get_secret_value()):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid_internal_credentials")
+
+
+def _device_ref(namespace: str, device_id: str, settings: DirectorSettings) -> str:
+    message = f"{namespace}\0{device_id}".encode()
+    key = settings.internal_token.get_secret_value().encode()
+    return hmac.new(key, message, hashlib.sha256).hexdigest()[:12]
 
 
 def _create_store(settings: DirectorSettings) -> CoordinationStorePort:

@@ -22,6 +22,7 @@ from ..transport.udp_gateway import (
     UdpMediaSession,
     UdpMediaStats,
     UdpPacketHeader,
+    UdpProbeTimeoutError,
 )
 from ..transport.udp_wire import UDP_MAX_SEQUENCE_FORWARD_JUMP
 
@@ -44,4 +45,5 @@ __all__ = [
     "UdpMediaSession",
     "UdpMediaStats",
     "UdpPacketHeader",
+    "UdpProbeTimeoutError",
 ]

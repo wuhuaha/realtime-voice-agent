@@ -26,6 +26,7 @@
 ## 质量与安全
 
 - [测试策略](quality/test-strategy.md)
+- [ESP32 端侧稳定性优化方案与实施计划](quality/esp32-runtime-stability-plan.md)
 - [Release readiness](quality/release-readiness.md)
 - [需求追踪](quality/requirements-traceability.md)
 - [安全模型](security/security-model.md)

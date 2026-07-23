@@ -26,6 +26,23 @@ namespace {
 
 constexpr char kTag[] = "rva_native";
 
+// Bring-up default is fail-open for the voice session: if a local sdkconfig has
+// not been regenerated after adding the Kconfig symbol, the board should still
+// auto-connect instead of silently returning to MIC-gated idle mode.
+#if !defined(CONFIG_RVA_AUTO_START_CONVERSATION) || CONFIG_RVA_AUTO_START_CONVERSATION
+constexpr bool kAutoStartConversation = true;
+#else
+constexpr bool kAutoStartConversation = false;
+#endif
+
+// MIC lifecycle control is opt-in during transport/audio stabilization. ESP-IDF
+// omits bool symbols when they are n, so an undefined symbol must mean disabled.
+#if defined(CONFIG_RVA_MIC_BUTTON_CONTROLS_SESSION) && CONFIG_RVA_MIC_BUTTON_CONTROLS_SESSION
+constexpr bool kMicButtonControlsSession = true;
+#else
+constexpr bool kMicButtonControlsSession = false;
+#endif
+
 class UiRuntimeEvents final : public rva::runtime::RuntimeEventSink {
 public:
     explicit UiRuntimeEvents(rva::ui::VoiceUi* ui) : ui_(ui) {}
@@ -198,6 +215,7 @@ void ReleaseLeaseBeforeRestart(void* context) noexcept {
 void ProcessConversationUiEvents(
     rva::ui::VoiceUi* ui,
     bool udp_available,
+    bool ui_controls_session,
     bool runtime_active,
     rva::runtime::MediaPreference* preferred_media,
     bool* conversation_requested,
@@ -209,8 +227,16 @@ void ProcessConversationUiEvents(
     }
     rva::ui::UiEvent event;
     while (ui->PollEvent(&event)) {
+        const bool session_lifecycle_event =
+            event.kind == rva::ui::EventKind::kStartConversation ||
+            event.kind == rva::ui::EventKind::kStopConversation;
+        if (session_lifecycle_event && !ui_controls_session) {
+            ESP_LOGI(kTag, "Ignoring UI session lifecycle event kind=%u in auto-session mode",
+                     static_cast<unsigned>(event.kind));
+            continue;
+        }
         if (event.kind == rva::ui::EventKind::kSelectTransport ||
-            event.kind == rva::ui::EventKind::kStartConversation) {
+            (ui_controls_session && event.kind == rva::ui::EventKind::kStartConversation)) {
             *preferred_media = udp_available && event.transport == rva::ui::Transport::kUdp
                                    ? rva::runtime::MediaPreference::kUdp
                                    : rva::runtime::MediaPreference::kWss;
@@ -237,6 +263,7 @@ void ProcessConversationUiEvents(
 void WaitForRetryOrUi(
     rva::ui::VoiceUi* ui,
     bool udp_available,
+    bool ui_controls_session,
     rva::runtime::MediaPreference* preferred_media,
     bool* conversation_requested,
     bool* configuration_requested,
@@ -244,7 +271,7 @@ void WaitForRetryOrUi(
     constexpr uint32_t kPollIntervalMs = 50;
     for (uint32_t elapsed = 0; elapsed < timeout_ms; elapsed += kPollIntervalMs) {
         ProcessConversationUiEvents(
-            ui, udp_available, false, preferred_media, conversation_requested,
+            ui, udp_available, ui_controls_session, false, preferred_media, conversation_requested,
             configuration_requested, nullptr);
         if (!*conversation_requested || *configuration_requested) return;
         vTaskDelay(pdMS_TO_TICKS(kPollIntervalMs));
@@ -401,6 +428,7 @@ void RunApplication() {
                     &lv_font_source_han_sans_sc_16_cjk,
                     LV_FONT_DEFAULT,
                     "MIC",
+                    kMicButtonControlsSession,
                 });
             if (!ui->Start()) {
                 ESP_LOGE(kTag, "Display stage failed: ui_start; continuing headless");
@@ -453,16 +481,22 @@ void RunApplication() {
     rva::board::lichuang_s3::LichuangAudioCodec codec(i2c, pca9557, {.output_volume = 80});
     rva::audio::AudioPipeline pipeline(codec.capture(), frontend, codec.playback());
     rva::runtime::DirectorBootstrap director;
-    rva::runtime::MediaPreference preferred_media = rva::runtime::MediaPreference::kWss;
     const bool udp_available = clock_synchronized;
-    // Interactive terminals start idle; headless endpoints retain automatic retry.
-    bool conversation_requested = ui == nullptr;
+    rva::runtime::MediaPreference preferred_media = udp_available
+                                                       ? rva::runtime::MediaPreference::kUdp
+                                                       : rva::runtime::MediaPreference::kWss;
+    const bool ui_controls_session = kMicButtonControlsSession && !kAutoStartConversation;
+    ESP_LOGI(kTag,
+             "conversation lifecycle: auto_start=%d mic_button_controls_session=%d effective_ui_controls=%d",
+             kAutoStartConversation ? 1 : 0, kMicButtonControlsSession ? 1 : 0,
+             ui_controls_session ? 1 : 0);
+    bool conversation_requested = kAutoStartConversation || ui == nullptr;
     bool configuration_requested = false;
 
     while (true) {
         while (!conversation_requested && ui != nullptr) {
             ProcessConversationUiEvents(
-                ui.get(), udp_available, false, &preferred_media, &conversation_requested,
+                ui.get(), udp_available, ui_controls_session, false, &preferred_media, &conversation_requested,
                 &configuration_requested, nullptr);
             if (configuration_requested) {
                 configuration_requested = false;
@@ -471,6 +505,16 @@ void RunApplication() {
             if (!conversation_requested) vTaskDelay(pdMS_TO_TICKS(50));
         }
         if (!conversation_requested) conversation_requested = true;
+        PostUi(ui.get(), {
+            rva::ui::CommandKind::kSetConnection,
+            static_cast<uint32_t>(rva::ui::ConnectionState::kConnecting),
+            {},
+        });
+        PostUi(ui.get(), {
+            rva::ui::CommandKind::kSetConversation,
+            static_cast<uint32_t>(rva::ui::ConversationState::kConnecting),
+            {},
+        });
         rva::runtime::BootstrapGrant grant;
         const bool bootstrap_accepted = director.Request(
             service_endpoint.url,
@@ -484,14 +528,18 @@ void RunApplication() {
             lease.ReleaseNow();
             runtime_events.OnFailure("director_bootstrap");
             WaitForRetryOrUi(
-                ui.get(), udp_available, &preferred_media, &conversation_requested,
+                ui.get(), udp_available, ui_controls_session, &preferred_media, &conversation_requested,
                 &configuration_requested, 3000);
             if (configuration_requested) {
                 configuration_requested = false;
                 lease.Finalize();
                 EnsureProvisioned(&device_config, &wifi, ui.get(), &service_endpoint, true);
             }
-            if (ui != nullptr) conversation_requested = false;
+            if (kAutoStartConversation) {
+                conversation_requested = true;
+            } else if (ui != nullptr) {
+                conversation_requested = false;
+            }
             continue;
         }
         rva::runtime::VoiceRuntime runtime(
@@ -509,20 +557,24 @@ void RunApplication() {
             runtime_events.OnFailure("voice_runtime_start");
             lease.ReleaseNow();
             WaitForRetryOrUi(
-                ui.get(), udp_available, &preferred_media, &conversation_requested,
+                ui.get(), udp_available, ui_controls_session, &preferred_media, &conversation_requested,
                 &configuration_requested, 3000);
             if (configuration_requested) {
                 configuration_requested = false;
                 lease.Finalize();
                 EnsureProvisioned(&device_config, &wifi, ui.get(), &service_endpoint, true);
             }
-            if (ui != nullptr) conversation_requested = false;
+            if (kAutoStartConversation) {
+                conversation_requested = true;
+            } else if (ui != nullptr) {
+                conversation_requested = false;
+            }
             continue;
         }
         bool stop_current_runtime = false;
         while (runtime.running()) {
             ProcessConversationUiEvents(
-                ui.get(), udp_available, true, &preferred_media, &conversation_requested,
+                ui.get(), udp_available, ui_controls_session, true, &preferred_media, &conversation_requested,
                 &configuration_requested, &stop_current_runtime);
             if (stop_current_runtime || configuration_requested) {
                 runtime.Stop();
@@ -533,18 +585,28 @@ void RunApplication() {
         lease.ReleaseNow();
         const bool fresh_start_requested =
             stop_current_runtime && conversation_requested && !configuration_requested;
+        const bool udp_fallback_requested =
+            runtime.should_fallback_to_wss() && !stop_current_runtime && !configuration_requested;
         if (configuration_requested) {
             configuration_requested = false;
             lease.Finalize();
             EnsureProvisioned(&device_config, &wifi, ui.get(), &service_endpoint, true);
         }
-        if (runtime.should_fallback_to_wss()) {
+        if (udp_fallback_requested) {
             preferred_media = rva::runtime::MediaPreference::kWss;
             runtime_events.OnFailure("udp_fallback_wss");
+            ESP_LOGW(kTag, "UDP media unavailable; retrying current request with fresh WSS route");
         }
         if (ui != nullptr) {
-            conversation_requested = fresh_start_requested;
-            if (!fresh_start_requested) {
+            conversation_requested =
+                kAutoStartConversation || fresh_start_requested || udp_fallback_requested;
+            if (conversation_requested) {
+                ui->Post({
+                    rva::ui::CommandKind::kSetConversation,
+                    static_cast<uint32_t>(rva::ui::ConversationState::kConnecting),
+                    {},
+                });
+            } else {
                 ui->Post({
                     rva::ui::CommandKind::kSetConversation,
                     static_cast<uint32_t>(rva::ui::ConversationState::kIdle),
@@ -552,7 +614,7 @@ void RunApplication() {
                 });
             }
         }
-        if (conversation_requested && ui == nullptr) vTaskDelay(pdMS_TO_TICKS(1000));
+        if (conversation_requested) vTaskDelay(pdMS_TO_TICKS(1000));
     }
 }
 

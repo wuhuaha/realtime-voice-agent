@@ -18,6 +18,9 @@ class UdpSession final {
 public:
     // Both crypto ports must outlive the session; destruction revokes the
     // session and clears both keyed contexts.
+    static void* operator new(size_t size);
+    static void operator delete(void* pointer) noexcept;
+
     UdpSession(AeadPort& uplink_crypto, AeadPort& downlink_crypto);
     ~UdpSession();
     bool Configure(const SessionGrant& grant);

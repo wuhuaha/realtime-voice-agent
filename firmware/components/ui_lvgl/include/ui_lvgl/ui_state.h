@@ -22,8 +22,8 @@ struct WifiNetwork final {
 struct UiState final {
     ConnectionState connection = ConnectionState::kOffline;
     ConversationState conversation = ConversationState::kIdle;
-    Transport preferred_transport = Transport::kWss;
-    Transport active_transport = Transport::kWss;
+    Transport preferred_transport = Transport::kUdp;
+    Transport active_transport = Transport::kUdp;
     Page page = Page::kHome;
     std::string asr_text;
     std::string response_text;

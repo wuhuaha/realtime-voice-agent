@@ -600,7 +600,7 @@ async def test_probe_timeout_closes_without_constructing_agent_runner() -> None:
     await gateway.close()
     assert constructed == 0
     assert websocket.sent[0]["transport"] == "udp"
-    assert websocket.closed == [(1008, "handshake_timeout")]
+    assert websocket.closed == [(1008, "udp_probe_timeout")]
 
 
 @pytest.mark.asyncio

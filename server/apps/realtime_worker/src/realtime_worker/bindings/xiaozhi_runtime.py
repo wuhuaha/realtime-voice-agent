@@ -26,7 +26,7 @@ from ..audio import PCM_SAMPLES, PcmFrame
 from ..auth import AuthContext, device_ref
 from ..config import Settings
 from ..lifecycle import run_with_hard_deadline
-from ..transport.udp_gateway import UdpMediaGateway, UdpMediaSession
+from ..transport.udp_gateway import UdpMediaGateway, UdpMediaSession, UdpProbeTimeoutError
 
 logger = logging.getLogger("realtime_worker.bindings.xiaozhi")
 
@@ -439,6 +439,13 @@ class XiaozhiConnection:
                 raise XiaozhiMessageTooLarge("hello is too large")
             hello = parse_client_hello(hello_raw)
             self._transport_profile = self._select_transport(hello)
+            logger.info(
+                "xiaozhi_session_opened session=%s session_epoch=%s transport_profile=%s device_ref=%s",
+                self.session_id,
+                self._auth.session_epoch or "none",
+                self._transport_profile,
+                self._device_ref,
+            )
             self._codec = await asyncio.to_thread(XiaozhiOpusCodec, encode_sample_rate=XIAOZHI_OUTPUT_SAMPLE_RATE)
             if self._transport_profile == XIAOZHI_UDP_PROFILE:
                 assert self._udp_gateway is not None
@@ -466,6 +473,8 @@ class XiaozhiConnection:
                     raise exception
         except WebSocketDisconnect:
             return
+        except UdpProbeTimeoutError:
+            close_code, close_reason = 1008, "udp_probe_timeout"
         except TimeoutError:
             close_code, close_reason = 1008, "handshake_timeout"
         except XiaozhiMessageTooLarge:
@@ -483,6 +492,16 @@ class XiaozhiConnection:
     async def close(self, *, code: int = 1000, reason: str = "normal") -> None:
         if self._close_task is None:
             self._closed = True
+            logger.info(
+                "xiaozhi_session_closing session=%s session_epoch=%s close_code=%d close_reason=%s "
+                "transport_profile=%s device_ref=%s",
+                self.session_id,
+                self._auth.session_epoch or "none",
+                code,
+                reason,
+                self._transport_profile,
+                self._device_ref,
+            )
             self._close_task = asyncio.create_task(
                 self._close_impl(code=code, reason=reason),
                 name=f"xiaozhi-close-{self.session_id}",
@@ -590,6 +609,7 @@ class XiaozhiConnection:
                 probe_task,
                 reader_task,
                 timeout=self._settings.udp_probe_timeout_seconds,
+                timeout_reason="udp_probe_timeout",
             )
             setup_task = asyncio.create_task(
                 self._start_udp_runner_and_mark_ready(handshake_generation),
@@ -625,12 +645,18 @@ class XiaozhiConnection:
         reader: asyncio.Task[None],
         *,
         timeout: float,
+        timeout_reason: str = "handshake_timeout",
     ) -> None:
-        async with asyncio.timeout(timeout):
-            done, _ = await asyncio.wait({operation, reader}, return_when=asyncio.FIRST_COMPLETED)
-            if reader in done:
-                await reader
-            await operation
+        try:
+            async with asyncio.timeout(timeout):
+                done, _ = await asyncio.wait({operation, reader}, return_when=asyncio.FIRST_COMPLETED)
+                if reader in done:
+                    await reader
+                await operation
+        except TimeoutError as exc:
+            if timeout_reason == "udp_probe_timeout":
+                raise UdpProbeTimeoutError("UDP media probe timed out") from exc
+            raise
 
     async def _start_udp_runner_and_mark_ready(self, handshake_generation: int) -> None:
         async with self._runner_lock:

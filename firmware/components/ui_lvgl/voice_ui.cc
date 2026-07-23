@@ -241,6 +241,10 @@ void VoiceUi::CommandTimer(lv_timer_t* timer) {
 
 void VoiceUi::MicClicked(lv_event_t* event) {
     auto* self = static_cast<VoiceUi*>(lv_event_get_user_data(event));
+    if (!self->config_.microphone_lifecycle_enabled) {
+        ESP_LOGI(kTag, "MIC button pressed; session lifecycle is disabled");
+        return;
+    }
     ESP_LOGI(kTag, "MIC button pressed");
     self->Apply({.kind = CommandKind::kMicPressed, .value = 0, .text = {}});
 }

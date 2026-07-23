@@ -43,22 +43,39 @@ if (Test-Path -LiteralPath $Python) {
 function Resolve-RecordedStartTimeUtcTicks {
     param(
         [string]$StartTimeUtcTicks,
-        [string]$StartTimeUtc
+        [object]$StartTimeUtc
     )
     $ticks = 0L
     if (-not [string]::IsNullOrWhiteSpace($StartTimeUtcTicks) -and
         [long]::TryParse($StartTimeUtcTicks, [ref]$ticks) -and $ticks -gt 0) {
         return $ticks
     }
+    if ($StartTimeUtc -is [DateTimeOffset]) {
+        return $StartTimeUtc.UtcDateTime.Ticks
+    }
+    if ($StartTimeUtc -is [DateTime]) {
+        return $StartTimeUtc.ToUniversalTime().Ticks
+    }
+    $startTimeText = [string]$StartTimeUtc
     $timestamp = [DateTimeOffset]::MinValue
-    if (-not [string]::IsNullOrWhiteSpace($StartTimeUtc) -and
+    if (-not [string]::IsNullOrWhiteSpace($startTimeText) -and
         [DateTimeOffset]::TryParse(
-            $StartTimeUtc,
+            $startTimeText,
             [Globalization.CultureInfo]::InvariantCulture,
             [Globalization.DateTimeStyles]::RoundtripKind,
             [ref]$timestamp
         )) {
         return $timestamp.UtcDateTime.Ticks
+    }
+    $localTimestamp = [DateTime]::MinValue
+    if (-not [string]::IsNullOrWhiteSpace($startTimeText) -and
+        [DateTime]::TryParse(
+            $startTimeText,
+            [Globalization.CultureInfo]::CurrentCulture,
+            [Globalization.DateTimeStyles]::AssumeLocal,
+            [ref]$localTimestamp
+        )) {
+        return $localTimestamp.ToUniversalTime().Ticks
     }
     return $null
 }
@@ -67,7 +84,7 @@ function Get-RecordedProcessStatus {
     param(
         [int]$ProcessId,
         [string]$StartTimeUtcTicks,
-        [string]$StartTimeUtc,
+        [object]$StartTimeUtc,
         [int]$StartTimeToleranceTicks = 0,
         [string]$Executable
     )
@@ -107,7 +124,7 @@ function Invoke-VerifiedTermination {
     param(
         [int]$ProcessId,
         [string]$StartTimeUtcTicks,
-        [string]$StartTimeUtc,
+        [object]$StartTimeUtc,
         [int]$StartTimeToleranceTicks = 0,
         [string]$Executable
     )
@@ -158,7 +175,7 @@ function ConvertTo-RecoverableLegacyEntry {
     param([object]$Entry)
     $ticks = Resolve-RecordedStartTimeUtcTicks `
         -StartTimeUtcTicks ([string]$Entry.start_time_utc_ticks) `
-        -StartTimeUtc ([string]$Entry.start_time_utc)
+        -StartTimeUtc ($Entry.start_time_utc)
     if ($null -eq $ticks) {
         return $Entry
     }
@@ -185,7 +202,7 @@ function Get-LegacyProcessTreeSnapshot {
     $rootStatus = Get-RecordedProcessStatus `
         -ProcessId ([int]$Entry.pid) `
         -StartTimeUtcTicks ([string]$Entry.start_time_utc_ticks) `
-        -StartTimeUtc ([string]$Entry.start_time_utc) `
+        -StartTimeUtc ($Entry.start_time_utc) `
         -StartTimeToleranceTicks ([int]$Entry.start_time_tolerance_ticks) `
         -Executable ([string]$Entry.executable)
     if ($rootStatus.state -eq 'missing') {
@@ -252,7 +269,7 @@ function Stop-LegacyRecordedProcessTree {
         $result = Invoke-VerifiedTermination `
             -ProcessId ([int]$identity.pid) `
             -StartTimeUtcTicks ([string]$identity.start_time_utc_ticks) `
-            -StartTimeUtc ([string]$identity.start_time_utc) `
+            -StartTimeUtc ($identity.start_time_utc) `
             -StartTimeToleranceTicks ([int]$identity.start_time_tolerance_ticks) `
             -Executable ([string]$identity.executable)
         if ($result.state -notin @('missing', 'terminated')) {
@@ -277,14 +294,14 @@ function Stop-ProcessEntries {
         $supervisorResult = Invoke-VerifiedTermination `
             -ProcessId ([int]$entry.supervisor_pid) `
             -StartTimeUtcTicks ([string]$entry.supervisor_start_time_utc_ticks) `
-            -StartTimeUtc ([string]$entry.supervisor_start_time_utc) `
+            -StartTimeUtc ($entry.supervisor_start_time_utc) `
             -Executable ([string]$entry.supervisor_executable)
         if ($supervisorResult.state -in @('error', 'timeout')) {
             Start-Sleep -Milliseconds 200
             $supervisorResult = Invoke-VerifiedTermination `
                 -ProcessId ([int]$entry.supervisor_pid) `
                 -StartTimeUtcTicks ([string]$entry.supervisor_start_time_utc_ticks) `
-                -StartTimeUtc ([string]$entry.supervisor_start_time_utc) `
+                -StartTimeUtc ($entry.supervisor_start_time_utc) `
                 -Executable ([string]$entry.supervisor_executable)
         }
         if ($supervisorResult.state -in @('missing', 'terminated')) {
@@ -293,7 +310,7 @@ function Stop-ProcessEntries {
                 $childStatus = Get-RecordedProcessStatus `
                     -ProcessId ([int]$entry.pid) `
                     -StartTimeUtcTicks ([string]$entry.start_time_utc_ticks) `
-                    -StartTimeUtc ([string]$entry.start_time_utc) `
+                    -StartTimeUtc ($entry.start_time_utc) `
                     -Executable ([string]$entry.executable)
                 if ($childStatus.state -ne 'match') {
                     break
@@ -304,7 +321,7 @@ function Stop-ProcessEntries {
                 $childResult = Invoke-VerifiedTermination `
                     -ProcessId ([int]$entry.pid) `
                     -StartTimeUtcTicks ([string]$entry.start_time_utc_ticks) `
-                    -StartTimeUtc ([string]$entry.start_time_utc) `
+                    -StartTimeUtc ($entry.start_time_utc) `
                     -Executable ([string]$entry.executable)
                 if ($childResult.state -notin @('missing', 'terminated')) {
                     $survivors.Add((ConvertTo-RecoverableLegacyEntry -Entry ([pscustomobject]@{
@@ -333,7 +350,7 @@ function Write-JsonAtomically {
     New-Item -ItemType Directory -Force -Path $RuntimeDirectory | Out-Null
     $temporary = Join-Path $RuntimeDirectory ".$([Guid]::NewGuid().ToString('N')).manifest.tmp"
     try {
-        $Value | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $temporary -Encoding utf8NoBOM
+        Write-Utf8NoBom -LiteralPath $temporary -Value ($Value | ConvertTo-Json -Depth 6)
         Move-Item -LiteralPath $temporary -Destination $PidFile -Force
     }
     finally {
@@ -341,11 +358,20 @@ function Write-JsonAtomically {
     }
 }
 
+function Write-Utf8NoBom {
+    param(
+        [Parameter(Mandatory = $true)][string]$LiteralPath,
+        [Parameter(Mandatory = $true)][string]$Value
+    )
+    $encoding = [System.Text.UTF8Encoding]::new($false)
+    [System.IO.File]::WriteAllText($LiteralPath, $Value, $encoding)
+}
+
 function Stop-RecordedProcesses {
     if (-not (Test-Path -LiteralPath $PidFile)) {
         return
     }
-    $manifest = Get-Content -Raw -LiteralPath $PidFile | ConvertFrom-Json -DateKind String
+    $manifest = Get-Content -Raw -LiteralPath $PidFile | ConvertFrom-Json
     $recoverable = [System.Collections.Generic.List[object]]::new()
     $recordedIdentities = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
     $hasLegacyEntry = $false
@@ -359,7 +385,7 @@ function Stop-RecordedProcesses {
         foreach ($identity in @($snapshot.identities)) {
             $ticks = Resolve-RecordedStartTimeUtcTicks `
                 -StartTimeUtcTicks ([string]$identity.start_time_utc_ticks) `
-                -StartTimeUtc ([string]$identity.start_time_utc)
+                -StartTimeUtc ($identity.start_time_utc)
             $key = "$([int]$identity.pid):${ticks}:$([string]$identity.executable)"
             if ($recordedIdentities.Add($key)) {
                 $recoverable.Add($identity)
@@ -401,7 +427,7 @@ if (Test-Path -LiteralPath $PidFile) {
             $supervisorStatus = Get-RecordedProcessStatus `
                 -ProcessId ([int]$entry.supervisor_pid) `
                 -StartTimeUtcTicks ([string]$entry.supervisor_start_time_utc_ticks) `
-                -StartTimeUtc ([string]$entry.supervisor_start_time_utc) `
+                -StartTimeUtc ($entry.supervisor_start_time_utc) `
                 -Executable ([string]$entry.supervisor_executable)
             if ($supervisorStatus.state -eq 'match') {
                 $running.Add($entry)
@@ -411,7 +437,7 @@ if (Test-Path -LiteralPath $PidFile) {
         $childStatus = Get-RecordedProcessStatus `
             -ProcessId ([int]$entry.pid) `
             -StartTimeUtcTicks ([string]$entry.start_time_utc_ticks) `
-            -StartTimeUtc ([string]$entry.start_time_utc) `
+            -StartTimeUtc ($entry.start_time_utc) `
             -Executable ([string]$entry.executable)
         if ($childStatus.state -eq 'match') {
             $running.Add($entry)
@@ -572,7 +598,9 @@ function Start-LocalProcess {
         stdout_file = $stdout
         stderr_file = $stderr
         handshake_file = $handshakeFile
-    } | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $specFile -Encoding utf8NoBOM
+    } | ConvertTo-Json -Depth 4 | ForEach-Object {
+        Write-Utf8NoBom -LiteralPath $specFile -Value $_
+    }
 
     $process = Start-Process `
         -FilePath $SupervisorPython `
@@ -639,7 +667,7 @@ function Wait-LocalHealth {
         [System.Diagnostics.Process]$Process,
         [string]$Name,
         [string]$Url,
-        [int]$TimeoutSeconds = 15
+        [int]$TimeoutSeconds = 60
     )
     $deadline = [DateTimeOffset]::UtcNow.AddSeconds($TimeoutSeconds)
     do {

@@ -3,6 +3,11 @@
 #include <algorithm>
 #include <cstring>
 #include <limits>
+#include <new>
+
+#ifdef ESP_PLATFORM
+#include <esp_heap_caps.h>
+#endif
 
 namespace rva::udp {
 
@@ -18,6 +23,24 @@ void SecureErase(T* value) {
 
 UdpSession::UdpSession(AeadPort& uplink_crypto, AeadPort& downlink_crypto)
     : uplink_crypto_(uplink_crypto), downlink_crypto_(downlink_crypto) {}
+
+void* UdpSession::operator new(size_t size) {
+#ifdef ESP_PLATFORM
+    void* pointer = heap_caps_malloc(size, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+#else
+    void* pointer = ::operator new(size, std::nothrow);
+#endif
+    if (pointer == nullptr) throw std::bad_alloc();
+    return pointer;
+}
+
+void UdpSession::operator delete(void* pointer) noexcept {
+#ifdef ESP_PLATFORM
+    heap_caps_free(pointer);
+#else
+    ::operator delete(pointer);
+#endif
+}
 
 UdpSession::~UdpSession() { Revoke(); }
 

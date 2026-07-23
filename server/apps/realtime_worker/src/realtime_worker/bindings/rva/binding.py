@@ -98,6 +98,10 @@ class RvaWssBinding:
         return self._session_id
 
     @property
+    def session_epoch(self) -> str:
+        return self._session_epoch
+
+    @property
     def closed(self) -> bool:
         return self._state.closed
 

@@ -40,12 +40,12 @@ int main() {
     state.conversation = ConversationState::kListening;
     event = Reduce(&state, {.kind = CommandKind::kTransportPressed, .value = 0, .text = {}});
     assert(!event.has_value());
-    assert(state.preferred_transport == Transport::kWss);
+    assert(state.preferred_transport == Transport::kUdp);
 
     state.conversation = ConversationState::kIdle;
     event = Reduce(&state, {.kind = CommandKind::kTransportPressed, .value = 0, .text = {}});
     assert(event.has_value() && event->kind == EventKind::kSelectTransport);
-    assert(event->transport == Transport::kUdp);
+    assert(event->transport == Transport::kWss);
 
     const std::string chinese = "中文语音";
     assert(TruncateUtf8(chinese, 4) == "中");

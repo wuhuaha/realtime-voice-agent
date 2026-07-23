@@ -18,6 +18,7 @@ struct VoiceUiConfig final {
     const lv_font_t* large_font = nullptr;
     const lv_font_t* icon_font = nullptr;
     const char* microphone_glyph = "MIC";
+    bool microphone_lifecycle_enabled = true;
 };
 
 // Runtime mutations happen on the esp_lvgl_port task. Start/Stop mutate LVGL

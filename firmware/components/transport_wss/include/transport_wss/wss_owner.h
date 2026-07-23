@@ -1,8 +1,8 @@
 #pragma once
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
-#include <memory>
 #include <mutex>
 #include <vector>
 
@@ -13,6 +13,7 @@ namespace rva::wss {
 
 inline constexpr size_t kMaximumCallbackEvents = 8;
 inline constexpr size_t kMaximumQueuedCallbackBytes = 65536;
+inline constexpr size_t kMaximumCallbackFragmentBytes = 2048;
 
 enum class ClientEventType {
     kConnected,
@@ -32,10 +33,27 @@ struct ClientEventView final {
 
 struct OwnedClientEvent final {
     ClientEventType type = ClientEventType::kError;
-    std::unique_ptr<uint8_t[]> data;
+    std::array<uint8_t, kMaximumCallbackFragmentBytes> data{};
     size_t data_size = 0;
     size_t payload_offset = 0;
     size_t payload_size = 0;
+};
+
+class CallbackPayloadBuffer final {
+public:
+    CallbackPayloadBuffer() = default;
+    ~CallbackPayloadBuffer();
+    CallbackPayloadBuffer(const CallbackPayloadBuffer&) = delete;
+    CallbackPayloadBuffer& operator=(const CallbackPayloadBuffer&) = delete;
+
+    bool Allocate(size_t capacity) noexcept;
+    uint8_t* data() noexcept { return data_; }
+    const uint8_t* data() const noexcept { return data_; }
+    size_t capacity() const noexcept { return capacity_; }
+
+private:
+    uint8_t* data_ = nullptr;
+    size_t capacity_ = 0;
 };
 
 class CallbackEventQueue final {
@@ -49,10 +67,22 @@ public:
     uint32_t dropped_events() const;
 
 private:
-    const size_t capacity_;
+    struct Slot final {
+        ClientEventType type = ClientEventType::kError;
+        CallbackPayloadBuffer data{};
+        size_t data_size = 0;
+        size_t payload_offset = 0;
+        size_t payload_size = 0;
+        bool used = false;
+    };
+
+    size_t capacity_;
     const size_t byte_capacity_;
+    const size_t slot_capacity_;
     mutable std::mutex mutex_;
-    std::vector<OwnedClientEvent> events_;
+    std::array<Slot, kMaximumCallbackEvents> slots_{};
+    size_t head_ = 0;
+    size_t size_ = 0;
     size_t queued_bytes_ = 0;
     uint32_t dropped_events_ = 0;
 };

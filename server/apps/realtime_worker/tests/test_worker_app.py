@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 
 import httpx
 import pytest
@@ -844,6 +845,28 @@ async def test_grant_consumer_fails_closed_when_director_store_is_unavailable() 
         consumer = DirectorGrantConsumer(worker_settings, client=client)
         with pytest.raises(httpx.ConnectError):
             await consumer.consume("signed-token", device_id="device-1")
+
+
+@pytest.mark.asyncio
+async def test_grant_consumer_logs_director_reject_reason_without_token(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    def rejected(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(409, json={"detail": "grant_rejected", "reason": "grant_replay"})
+
+    token = "signed-" + "token-with-sensitive-payload"
+    worker_settings = settings(director_url="http://director.test")
+    caplog.set_level(logging.WARNING, logger="realtime_worker.app")
+    async with httpx.AsyncClient(transport=httpx.MockTransport(rejected)) as client:
+        consumer = DirectorGrantConsumer(worker_settings, client=client)
+        accepted = await consumer.consume(token, device_id="device-1")
+
+    assert accepted is False
+    assert "director_grant_consume_rejected reason=grant_replay status_code=409" in caplog.text
+    assert "device_ref=" in caplog.text
+    assert token not in caplog.text
+    assert "device-1" not in caplog.text
+    assert "validator-internal-token" not in caplog.text
 
 
 def test_live_provider_worker_is_not_ready_when_network_probe_fails(

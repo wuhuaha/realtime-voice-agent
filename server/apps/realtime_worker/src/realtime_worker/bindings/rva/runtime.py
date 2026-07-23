@@ -18,7 +18,7 @@ from starlette.websockets import WebSocketDisconnect
 from realtime_worker.agent import AgentOutputSegment, AgentRunner
 from realtime_worker.audio import PCM_SAMPLES
 from realtime_worker.lifecycle import run_with_hard_deadline
-from realtime_worker.transport import UdpMediaGateway, UdpMediaSession
+from realtime_worker.transport.udp_gateway import UdpMediaGateway, UdpMediaSession, UdpProbeTimeoutError
 from realtime_worker.voice.session import PlaybackRef
 
 from .binding import AgentControlPort, AudioInputPort, InboundAudioPacket, RvaWssBinding
@@ -208,6 +208,11 @@ class RvaWssConnection:
         self._last_udp_authenticated = 0
         self._input_pcm_sequence = 0
         self._downlink_timestamp = 0
+        self._wss_input_packets = 0
+        self._udp_input_packets = 0
+        self._decoded_pcm_frames = 0
+        self._runner_push_frames = 0
+        self._downlink_packets = 0
         self._response_sequence = 0
         self._utterance_sequence = 0
         self._active_utterance_id: str | None = None
@@ -230,6 +235,13 @@ class RvaWssConnection:
             if opened is None:
                 raise RvaBindingError("expected_session_open")
             self._mark_activity()
+            logger.info(
+                "rva_session_opened session=%s session_epoch=%s selected_media_profile=%s udp_enabled=%s",
+                self._binding_id,
+                self._binding.session_epoch,
+                self._binding.selected_media_profile,
+                self._binding.selected_media_profile == UDP_PROFILE,
+            )
             self._codec = await asyncio.to_thread(self._codec_factory)
             self._runner = self._runner_factory(self._emit_segment, self._request_stop)
             configure_text_sinks = getattr(self._runner, "set_text_sinks", None)
@@ -282,6 +294,8 @@ class RvaWssConnection:
             pass
         except TimeoutError:
             close_code, close_reason = 1_008, "handshake_timeout"
+        except UdpProbeTimeoutError:
+            close_code, close_reason = 1_008, "udp_probe_timeout"
         except RvaMessageTooLarge:
             close_code, close_reason = 1_009, "message_too_large"
         except RvaOverloadedError:
@@ -301,6 +315,21 @@ class RvaWssConnection:
             self._closed = True
             self.close_code = code
             self.close_reason = reason
+            logger.info(
+                "rva_session_closing session=%s session_epoch=%s close_code=%d close_reason=%s "
+                "selected_media_profile=%s wss_input_packets=%d udp_input_packets=%d "
+                "decoded_pcm_frames=%d runner_push_frames=%d downlink_packets=%d",
+                self._binding_id,
+                self._binding.session_epoch,
+                code,
+                reason,
+                self._binding.selected_media_profile or "none",
+                self._wss_input_packets,
+                self._udp_input_packets,
+                self._decoded_pcm_frames,
+                self._runner_push_frames,
+                self._downlink_packets,
+            )
             self._close_task = asyncio.create_task(self._close_impl(code, reason), name=f"rva-close-{self._binding_id}")
         try:
             await asyncio.wait_for(asyncio.shield(self._close_task), timeout=self._limits.close_timeout_seconds)
@@ -353,6 +382,8 @@ class RvaWssConnection:
                         return
             elif isinstance(binary, bytes):
                 await self._binding.receive_media(binary)
+                self._wss_input_packets += 1
+                self._log_input_progress_if_due(source="wss", packets=self._wss_input_packets)
                 self._mark_activity()
             else:
                 raise RvaBindingError("unsupported_websocket_frame")
@@ -375,9 +406,11 @@ class RvaWssConnection:
             except Exception as exc:
                 raise RvaBindingError("invalid_opus_packet") from exc
             self._input_pcm_sequence += len(frames)
+            self._decoded_pcm_frames += len(frames)
             for frame in frames:
                 try:
                     await runner.push_audio(frame)
+                    self._runner_push_frames += 1
                 except BufferError as exc:
                     raise RvaOverloadedError("agent input is full") from exc
 
@@ -456,6 +489,7 @@ class RvaWssConnection:
                             break
                         raise
                     await self._websocket.send_bytes(media)
+                self._downlink_packets += 1
                 self._downlink_timestamp = (self._downlink_timestamp + SAMPLES_PER_PACKET) & 0xFFFFFFFF
                 played_samples += min(3, len(frames)) * PCM_SAMPLES
             await self._send_pending_assistant_text(response_id, target)
@@ -609,7 +643,22 @@ class RvaWssConnection:
             return
         packet = InboundAudioPacket(self._udp_uplink_sequence, timestamp, payload)
         self._udp_uplink_sequence += 1
+        self._udp_input_packets += 1
+        self._log_input_progress_if_due(source="udp", packets=self._udp_input_packets)
         await self._audio_port.receive_audio(packet)
+
+    def _log_input_progress_if_due(self, *, source: str, packets: int) -> None:
+        if packets == 1 or packets % 50 == 0:
+            logger.info(
+                "rva_media_input session=%s source=%s packets=%d decoded_pcm_frames=%d "
+                "runner_push_frames=%d queue_size=%d",
+                self._binding_id,
+                source,
+                packets,
+                self._decoded_pcm_frames,
+                self._runner_push_frames,
+                self._audio_port.queue.qsize(),
+            )
 
     def _rva_udp_grant(self) -> dict[str, object] | None:
         session = self._udp_session

@@ -338,8 +338,9 @@ async def test_grant_consumption_is_shared_single_use_and_route_bound() -> None:
         lease_ttl_seconds=20,
         clock=clock,
     )
-    with pytest.raises(GrantConsumeError):
+    with pytest.raises(GrantConsumeError) as replayed:
         await restarted_service.consume_grant(opened.connect_grant, worker_id="worker-a", device_id="device-1")
+    assert replayed.value.reason == "grant_replay"
 
     second = await service.bootstrap(BootstrapRequest(tenant_id="tenant-1", device_id="device-2"))
     await store.release_route_claim(
@@ -351,5 +352,6 @@ async def test_grant_consumption_is_shared_single_use_and_route_bound() -> None:
             fencing_token=second.fencing_token,
         ),
     )
-    with pytest.raises(GrantConsumeError):
+    with pytest.raises(GrantConsumeError) as released_route:
         await service.consume_grant(second.connect_grant, worker_id="worker-a", device_id="device-2")
+    assert released_route.value.reason == "no_route"

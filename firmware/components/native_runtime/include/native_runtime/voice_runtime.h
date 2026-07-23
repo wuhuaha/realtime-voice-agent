@@ -107,6 +107,8 @@ private:
     bool CompleteResponseDrainIfDue(int64_t now_us);
     bool SendSessionOpen();
     bool ConfigureUdp(const protocol::SessionOpened& opened);
+    bool StartMediaRuntime();
+    void StopMediaRuntime();
     bool StartPlaybackResampler();
     void StopPlaybackResampler();
     void MarkTaskStopped(EventBits_t bit);
@@ -151,6 +153,7 @@ private:
     std::string authorization_headers_;
     std::atomic<bool> running_{false};
     std::atomic<bool> started_{false};
+    std::atomic<bool> media_started_{false};
     std::atomic<bool> session_opened_{false};
     std::atomic<MediaPreference> preferred_media_{MediaPreference::kWss};
     std::atomic<voice::core::MediaOwner> media_owner_{voice::core::MediaOwner::kNone};
@@ -162,6 +165,7 @@ private:
     std::atomic<int64_t> udp_next_keepalive_us_{0};
     std::atomic<int64_t> response_end_deadline_us_{0};
     std::atomic<bool> fallback_to_wss_{false};
+    std::atomic<uint32_t> wss_playback_queue_dropped_{0};
     FailClosedHook fail_closed_hook_ = nullptr;
     void* fail_closed_context_ = nullptr;
     uint32_t uplink_sequence_ = 0;

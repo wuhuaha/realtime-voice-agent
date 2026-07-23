@@ -117,7 +117,9 @@ async def test_redis_store_enforces_route_owner_capacity_and_fencing() -> None:
         )
         assert await store.consume_grant(claims, now=1_700_000_010)
         restarted = RedisCoordinationStore(client, prefix=prefix)
-        assert not await restarted.consume_grant(claims, now=1_700_000_010)
+        replay = await restarted.consume_grant_result(claims, now=1_700_000_010)
+        assert replay.consumed is False
+        assert replay.reason == "grant_replay"
     finally:
         keys = [key async for key in client.scan_iter(match=f"{prefix}:*")]
         if keys:

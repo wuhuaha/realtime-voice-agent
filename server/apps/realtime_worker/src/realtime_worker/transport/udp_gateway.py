@@ -39,6 +39,10 @@ class UdpMediaError(RuntimeError):
     """The UDP media session cannot continue safely."""
 
 
+class UdpProbeTimeoutError(UdpMediaError):
+    """The client did not prove the UDP media path within the bounded probe window."""
+
+
 @dataclass(frozen=True, slots=True)
 class UdpGrant:
     media_id: bytes
@@ -148,7 +152,38 @@ class UdpMediaSession:
             self.stats.queue_dropped += 1
 
     async def wait_ready(self, timeout: float) -> None:
-        await asyncio.wait_for(self._ready.wait(), timeout=timeout)
+        started_at = time.monotonic()
+        logger.info(
+            "udp_wait_ready_started media_id=%s media_epoch=%d timeout_ms=%d",
+            self.grant.media_id.hex(),
+            self.grant.media_epoch,
+            int(timeout * 1000),
+        )
+        try:
+            await asyncio.wait_for(self._ready.wait(), timeout=timeout)
+        except TimeoutError as exc:
+            logger.warning(
+                "udp_wait_ready_failed reason=udp_probe_timeout media_id=%s media_epoch=%d timeout_ms=%d "
+                "received=%d authenticated=%d invalid=%d replayed=%d wrong_source=%d queue_dropped=%d",
+                self.grant.media_id.hex(),
+                self.grant.media_epoch,
+                int(timeout * 1000),
+                self.stats.received,
+                self.stats.authenticated,
+                self.stats.invalid,
+                self.stats.replayed,
+                self.stats.wrong_source,
+                self.stats.queue_dropped,
+            )
+            raise UdpProbeTimeoutError("UDP media probe timed out") from exc
+        logger.info(
+            "udp_wait_ready_completed media_id=%s media_epoch=%d elapsed_ms=%d authenticated=%d invalid=%d",
+            self.grant.media_id.hex(),
+            self.grant.media_epoch,
+            int((time.monotonic() - started_at) * 1000),
+            self.stats.authenticated,
+            self.stats.invalid,
+        )
 
     async def send_audio(self, payload: bytes, *, timestamp: int, generation: int) -> None:
         if self._expired or time.time() >= self.grant.expires_at:

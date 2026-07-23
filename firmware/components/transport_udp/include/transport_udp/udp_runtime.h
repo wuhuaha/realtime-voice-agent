@@ -34,6 +34,9 @@ public:
     // from reaching decode/playback after scheduling or future-generation wait.
     static constexpr int64_t kMaximumMediaAgeUs = 360000;
 
+    static void* operator new(size_t size);
+    static void operator delete(void* pointer) noexcept;
+
     UdpRuntime(UdpSession& session, DatagramIoPort& io);
     ~UdpRuntime();
     bool Start();

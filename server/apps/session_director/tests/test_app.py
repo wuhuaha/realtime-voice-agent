@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+
 import pytest
 import session_director.app as director_app
 from fastapi.testclient import TestClient
@@ -84,6 +86,59 @@ def test_heartbeat_bootstrap_and_drain_contract() -> None:
             json={"device_id": "device-2"},
         )
         assert rejected.status_code == 503
+
+
+def test_grant_consume_reject_reason_is_specific_and_redacted(caplog: pytest.LogCaptureFixture) -> None:
+    app = create_app(settings(), store=InMemoryCoordinationStore())
+    internal = {"X-Internal-Token": "validator-internal-token"}
+    caplog.set_level(logging.WARNING, logger="session_director.app")
+    with TestClient(app) as client:
+        assert client.post(
+            "/internal/v1/workers/heartbeat",
+            headers=internal,
+            json={
+                "worker_id": "worker-a",
+                "public_wss_url": "ws://worker-a.test/v1/voice",
+                "active_sessions": 0,
+                "profiles": ["wss-opus-v2"],
+            },
+        ).status_code == 200
+        opened = client.post(
+            "/v1/session/bootstrap",
+            headers={"Authorization": "Bearer validator-device-token"},
+            json={"tenant_id": "tenant-1", "device_id": "device-1", "supported_profiles": ["wss-opus-v2"]},
+        ).json()
+
+        consumed = client.post(
+            "/internal/v1/grants/consume",
+            headers=internal,
+            json={"token": opened["connect_grant"], "worker_id": "worker-a", "device_id": "device-1"},
+        )
+        replay = client.post(
+            "/internal/v1/grants/consume",
+            headers=internal,
+            json={"token": opened["connect_grant"], "worker_id": "worker-a", "device_id": "device-1"},
+        )
+        corrupted_token = opened["connect_grant"][:-1] + ("A" if opened["connect_grant"][-1] != "A" else "B")
+        invalid_signature = client.post(
+            "/internal/v1/grants/consume",
+            headers=internal,
+            json={"token": corrupted_token, "worker_id": "worker-a", "device_id": "device-1"},
+        )
+
+    assert consumed.status_code == 200
+    assert replay.status_code == 409
+    assert replay.json() == {"detail": "grant_rejected", "reason": "grant_replay"}
+    assert invalid_signature.status_code == 409
+    assert invalid_signature.json() == {"detail": "grant_rejected", "reason": "invalid_grant_signature"}
+    assert "reason=grant_replay" in caplog.text
+    assert "reason=invalid_grant_signature" in caplog.text
+    assert opened["connect_grant"] not in caplog.text
+    assert corrupted_token not in caplog.text
+    assert "validator-grant-signing-key-with-32-bytes" not in caplog.text
+    assert "validator-internal-token" not in caplog.text
+    assert "device-1" not in caplog.text
+    assert "device_ref=" in caplog.text
 
 
 def test_internal_and_bootstrap_credentials_are_separate() -> None:
