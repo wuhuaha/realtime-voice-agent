@@ -195,7 +195,7 @@ bool DecodeFixedBase64(const std::string& encoded, std::array<uint8_t, Size>* ou
 bool ParseUdpGrant(const cJSON* object, UdpGrant* grant) {
     if (!HasExactFields(
             object,
-            {"host", "port", "expires_at_ms", "uplink_key_b64", "uplink_salt_b64",
+            {"host", "port", "expires_at_ms", "refresh_after_ms", "uplink_key_b64", "uplink_salt_b64",
              "downlink_key_b64", "downlink_salt_b64", "probe_timeout_ms"})) {
         return false;
     }
@@ -207,6 +207,8 @@ bool ParseUdpGrant(const cJSON* object, UdpGrant* grant) {
     if (!GetString(object, "host", 253, false, &grant->host) ||
         !GetU32(object, "port", false, &port) || port > 65535 ||
         !GetU64(object, "expires_at_ms", &grant->expires_at_ms) ||
+        !GetU32(object, "refresh_after_ms", false, &grant->refresh_after_ms) ||
+        grant->refresh_after_ms < 1000 || grant->refresh_after_ms > 3600000 ||
         !GetString(object, "uplink_key_b64", 24, false, &uplink_key) ||
         !DecodeFixedBase64(uplink_key, &grant->uplink_key) ||
         !GetString(object, "uplink_salt_b64", 12, false, &uplink_salt) ||

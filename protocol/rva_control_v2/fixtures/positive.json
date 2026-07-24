@@ -51,6 +51,7 @@
           "host": "voice.example.test",
           "port": 8443,
           "expires_at_ms": 1780000000000,
+          "refresh_after_ms": 595000,
           "uplink_key_b64": "AAAAAAAAAAAAAAAAAAAAAA==",
           "uplink_salt_b64": "AAAAAAAAAAA=",
           "downlink_key_b64": "/////////////////////w==",

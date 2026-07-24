@@ -167,7 +167,7 @@ bool VoiceRuntime::Start(
 void VoiceRuntime::Stop() {
     if (!started_.exchange(false)) return;
     const bool was_running = running_.exchange(false);
-    if (was_running && session_opened_ && owner_ != nullptr) {
+    if ((was_running || udp_refresh_requested_.load()) && session_opened_ && owner_ != nullptr) {
         protocol::SessionOpened identity;
         {
             std::lock_guard<std::mutex> lock(identity_mutex_);
@@ -177,7 +177,7 @@ void VoiceRuntime::Stop() {
             .session = identity.session,
             .reason = "normal",
             .initiated_by = "device",
-            .detail = "",
+            .detail = udp_refresh_requested_.load() ? "udp_grant_refresh" : "",
         };
         std::string json;
         if (protocol::EncodeSessionClose(close, &json) == protocol::ControlError::kOk) {
@@ -386,7 +386,10 @@ void VoiceRuntime::RunSupervisor() {
             const uint32_t media_age_dropped = udp_runtime_->playout_media_age_dropped();
             const char* failure = nullptr;
             if (expiry_deadline_us > 0 && now_us >= expiry_deadline_us) {
-                failure = "udp_grant_expired";
+                ESP_LOGI(kLogTag, "UDP grant nearing expiry; requesting fresh session");
+                udp_refresh_requested_ = true;
+                running_ = false;
+                continue;
             } else if (liveness_timeout_us > 0 && last_receive_us > 0 &&
                        now_us - last_receive_us >= liveness_timeout_us) {
                 failure = "udp_media_inactive";
@@ -765,8 +768,6 @@ bool VoiceRuntime::ConfigureUdp(const protocol::SessionOpened& opened) {
                  static_cast<long long>(now_ms),
                  static_cast<unsigned long long>(control.expires_at_ms));
     }
-    const uint64_t remaining_ms = clock_valid ? control.expires_at_ms - static_cast<uint64_t>(now_ms) : 0;
-
     auto uplink = std::make_unique<udp::MbedTlsGcm>();
     auto downlink = std::make_unique<udp::MbedTlsGcm>();
     auto session = std::make_unique<udp::UdpSession>(*uplink, *downlink);
@@ -830,11 +831,10 @@ bool VoiceRuntime::ConfigureUdp(const protocol::SessionOpened& opened) {
     const int64_t now_us = esp_timer_get_time();
     const uint64_t maximum_remaining_ms =
         static_cast<uint64_t>((std::numeric_limits<int64_t>::max() - now_us) / 1000);
-    udp_expiry_deadline_us_ = !clock_valid
-                                  ? 0
-                                  : (remaining_ms > maximum_remaining_ms
-                                         ? std::numeric_limits<int64_t>::max()
-                                         : now_us + static_cast<int64_t>(remaining_ms) * 1000);
+    const uint64_t refresh_delay_ms = control.refresh_after_ms;
+    udp_expiry_deadline_us_ = refresh_delay_ms > maximum_remaining_ms
+                                  ? std::numeric_limits<int64_t>::max()
+                                  : now_us + static_cast<int64_t>(refresh_delay_ms) * 1000;
     return true;
 }
 

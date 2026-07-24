@@ -3,17 +3,20 @@ from __future__ import annotations
 import asyncio
 import json
 from collections.abc import Awaitable, Callable
+from types import SimpleNamespace
 
 import pytest
 from realtime_worker.agent import AgentOutputSegment
 from realtime_worker.audio import PCM_SAMPLES, PcmFrame
 from realtime_worker.bindings.rva import (
+    RvaBindingError,
     RvaOpusCodec,
     RvaRuntimeLimits,
     RvaWssConnection,
     WssMediaFrame,
 )
 from realtime_worker.interruption import InterruptionPolicyConfig, LayeredInterruptionPolicy
+from realtime_worker.transport.udp_gateway import UdpGrantExpiredError
 
 
 def pcm_frame(sequence: int) -> PcmFrame:
@@ -221,6 +224,30 @@ def test_runtime_passes_non_default_close_stage_timeout_to_session_state() -> No
     )
 
     assert connection.binding._responses._state._close_stage_timeout_seconds == 0.125  # noqa: SLF001
+
+
+@pytest.mark.unit
+def test_udp_grant_advertises_monotonic_refresh_before_hard_expiry() -> None:
+    connection = object.__new__(RvaWssConnection)
+    connection._wall_clock = lambda: 1_000.0  # type: ignore[attr-defined]  # noqa: SLF001
+    connection._udp_session = SimpleNamespace(  # type: ignore[attr-defined]  # noqa: SLF001
+        grant=SimpleNamespace(
+            host="voice.example.test",
+            port=8093,
+            expires_at=1_600,
+            uplink_key=bytes(16),
+            uplink_salt=bytes(8),
+            downlink_key=bytes(16),
+            downlink_salt=bytes(8),
+            probe_timeout_ms=1_500,
+        )
+    )
+
+    grant = connection._rva_udp_grant()  # noqa: SLF001
+
+    assert grant is not None
+    assert grant["expires_at_ms"] == 1_600_000
+    assert grant["refresh_after_ms"] == 595_000
 
 
 @pytest.mark.unit
@@ -476,6 +503,38 @@ async def test_idle_session_is_closed_at_the_advertised_deadline() -> None:
 
     assert runners[0].close_calls == 1
     assert websocket.closed == [(1_000, "idle_timeout")]
+
+
+@pytest.mark.integration
+async def test_udp_grant_expiry_requests_planned_session_rotation() -> None:
+    websocket = FakeWebSocket()
+    connection, runners = create_connection(websocket, trigger_frames=1_000)
+    websocket.feed_open()
+    task = asyncio.create_task(connection.run())
+    await websocket.wait_control("session.opened")
+
+    connection._report_failure(UdpGrantExpiredError("sensitive expiry detail"))  # noqa: SLF001
+    await asyncio.wait_for(task, timeout=2.0)
+
+    assert runners[0].close_calls == 1
+    assert websocket.closed == [(1_000, "udp_grant_expired")]
+
+
+@pytest.mark.integration
+async def test_protocol_failure_logs_only_stable_error_code(caplog: pytest.LogCaptureFixture) -> None:
+    websocket = FakeWebSocket()
+    connection, _ = create_connection(websocket, trigger_frames=1_000)
+    websocket.feed_open()
+    task = asyncio.create_task(connection.run())
+    await websocket.wait_control("session.opened")
+
+    with caplog.at_level("WARNING"):
+        connection._report_failure(RvaBindingError("invalid_test_control", "sensitive detail"))  # noqa: SLF001
+        await asyncio.wait_for(task, timeout=2.0)
+
+    assert websocket.closed == [(1_002, "protocol_error")]
+    assert "error_code=invalid_test_control" in caplog.text
+    assert "sensitive detail" not in caplog.text
 
 
 @pytest.mark.unit

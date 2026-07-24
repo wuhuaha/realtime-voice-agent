@@ -208,6 +208,11 @@ state_rules:
     rule: No control or media input is accepted after session.close for the same session epoch.
     violation: session_closed
 
+udp_grant_lifecycle:
+  absolute_expiry_field: expires_at_ms
+  monotonic_refresh_field: refresh_after_ms
+  rule: Endpoints fresh-bootstrap when refresh_after_ms elapses; this scheduling uses a monotonic clock and does not require wall-clock synchronization. The server still enforces expires_at_ms as the hard security boundary.
+
 audio:
   codec: opus
   sample_rate_hz: 16000

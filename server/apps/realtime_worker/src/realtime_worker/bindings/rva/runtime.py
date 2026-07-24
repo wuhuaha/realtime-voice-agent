@@ -17,7 +17,12 @@ from starlette.websockets import WebSocketDisconnect
 from realtime_worker.agent import AgentOutputSegment, AgentRunner
 from realtime_worker.interruption import InterruptionContext, InterruptionCoordinator, LayeredInterruptionPolicy
 from realtime_worker.lifecycle import run_with_hard_deadline
-from realtime_worker.transport.udp_gateway import UdpMediaGateway, UdpMediaSession, UdpProbeTimeoutError
+from realtime_worker.transport.udp_gateway import (
+    UdpGrantExpiredError,
+    UdpMediaGateway,
+    UdpMediaSession,
+    UdpProbeTimeoutError,
+)
 from realtime_worker.voice.session import PlaybackRef
 
 from .binding import AgentControlPort, AudioInputPort, ControlEffect, InboundAudioPacket, RvaWssBinding
@@ -165,6 +170,7 @@ class RvaWssConnection:
         limits: RvaRuntimeLimits | None = None,
         codec_factory: CodecFactory = RvaOpusCodec,
         clock: Clock = time.monotonic,
+        wall_clock: Clock = time.time,
         interruption_policy: LayeredInterruptionPolicy | None = None,
     ) -> None:
         self._websocket = websocket
@@ -178,6 +184,7 @@ class RvaWssConnection:
         self._runner_factory = runner_factory
         self._codec_factory = codec_factory
         self._clock = clock
+        self._wall_clock = wall_clock
         self._failures: asyncio.Queue[BaseException] = asyncio.Queue(1)
         self._audio_port = _AudioQueuePort(self, self._limits.input_queue_packets)
         self._agent_port = _AgentPort(self)
@@ -308,13 +315,20 @@ class RvaWssConnection:
             close_code, close_reason = 1_008, "handshake_timeout"
         except UdpProbeTimeoutError:
             close_code, close_reason = 1_008, "udp_probe_timeout"
+        except UdpGrantExpiredError:
+            close_code, close_reason = 1_000, "udp_grant_expired"
         except RvaMessageTooLarge:
             close_code, close_reason = 1_009, "message_too_large"
         except RvaOverloadedError:
             close_code, close_reason = 1_013, "media_overloaded"
         except RvaIdleTimeoutError:
             close_code, close_reason = 1_000, "idle_timeout"
-        except RvaBindingError:
+        except RvaBindingError as exc:
+            logger.warning(
+                "rva_protocol_error session=%s error_code=%s",
+                self._binding_id,
+                exc.code,
+            )
             close_code, close_reason = 1_002, "protocol_error"
         except Exception:
             logger.exception("RVA WSS session failed session=%s", self._binding_id)
@@ -777,10 +791,15 @@ class RvaWssConnection:
         if session is None:
             return None
         grant = session.grant
+        refresh_after_ms = max(
+            1_000,
+            min(3_600_000, grant.expires_at * 1_000 - int(self._wall_clock() * 1_000) - 5_000),
+        )
         return {
             "host": grant.host,
             "port": grant.port,
             "expires_at_ms": grant.expires_at * 1_000,
+            "refresh_after_ms": refresh_after_ms,
             "uplink_key_b64": base64.b64encode(grant.uplink_key).decode("ascii"),
             "uplink_salt_b64": base64.b64encode(grant.uplink_salt).decode("ascii"),
             "downlink_key_b64": base64.b64encode(grant.downlink_key).decode("ascii"),

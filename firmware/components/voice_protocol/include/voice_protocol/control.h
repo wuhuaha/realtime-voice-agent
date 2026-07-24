@@ -55,6 +55,7 @@ struct UdpGrant final {
     std::string host;
     uint16_t port = 0;
     uint64_t expires_at_ms = 0;
+    uint32_t refresh_after_ms = 0;
     std::array<uint8_t, 16> uplink_key{};
     std::array<uint8_t, 8> uplink_salt{};
     std::array<uint8_t, 16> downlink_key{};

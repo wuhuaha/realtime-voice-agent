@@ -272,6 +272,7 @@
           "host": "example.test",
           "port": 1,
           "expires_at_ms": 1,
+          "refresh_after_ms": 1000,
           "uplink_key_b64": "AAAAAAAAAAAAAAAAAAAAAA==",
           "uplink_salt_b64": "AAAAAAAAAAA=",
           "downlink_key_b64": "AAAAAAAAAAAAAAAAAAAAAA==",

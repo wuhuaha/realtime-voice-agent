@@ -189,6 +189,7 @@ private:
     std::atomic<int64_t> udp_heartbeat_interval_us_{0};
     std::atomic<int64_t> udp_liveness_timeout_us_{0};
     std::atomic<int64_t> udp_next_keepalive_us_{0};
+    std::atomic<bool> udp_refresh_requested_{false};
     std::atomic<bool> fallback_to_wss_{false};
     std::atomic<uint32_t> wss_playback_queue_dropped_{0};
     FailClosedHook fail_closed_hook_ = nullptr;

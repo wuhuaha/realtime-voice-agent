@@ -43,6 +43,10 @@ class UdpProbeTimeoutError(UdpMediaError):
     """The client did not prove the UDP media path within the bounded probe window."""
 
 
+class UdpGrantExpiredError(UdpMediaError):
+    """The bounded UDP media grant reached its planned expiry."""
+
+
 @dataclass(frozen=True, slots=True)
 class UdpGrant:
     media_id: bytes
@@ -187,7 +191,7 @@ class UdpMediaSession:
 
     async def send_audio(self, payload: bytes, *, timestamp: int, generation: int) -> int:
         if self._expired or time.time() >= self.grant.expires_at:
-            raise UdpMediaError("UDP media session expired")
+            raise UdpGrantExpiredError("UDP media grant expired")
         if self._closed or self._source is None or not self._ready.is_set():
             raise UdpMediaError("UDP media path is not ready")
         return await self._send(UDP_FLAG_AUDIO, payload, timestamp=timestamp, generation=generation)
@@ -219,7 +223,7 @@ class UdpMediaSession:
                 self._worker.cancel()
                 if self._reorder_timer is not None:
                     self._reorder_timer.cancel()
-                self._report_failure(UdpMediaError("UDP media session expired"))
+                self._report_failure(UdpGrantExpiredError("UDP media grant expired"))
         except asyncio.CancelledError:
             raise
 
@@ -392,7 +396,7 @@ class UdpMediaSession:
 
     async def _send(self, flags: int, payload: bytes, *, timestamp: int, generation: int) -> int:
         if self._expired or time.time() >= self.grant.expires_at:
-            raise UdpMediaError("UDP media session expired")
+            raise UdpGrantExpiredError("UDP media grant expired")
         if len(payload) > UDP_MAX_PAYLOAD_BYTES:
             raise UdpMediaError("UDP payload exceeds profile limit")
         source = self._source

@@ -105,7 +105,7 @@ void TestStrictControlParserAndEncoders() {
         R"("selected_media_profile":"udp-opus-gcm-v2","audio":{"codec":"opus","sample_rate_hz":16000,)"
         R"("channels":1,"frame_duration_ms":60},"heartbeat_interval_ms":15000,"idle_timeout_ms":45000,)"
         R"("max_control_message_bytes":32768,"udp_grant":{"host":"voice.example.test","port":8443,)"
-        R"("expires_at_ms":1780000000000,"uplink_key_b64":"AAAAAAAAAAAAAAAAAAAAAA==",)"
+        R"("expires_at_ms":1780000000000,"refresh_after_ms":595000,"uplink_key_b64":"AAAAAAAAAAAAAAAAAAAAAA==",)"
         R"("uplink_salt_b64":"AAAAAAAAAAA=","downlink_key_b64":"/////////////////////w==",)"
         R"("downlink_salt_b64":"//////////8=","probe_timeout_ms":1500}})";
     assert(rva::protocol::ParseServerMessage(
@@ -117,6 +117,7 @@ void TestStrictControlParserAndEncoders() {
     assert(opened_udp.udp_grant->host == "voice.example.test");
     assert(opened_udp.udp_grant->port == 8443);
     assert(opened_udp.udp_grant->expires_at_ms == 1780000000000ULL);
+    assert(opened_udp.udp_grant->refresh_after_ms == 595000);
     assert(opened_udp.udp_grant->probe_timeout_ms == 1500);
     assert(opened_udp.udp_grant->uplink_key[0] == 0 && opened_udp.udp_grant->uplink_key[15] == 0);
     assert(opened_udp.udp_grant->downlink_key[0] == 0xff && opened_udp.udp_grant->downlink_key[15] == 0xff);
