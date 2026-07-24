@@ -96,7 +96,6 @@ AdmissionResult WssSession::AcceptResponse(const protocol::ResponseEvent& respon
         response_generation_ = response.generation;
         response_id_ = response.response_id;
         next_response_text_sequence_ = 0;
-        next_media_sequence_ = 0;
         response_active_ = true;
         media_active_ = true;
         stop_recorded_ = false;

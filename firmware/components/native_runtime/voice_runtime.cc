@@ -579,6 +579,11 @@ void VoiceRuntime::HandleMedia(const std::vector<uint8_t>& frame) {
         return;
     }
     if (admitted != wss::AdmissionResult::kAccepted || header.payload_length == 0) {
+        ESP_LOGW(
+            kLogTag,
+            "WSS media rejected: admission=%u frame_bytes=%u",
+            static_cast<unsigned>(admitted),
+            static_cast<unsigned>(frame.size()));
         events_.OnFailure("wss_media_admission");
         running_ = false;
         return;

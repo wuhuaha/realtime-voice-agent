@@ -340,6 +340,39 @@ void TestSessionIdentityGenerationAndSequenceFences() {
     assert(session.Accept(begin) == AdmissionResult::kSessionClosed);
 }
 
+void TestDownlinkMediaSequenceSpansResponses() {
+    rva::wss::WssSession session("open-001");
+    SessionOpened opened;
+    opened.request_id = "open-001";
+    opened.session = {"session-001", "epoch-007"};
+    opened.media_id = {0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef};
+    opened.media_epoch = 7;
+    assert(session.Accept(opened) == AdmissionResult::kAccepted);
+
+    ResponseEvent response;
+    response.type = ServerMessageType::kResponseBegin;
+    response.session = opened.session;
+    response.response_id = "resp-1";
+    response.generation = 1;
+    assert(session.Accept(response) == AdmissionResult::kAccepted);
+
+    MediaHeader parsed;
+    auto media = MakeMediaFrame(opened.media_id, opened.media_epoch, 0, 1);
+    assert(session.AcceptMedia(media.data(), media.size(), &parsed) == AdmissionResult::kAccepted);
+    response.type = ServerMessageType::kResponseEnd;
+    response.outcome = rva::protocol::ResponseOutcome::kCompleted;
+    assert(session.Accept(response) == AdmissionResult::kAccepted);
+
+    response.type = ServerMessageType::kResponseBegin;
+    response.response_id = "resp-2";
+    response.generation = 2;
+    assert(session.Accept(response) == AdmissionResult::kAccepted);
+    media = MakeMediaFrame(opened.media_id, opened.media_epoch, 1, 2);
+    assert(session.AcceptMedia(media.data(), media.size(), &parsed) == AdmissionResult::kAccepted);
+    media = MakeMediaFrame(opened.media_id, opened.media_epoch, 0, 2);
+    assert(session.AcceptMedia(media.data(), media.size(), &parsed) == AdmissionResult::kInvalidSequence);
+}
+
 void TestCallbackOnlyQueuesAndSupervisorOwnsTeardown() {
     FakeClient client;
     {
@@ -396,6 +429,7 @@ int main() {
     TestStrictControlParserAndEncoders();
     TestMediaHeaderStrictRoundTrip();
     TestSessionIdentityGenerationAndSequenceFences();
+    TestDownlinkMediaSequenceSpansResponses();
     TestCallbackOnlyQueuesAndSupervisorOwnsTeardown();
     TestTeardownFailureIsObservableAndRetryable();
     return 0;
