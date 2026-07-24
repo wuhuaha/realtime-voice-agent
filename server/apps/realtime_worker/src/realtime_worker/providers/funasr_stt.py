@@ -646,11 +646,41 @@ class StandaloneFunASRStream:
                 continue
             message_type = parsed.get("type")
             if message_type == "error":
-                raise ProviderError("funasr", "standalone ASR rejected the stream", retryable=True)
+                code = parsed.get("code")
+                detail = parsed.get("error")
+                if code == "invalid_audio" and detail == "FunASR returned empty text":
+                    await self._put_event(
+                        RecognitionEvent(
+                            kind=RecognitionKind.FINAL,
+                            text="",
+                            segment_id=segment_id,
+                            request_id=request_id,
+                            raw_mode="standalone-empty-final",
+                        )
+                    )
+                    return
+                known_codes = {
+                    "already_started",
+                    "busy",
+                    "inference_failed",
+                    "invalid_audio",
+                    "invalid_event",
+                    "invalid_json",
+                    "invalid_start",
+                    "start_required",
+                    "streaming_disabled",
+                }
+                safe_code = code if isinstance(code, str) and code in known_codes else "unknown"
+                retryable = safe_code in {"busy", "inference_failed"}
+                raise ProviderError(
+                    "funasr",
+                    f"standalone ASR rejected the stream ({safe_code})",
+                    retryable=retryable,
+                )
             if message_type not in {"interim", "final"}:
                 continue
             text = parsed.get("text")
-            if isinstance(text, str) and text.strip():
+            if isinstance(text, str) and (text.strip() or message_type == "final"):
                 normalized_text = " ".join(text.split())
                 if message_type == "interim" and normalized_text == last_normalized_interim:
                     if self._tracer:
@@ -668,7 +698,7 @@ class StandaloneFunASRStream:
                 await self._put_event(
                     RecognitionEvent(
                         kind=RecognitionKind.FINAL if message_type == "final" else RecognitionKind.INTERIM,
-                        text=text,
+                        text=text if normalized_text else "",
                         segment_id=segment_id,
                         request_id=request_id,
                         raw_mode=f"standalone-{message_type}",

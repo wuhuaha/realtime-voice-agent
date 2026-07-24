@@ -621,8 +621,21 @@ async def test_standalone_funasr_recognize_rejects_non_mono_audio() -> None:
 
 
 @pytest.mark.asyncio
-async def test_standalone_funasr_recognize_maps_empty_final_timeout_and_closes(
+@pytest.mark.parametrize(
+    "response",
+    [
+        {"type": "final", "text": ""},
+        {"type": "final", "text": "   "},
+        {
+            "type": "error",
+            "code": "invalid_audio",
+            "error": "FunASR returned empty text",
+        },
+    ],
+)
+async def test_standalone_funasr_recognize_accepts_provider_empty_result_without_retry(
     monkeypatch: pytest.MonkeyPatch,
+    response: dict[str, str],
 ) -> None:
     socket = FakeWebSocket()
     monkeypatch.setattr(
@@ -634,21 +647,65 @@ async def test_standalone_funasr_recognize_maps_empty_final_timeout_and_closes(
         FunASRStreamConfig(
             url="ws://standalone-funasr.test/v1/asr/stream",
             protocol=FunASRProtocol.STANDALONE,
-            timeout_seconds=0.01,
+            timeout_seconds=1.0,
         )
     )
     frame = rtc.AudioFrame(data=b"a" * 1920, sample_rate=16000, num_channels=1, samples_per_channel=960)
-    await socket.incoming.put(json.dumps({"type": "final", "text": ""}))
+    await socket.incoming.put(json.dumps(response))
 
-    with pytest.raises(APIConnectionError) as error:
-        await adapter.recognize(frame, conn_options=APIConnectOptions(max_retry=0))
+    event = await adapter.recognize(frame, conn_options=APIConnectOptions(max_retry=0))
 
-    assert error.value.retryable is True
+    assert event.alternatives[0].text == ""
     assert socket.closed is True
 
 
 @pytest.mark.asyncio
-async def test_standalone_funasr_recognize_maps_provider_error_and_closes(
+@pytest.mark.parametrize(
+    ("code", "expected_retryable"),
+    [
+        ("inference_failed", True),
+        ("busy", True),
+        ("invalid_audio", False),
+        ("invalid_start", False),
+        ("unknown_provider_code", False),
+    ],
+)
+async def test_standalone_funasr_recognize_classifies_provider_error_and_closes(
+    monkeypatch: pytest.MonkeyPatch,
+    code: str,
+    expected_retryable: bool,
+) -> None:
+    socket = FakeWebSocket()
+    monkeypatch.setattr(
+        funasr_stt,
+        "_open_websocket",
+        lambda url, timeout: fake_factory(socket, url, timeout),
+    )
+    adapter = FunASRSTT(
+        FunASRStreamConfig(
+            url="ws://standalone-funasr.test/v1/asr/stream",
+            protocol=FunASRProtocol.STANDALONE,
+        )
+    )
+    frame = rtc.AudioFrame(data=b"a" * 1920, sample_rate=16000, num_channels=1, samples_per_channel=960)
+    await socket.incoming.put(
+        json.dumps({"type": "error", "code": code, "error": "private provider detail"})
+    )
+
+    with pytest.raises(APIConnectionError) as error:
+        await adapter.recognize(frame, conn_options=APIConnectOptions(max_retry=0))
+
+    assert error.value.retryable is expected_retryable
+    expected_code = "unknown" if code == "unknown_provider_code" else code
+    assert expected_code in str(error.value)
+    if code == "unknown_provider_code":
+        assert code not in str(error.value)
+    assert "private provider detail" not in str(error.value)
+    assert socket.closed is True
+
+
+@pytest.mark.asyncio
+async def test_standalone_funasr_rejects_non_string_error_code_without_retry_or_detail(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     socket = FakeWebSocket()
@@ -664,12 +721,15 @@ async def test_standalone_funasr_recognize_maps_provider_error_and_closes(
         )
     )
     frame = rtc.AudioFrame(data=b"a" * 1920, sample_rate=16000, num_channels=1, samples_per_channel=960)
-    await socket.incoming.put(json.dumps({"type": "error", "error": "private provider detail"}))
+    await socket.incoming.put(
+        json.dumps({"type": "error", "code": ["invalid_start"], "error": "private provider detail"})
+    )
 
     with pytest.raises(APIConnectionError) as error:
         await adapter.recognize(frame, conn_options=APIConnectOptions(max_retry=0))
 
-    assert error.value.retryable is True
+    assert error.value.retryable is False
+    assert "unknown" in str(error.value)
     assert "private provider detail" not in str(error.value)
     assert socket.closed is True
 

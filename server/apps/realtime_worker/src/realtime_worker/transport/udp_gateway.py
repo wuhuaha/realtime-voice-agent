@@ -289,7 +289,7 @@ class UdpMediaSession:
                     return
             self._replay.commit(header.sequence)
             self._source = addr
-            await self._send(UDP_FLAG_PROBE_ACK, b"", timestamp=0, generation=1)
+            await self._send(UDP_FLAG_PROBE_ACK, b"", timestamp=0, generation=0)
             if expected is None:
                 self._next_audio_sequence = header.sequence
             await self._buffer_media(header, b"")
