@@ -121,7 +121,9 @@ def test_grant_consume_reject_reason_is_specific_and_redacted(caplog: pytest.Log
             headers=internal,
             json={"token": opened["connect_grant"], "worker_id": "worker-a", "device_id": "device-1"},
         )
-        corrupted_token = opened["connect_grant"][:-1] + ("A" if opened["connect_grant"][-1] != "A" else "B")
+        token_prefix, signature = opened["connect_grant"].rsplit(".", maxsplit=1)
+        corrupted_signature = ("A" if signature[0] != "A" else "B") + signature[1:]
+        corrupted_token = f"{token_prefix}.{corrupted_signature}"
         invalid_signature = client.post(
             "/internal/v1/grants/consume",
             headers=internal,
