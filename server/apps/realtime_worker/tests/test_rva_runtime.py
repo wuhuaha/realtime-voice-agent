@@ -801,3 +801,42 @@ async def test_close_wait_is_bounded_while_shielded_cleanup_continues() -> None:
 
     assert runners[0].close_calls == 1
     assert websocket.closed == [(1_000, "normal")]
+
+
+@pytest.mark.integration
+async def test_close_stage_timeout_does_not_orphan_nested_runner_task() -> None:
+    websocket = FakeWebSocket()
+    runners: list[BlockingCloseRunner] = []
+
+    def factory(
+        emit: Callable[[AgentOutputSegment], Awaitable[None]],
+        stop: Callable[[int], None],
+    ) -> BlockingCloseRunner:
+        runner = BlockingCloseRunner(emit, stop)
+        runners.append(runner)
+        return runner
+
+    connection = RvaWssConnection(
+        websocket,  # type: ignore[arg-type]
+        expected_device_id="device-001",
+        session_id="session-001",
+        session_epoch="grant-epoch-001",
+        media_id=bytes.fromhex("0123456789abcdef"),
+        media_epoch=7,
+        runner_factory=factory,
+        limits=RvaRuntimeLimits(
+            agent_close_stage_timeout_seconds=0.05,
+            close_timeout_seconds=0.5,
+            runner_timeout_seconds=1.0,
+        ),
+    )
+    websocket.feed_open()
+    task = asyncio.create_task(connection.run())
+    await websocket.wait_control("session.opened")
+    websocket.disconnect()
+
+    await asyncio.wait_for(task, timeout=1.0)
+
+    assert runners[0].close_calls == 1
+    assert websocket.closed == [(1_000, "normal")]
+    assert not any(task.get_name().startswith("rva-runner-close-") for task in asyncio.all_tasks())

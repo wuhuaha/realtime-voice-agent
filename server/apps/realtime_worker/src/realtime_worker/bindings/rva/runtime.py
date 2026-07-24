@@ -16,7 +16,6 @@ from starlette.websockets import WebSocketDisconnect
 
 from realtime_worker.agent import AgentOutputSegment, AgentRunner
 from realtime_worker.interruption import InterruptionContext, InterruptionCoordinator, LayeredInterruptionPolicy
-from realtime_worker.lifecycle import run_with_hard_deadline
 from realtime_worker.transport.udp_gateway import (
     UdpGrantExpiredError,
     UdpMediaGateway,
@@ -867,13 +866,10 @@ class RvaWssConnection:
         runner, self._runner = self._runner, None
         if runner is None:
             return
-        closed = await run_with_hard_deadline(
-            runner.close(),
-            timeout=self._limits.runner_timeout_seconds,
-            task_name=f"rva-runner-close-{self._binding_id}",
-        )
-        if not closed.completed:
-            raise RvaRuntimeError("agent runner close timed out")
+        # VoiceSessionState owns the single bounded deadline for every close
+        # port. A nested deadline here would orphan runner.close() when the
+        # outer stage expires first.
+        await runner.close()
 
     async def _close_impl(self, code: int, reason: str) -> None:
         current = asyncio.current_task()

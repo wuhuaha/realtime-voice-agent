@@ -9,6 +9,8 @@ logger = logging.getLogger(__name__)
 
 _DETACHED_TASKS: set[asyncio.Task[object]] = set()
 _DEFAULT_REAP_SECONDS = 0.05
+
+
 @dataclass(frozen=True, slots=True)
 class HardDeadlineResult[ResultT]:
     completed: bool
@@ -28,7 +30,13 @@ async def run_with_hard_deadline[ResultT](
     total_timeout = max(0.0, timeout)
     reap_budget = min(max(0.0, reap_timeout), total_timeout / 2)
     operation_budget = max(0.0, total_timeout - reap_budget)
-    done, _ = await asyncio.wait({task}, timeout=operation_budget)
+    try:
+        done, _ = await asyncio.wait({task}, timeout=operation_budget)
+    except BaseException:
+        # This helper owns the child it creates. Parent cancellation must not
+        # leave that child running without a result consumer.
+        await cancel_and_reap(task, task_name=task_name, reap_timeout=reap_budget)
+        raise
     if done:
         return HardDeadlineResult(completed=True, value=task.result())
 
