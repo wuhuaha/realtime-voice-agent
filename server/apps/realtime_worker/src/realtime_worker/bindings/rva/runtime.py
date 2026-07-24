@@ -26,7 +26,7 @@ from realtime_worker.transport.udp_gateway import (
 from realtime_worker.voice.session import PlaybackRef
 
 from .binding import AgentControlPort, AudioInputPort, ControlEffect, InboundAudioPacket, RvaWssBinding
-from .codec import FRAME_DURATION_MS, SAMPLE_RATE, SAMPLES_PER_PACKET, RvaOpusCodec
+from .codec import FRAME_DURATION_MS, SAMPLE_RATE, SAMPLES_PER_PACKET, RvaOpusCodec, RvaOpusDecodeError
 from .protocol import UDP_PROFILE, WSS_PROFILE, RvaBindingError, RvaMessageTooLarge
 from .response import ResponseRecord
 
@@ -57,6 +57,10 @@ class RvaIdleTimeoutError(RvaRuntimeError):
     pass
 
 
+class RvaMediaDecodeError(RvaRuntimeError):
+    pass
+
+
 @dataclass(frozen=True, slots=True)
 class RvaRuntimeLimits:
     input_queue_packets: int = 8
@@ -69,6 +73,7 @@ class RvaRuntimeLimits:
     agent_close_stage_timeout_seconds: float = 2.0
     idle_timeout_seconds: float = 45.0
     playback_prebuffer_packets: int = 4
+    max_consecutive_invalid_opus_packets: int = 8
 
     def __post_init__(self) -> None:
         positive = (
@@ -81,6 +86,7 @@ class RvaRuntimeLimits:
             self.close_timeout_seconds,
             self.agent_close_stage_timeout_seconds,
             self.idle_timeout_seconds,
+            self.max_consecutive_invalid_opus_packets,
         )
         if any(value <= 0 for value in positive) or self.playback_prebuffer_packets < 0:
             raise ValueError("RVA runtime limits must be positive")
@@ -226,6 +232,8 @@ class RvaWssConnection:
         self._wss_input_packets = 0
         self._udp_input_packets = 0
         self._decoded_pcm_frames = 0
+        self._invalid_opus_packets = 0
+        self._consecutive_invalid_opus_packets = 0
         self._runner_push_frames = 0
         self._downlink_packets = 0
         self._response_sequence = 0
@@ -323,6 +331,8 @@ class RvaWssConnection:
             close_code, close_reason = 1_013, "media_overloaded"
         except RvaIdleTimeoutError:
             close_code, close_reason = 1_000, "idle_timeout"
+        except RvaMediaDecodeError:
+            close_code, close_reason = 1_011, "media_decode_failed"
         except RvaBindingError as exc:
             logger.warning(
                 "rva_protocol_error session=%s error_code=%s",
@@ -344,7 +354,7 @@ class RvaWssConnection:
             logger.info(
                 "rva_session_closing session=%s session_epoch=%s close_code=%d close_reason=%s "
                 "selected_media_profile=%s wss_input_packets=%d udp_input_packets=%d "
-                "decoded_pcm_frames=%d runner_push_frames=%d downlink_packets=%d",
+                "decoded_pcm_frames=%d invalid_opus_packets=%d runner_push_frames=%d downlink_packets=%d",
                 self._binding_id,
                 self._binding.session_epoch,
                 code,
@@ -353,6 +363,7 @@ class RvaWssConnection:
                 self._wss_input_packets,
                 self._udp_input_packets,
                 self._decoded_pcm_frames,
+                self._invalid_opus_packets,
                 self._runner_push_frames,
                 self._downlink_packets,
             )
@@ -456,8 +467,30 @@ class RvaWssConnection:
                     packet.payload,
                     sequence_start=self._input_pcm_sequence,
                 )
-            except Exception as exc:
-                raise RvaBindingError("invalid_opus_packet") from exc
+            except RvaOpusDecodeError as exc:
+                self._invalid_opus_packets += 1
+                self._consecutive_invalid_opus_packets += 1
+                consecutive = self._consecutive_invalid_opus_packets
+                if (
+                    self._invalid_opus_packets == 1
+                    or self._invalid_opus_packets % 50 == 0
+                    or consecutive >= self._limits.max_consecutive_invalid_opus_packets
+                ):
+                    logger.warning(
+                        "rva_opus_packet_dropped session=%s sequence=%d timestamp=%d payload_bytes=%d "
+                        "consecutive=%d total=%d decoder_error=%s",
+                        self._binding_id,
+                        packet.sequence,
+                        packet.timestamp,
+                        len(packet.payload),
+                        consecutive,
+                        self._invalid_opus_packets,
+                        type(exc).__name__,
+                    )
+                if consecutive >= self._limits.max_consecutive_invalid_opus_packets:
+                    raise RvaMediaDecodeError("consecutive Opus decode failures") from exc
+                continue
+            self._consecutive_invalid_opus_packets = 0
             self._input_pcm_sequence += len(frames)
             self._decoded_pcm_frames += len(frames)
             for frame in frames:

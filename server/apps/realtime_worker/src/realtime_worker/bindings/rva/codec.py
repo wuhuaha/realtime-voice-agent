@@ -5,6 +5,7 @@ from __future__ import annotations
 from fractions import Fraction
 
 from av import AudioFrame, AudioResampler, CodecContext, Packet
+from av.error import InvalidDataError
 
 from realtime_worker.audio import PCM_SAMPLES, PcmFrame
 
@@ -13,6 +14,10 @@ CHANNELS = 1
 FRAME_DURATION_MS = 60
 SAMPLES_PER_PACKET = SAMPLE_RATE * FRAME_DURATION_MS // 1_000
 _TIME_BASE = Fraction(1, SAMPLE_RATE)
+
+
+class RvaOpusDecodeError(ValueError):
+    """The packet is authenticated media but is not a valid RVA Opus frame."""
 
 
 class RvaOpusCodec:
@@ -41,10 +46,13 @@ class RvaOpusCodec:
         self._encoder_pts = 0
 
     def decode_60ms(self, payload: bytes, *, sequence_start: int) -> list[PcmFrame]:
-        decoded = self._decoder.decode(Packet(payload))
+        try:
+            decoded = self._decoder.decode(Packet(payload))
+        except InvalidDataError as exc:
+            raise RvaOpusDecodeError("invalid Opus packet") from exc
         duration = sum(frame.samples / frame.sample_rate for frame in decoded)
         if abs(duration - FRAME_DURATION_MS / 1_000) > 0.001:
-            raise ValueError("Opus packet does not contain exactly 60 ms of audio")
+            raise RvaOpusDecodeError("Opus packet does not contain exactly 60 ms of audio")
         pcm = bytearray()
         for frame in decoded:
             converted = self._decoder_resampler.resample(frame)
@@ -56,7 +64,7 @@ class RvaOpusCodec:
         if expected_bytes - 64 <= len(pcm) < expected_bytes:
             pcm.extend(b"\x00" * (expected_bytes - len(pcm)))
         if len(pcm) != expected_bytes:
-            raise ValueError(f"Opus packet decoded to {len(pcm)} bytes, expected {expected_bytes}")
+            raise RvaOpusDecodeError("Opus packet decoded to an unexpected PCM length")
         frames: list[PcmFrame] = []
         for index in range(SAMPLES_PER_PACKET // PCM_SAMPLES):
             sequence = sequence_start + index
@@ -88,4 +96,11 @@ class RvaOpusCodec:
         return bytes(packets[0])
 
 
-__all__ = ["CHANNELS", "FRAME_DURATION_MS", "RvaOpusCodec", "SAMPLE_RATE", "SAMPLES_PER_PACKET"]
+__all__ = [
+    "CHANNELS",
+    "FRAME_DURATION_MS",
+    "RvaOpusCodec",
+    "RvaOpusDecodeError",
+    "SAMPLE_RATE",
+    "SAMPLES_PER_PACKET",
+]

@@ -11,6 +11,7 @@ from realtime_worker.audio import PCM_SAMPLES, PcmFrame
 from realtime_worker.bindings.rva import (
     RvaBindingError,
     RvaOpusCodec,
+    RvaOpusDecodeError,
     RvaRuntimeLimits,
     RvaWssConnection,
     WssMediaFrame,
@@ -173,6 +174,7 @@ def create_connection(
     output_frames: int = 10,
     limits: RvaRuntimeLimits | None = None,
     interruption_policy: LayeredInterruptionPolicy | None = None,
+    codec_factory: Callable[[], RvaOpusCodec] = RvaOpusCodec,
 ) -> tuple[RvaWssConnection, list[FakeRunner]]:
     runners: list[FakeRunner] = []
 
@@ -194,8 +196,36 @@ def create_connection(
         runner_factory=factory,
         limits=limits,
         interruption_policy=interruption_policy,
+        codec_factory=codec_factory,
     )
     return connection, runners
+
+
+class ScriptedDecodeCodec:
+    def __init__(self, outcomes: list[bool]) -> None:
+        self._outcomes = iter(outcomes)
+        self.calls = 0
+
+    def decode_60ms(self, payload: bytes, *, sequence_start: int) -> list[PcmFrame]:
+        del payload
+        self.calls += 1
+        if not next(self._outcomes):
+            raise RvaOpusDecodeError("sensitive-provider-detail payload=do-not-log")
+        return [pcm_frame(sequence_start + offset) for offset in range(3)]
+
+
+class CrashingDecodeCodec:
+    def decode_60ms(self, payload: bytes, *, sequence_start: int) -> list[PcmFrame]:
+        del payload, sequence_start
+        raise RuntimeError("unexpected decoder implementation failure")
+
+
+async def wait_until(predicate: Callable[[], bool]) -> None:
+    async def wait() -> None:
+        while not predicate():
+            await asyncio.sleep(0)
+
+    await asyncio.wait_for(wait(), timeout=2.0)
 
 
 def uplink_packets(count: int) -> list[bytes]:
@@ -214,6 +244,121 @@ def uplink_packets(count: int) -> list[bytes]:
             ).serialize()
         )
     return packets
+
+
+@pytest.mark.integration
+async def test_isolated_invalid_opus_packet_is_dropped_without_closing_session(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    websocket = FakeWebSocket()
+    codec = ScriptedDecodeCodec([False])
+    connection, runners = create_connection(
+        websocket,
+        trigger_frames=1_000,
+        codec_factory=lambda: codec,  # type: ignore[arg-type]
+    )
+    websocket.feed_open()
+    task = asyncio.create_task(connection.run())
+    await websocket.wait_control("session.opened")
+
+    with caplog.at_level("WARNING"):
+        websocket.feed_media(uplink_packets(1)[0])
+        await wait_until(lambda: connection._invalid_opus_packets == 1)  # noqa: SLF001
+
+    assert not task.done()
+    assert runners[0].pushes == 0
+    assert connection._invalid_opus_packets == 1  # noqa: SLF001
+    assert connection._consecutive_invalid_opus_packets == 1  # noqa: SLF001
+    assert "rva_opus_packet_dropped" in caplog.text
+    assert "decoder_error=RvaOpusDecodeError" in caplog.text
+    assert "sensitive-provider-detail" not in caplog.text
+    assert "payload=do-not-log" not in caplog.text
+
+    websocket.disconnect()
+    await asyncio.wait_for(task, timeout=2.0)
+    assert websocket.closed == [(1_000, "normal")]
+
+
+@pytest.mark.integration
+async def test_valid_opus_packet_resets_consecutive_decode_failure_count() -> None:
+    websocket = FakeWebSocket()
+    codec = ScriptedDecodeCodec([False, True])
+    connection, runners = create_connection(
+        websocket,
+        trigger_frames=1_000,
+        codec_factory=lambda: codec,  # type: ignore[arg-type]
+    )
+    websocket.feed_open()
+    task = asyncio.create_task(connection.run())
+    await websocket.wait_control("session.opened")
+
+    for index, packet in enumerate(uplink_packets(2), start=1):
+        websocket.feed_media(packet)
+        if index == 1:
+            await wait_until(lambda: connection._consecutive_invalid_opus_packets == 1)  # noqa: SLF001
+        else:
+            await wait_until(lambda: runners[0].pushes == 3)
+
+    assert not task.done()
+    assert connection._invalid_opus_packets == 1  # noqa: SLF001
+    assert connection._consecutive_invalid_opus_packets == 0  # noqa: SLF001
+    assert runners[0].pushes == 3
+
+    websocket.disconnect()
+    await asyncio.wait_for(task, timeout=2.0)
+    assert websocket.closed == [(1_000, "normal")]
+
+
+@pytest.mark.integration
+async def test_consecutive_invalid_opus_threshold_closes_with_stable_media_error(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    websocket = FakeWebSocket()
+    codec = ScriptedDecodeCodec([False, False, False])
+    connection, runners = create_connection(
+        websocket,
+        trigger_frames=1_000,
+        limits=RvaRuntimeLimits(max_consecutive_invalid_opus_packets=3),
+        codec_factory=lambda: codec,  # type: ignore[arg-type]
+    )
+    websocket.feed_open()
+    task = asyncio.create_task(connection.run())
+    await websocket.wait_control("session.opened")
+
+    with caplog.at_level("WARNING"):
+        for packet in uplink_packets(3):
+            websocket.feed_media(packet)
+        await asyncio.wait_for(task, timeout=2.0)
+
+    assert runners[0].pushes == 0
+    assert runners[0].close_calls == 1
+    assert connection._invalid_opus_packets == 3  # noqa: SLF001
+    assert connection._consecutive_invalid_opus_packets == 3  # noqa: SLF001
+    assert websocket.closed == [(1_011, "media_decode_failed")]
+    assert "rva_opus_packet_dropped" in caplog.text
+    assert "sensitive-provider-detail" not in caplog.text
+    assert "payload=do-not-log" not in caplog.text
+
+
+@pytest.mark.integration
+async def test_unexpected_decoder_failure_is_not_treated_as_malformed_media() -> None:
+    websocket = FakeWebSocket()
+    connection, runners = create_connection(
+        websocket,
+        trigger_frames=1_000,
+        codec_factory=CrashingDecodeCodec,  # type: ignore[arg-type]
+    )
+    websocket.feed_open()
+    task = asyncio.create_task(connection.run())
+    await websocket.wait_control("session.opened")
+
+    websocket.feed_media(uplink_packets(1)[0])
+    await asyncio.wait_for(task, timeout=2.0)
+
+    assert runners[0].pushes == 0
+    assert runners[0].close_calls == 1
+    assert connection._invalid_opus_packets == 0  # noqa: SLF001
+    assert websocket.closed == [(1_011, "runtime_failure")]
 
 
 @pytest.mark.unit
@@ -261,6 +406,14 @@ def test_rva_opus_codec_roundtrips_one_60ms_packet_to_three_pcm_frames() -> None
     assert 0 < len(payload) <= 1_200
     assert [frame.sequence for frame in decoded] == [12, 13, 14]
     assert all(len(frame.pcm) == PCM_SAMPLES * 2 for frame in decoded)
+
+
+@pytest.mark.unit
+def test_rva_opus_codec_normalizes_invalid_packet_to_decode_error() -> None:
+    decoder = RvaOpusCodec()
+
+    with pytest.raises(RvaOpusDecodeError, match="invalid Opus packet"):
+        decoder.decode_60ms(b"not-opus", sequence_start=0)
 
 
 @pytest.mark.integration

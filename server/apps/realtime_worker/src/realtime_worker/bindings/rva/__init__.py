@@ -1,5 +1,5 @@
 from .binding import AgentControlPort, AudioInputPort, ControlEffect, InboundAudioPacket, RvaWssBinding
-from .codec import RvaOpusCodec
+from .codec import RvaOpusCodec, RvaOpusDecodeError
 from .protocol import (
     CONTROL_MAX_BYTES,
     MEDIA_FLAG_AUDIO,
@@ -29,6 +29,7 @@ __all__ = [
     "RvaBindingError",
     "RvaMessageTooLarge",
     "RvaOpusCodec",
+    "RvaOpusDecodeError",
     "RvaOverloadedError",
     "RvaRuntimeError",
     "RvaRuntimeLimits",
