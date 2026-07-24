@@ -1,0 +1,343 @@
+{
+  "schema_vectors": [
+    {
+      "id": "reject-v1-open",
+      "reason": "unsupported_version",
+      "message": {
+        "type": "session.open",
+        "protocol_version": 1,
+        "request_id": "open-001",
+        "device_id": "device-001",
+        "supported_media_profiles": ["wss-opus-v3"],
+        "preferred_media_profile": "wss-opus-v3",
+        "audio": {"codec": "opus", "sample_rate_hz": 16000, "channels": 1, "frame_duration_ms": 60},
+        "capabilities": {}
+      }
+    },
+    {
+      "id": "reject-old-media-profile",
+      "reason": "unsupported_profile",
+      "message": {
+        "type": "session.open",
+        "protocol_version": 2,
+        "request_id": "open-001",
+        "device_id": "device-001",
+        "supported_media_profiles": ["wss-opus-v2"],
+        "preferred_media_profile": "wss-opus-v2",
+        "audio": {"codec": "opus", "sample_rate_hz": 16000, "channels": 1, "frame_duration_ms": 60},
+        "capabilities": {}
+      }
+    },
+    {
+      "id": "reject-duplicate-profile",
+      "reason": "duplicate_profile",
+      "message": {
+        "type": "session.open",
+        "protocol_version": 2,
+        "request_id": "open-001",
+        "device_id": "device-001",
+        "supported_media_profiles": ["wss-opus-v3", "wss-opus-v3"],
+        "preferred_media_profile": "wss-opus-v3",
+        "audio": {"codec": "opus", "sample_rate_hz": 16000, "channels": 1, "frame_duration_ms": 60},
+        "capabilities": {}
+      }
+    },
+    {
+      "id": "reject-legacy-response-cancel",
+      "reason": "unknown_message_type",
+      "message": {
+        "type": "response.cancel",
+        "session_id": "session-001",
+        "session_epoch": "epoch-001",
+        "target": {"response_id": "resp-001", "generation": 1},
+        "reason": "barge_in"
+      }
+    },
+    {
+      "id": "reject-legacy-response-cancelled",
+      "reason": "unknown_message_type",
+      "message": {
+        "type": "response.cancelled",
+        "session_id": "session-001",
+        "session_epoch": "epoch-001",
+        "target": {"response_id": "resp-001", "generation": 1},
+        "reason": "cancelled"
+      }
+    },
+    {
+      "id": "reject-completed-without-final-media-sequence",
+      "reason": "missing_final_media_sequence",
+      "message": {
+        "type": "response.end",
+        "session_id": "session-001",
+        "session_epoch": "epoch-001",
+        "response_id": "resp-001",
+        "generation": 1,
+        "outcome": "completed"
+      }
+    },
+    {
+      "id": "reject-completed-with-error-code",
+      "reason": "unexpected_error_code",
+      "message": {
+        "type": "response.end",
+        "session_id": "session-001",
+        "session_epoch": "epoch-001",
+        "response_id": "resp-001",
+        "generation": 1,
+        "outcome": "completed",
+        "final_media_sequence": 4,
+        "error_code": "provider_timeout"
+      }
+    },
+    {
+      "id": "reject-failed-without-error-code",
+      "reason": "missing_error_code",
+      "message": {
+        "type": "response.end",
+        "session_id": "session-001",
+        "session_epoch": "epoch-001",
+        "response_id": "resp-001",
+        "generation": 1,
+        "outcome": "failed"
+      }
+    },
+    {
+      "id": "reject-failed-with-final-media-sequence",
+      "reason": "unexpected_final_media_sequence",
+      "message": {
+        "type": "response.end",
+        "session_id": "session-001",
+        "session_epoch": "epoch-001",
+        "response_id": "resp-001",
+        "generation": 1,
+        "outcome": "failed",
+        "error_code": "provider_timeout",
+        "final_media_sequence": 4
+      }
+    },
+    {
+      "id": "reject-invalid-error-code",
+      "reason": "invalid_error_code",
+      "message": {
+        "type": "response.end",
+        "session_id": "session-001",
+        "session_epoch": "epoch-001",
+        "response_id": "resp-001",
+        "generation": 1,
+        "outcome": "failed",
+        "error_code": "Provider Timeout"
+      }
+    },
+    {
+      "id": "reject-cancelled-with-terminal-detail",
+      "reason": "unexpected_terminal_detail",
+      "message": {
+        "type": "response.end",
+        "session_id": "session-001",
+        "session_epoch": "epoch-001",
+        "response_id": "resp-001",
+        "generation": 1,
+        "outcome": "cancelled",
+        "final_media_sequence": 4
+      }
+    },
+    {
+      "id": "reject-stop-without-exact-target",
+      "reason": "missing_playback_target",
+      "message": {
+        "type": "playback.stop",
+        "session_id": "session-001",
+        "session_epoch": "epoch-001",
+        "response_id": "resp-001",
+        "fence_generation": 2,
+        "cause": "recognized_interrupt"
+      }
+    },
+    {
+      "id": "reject-extra-target-field",
+      "reason": "unknown_field",
+      "message": {
+        "type": "playback.stop",
+        "session_id": "session-001",
+        "session_epoch": "epoch-001",
+        "target": {"response_id": "resp-001", "generation": 1, "current": true},
+        "fence_generation": 2,
+        "cause": "recognized_interrupt"
+      }
+    },
+    {
+      "id": "reject-acoustic-cancel-request",
+      "reason": "invalid_cancel_cause",
+      "message": {
+        "type": "response.cancel.request",
+        "session_id": "session-001",
+        "session_epoch": "epoch-001",
+        "request_id": "cancel-001",
+        "target": {"response_id": "resp-001", "generation": 1},
+        "cause": "barge_in"
+      }
+    },
+    {
+      "id": "reject-cancel-request-without-request-id",
+      "reason": "missing_request_id",
+      "message": {
+        "type": "response.cancel.request",
+        "session_id": "session-001",
+        "session_epoch": "epoch-001",
+        "target": {"response_id": "resp-001", "generation": 1},
+        "cause": "user_request"
+      }
+    },
+    {
+      "id": "reject-playback-started-without-first-sequence",
+      "reason": "missing_first_media_sequence",
+      "message": {
+        "type": "playback.started",
+        "session_id": "session-001",
+        "session_epoch": "epoch-001",
+        "target": {"response_id": "resp-001", "generation": 1}
+      }
+    },
+    {
+      "id": "reject-completed-playback-without-last-sequence",
+      "reason": "missing_last_media_sequence",
+      "message": {
+        "type": "playback.ended",
+        "session_id": "session-001",
+        "session_epoch": "epoch-001",
+        "target": {"response_id": "resp-001", "generation": 1},
+        "outcome": "completed",
+        "played_samples": 960
+      }
+    },
+    {
+      "id": "reject-zero-samples-with-cursor",
+      "reason": "false_cursor",
+      "message": {
+        "type": "playback.ended",
+        "session_id": "session-001",
+        "session_epoch": "epoch-001",
+        "target": {"response_id": "resp-001", "generation": 1},
+        "outcome": "stopped",
+        "played_samples": 0,
+        "last_media_sequence": 0
+      }
+    },
+    {
+      "id": "reject-negative-played-samples",
+      "reason": "invalid_played_samples",
+      "message": {
+        "type": "playback.ended",
+        "session_id": "session-001",
+        "session_epoch": "epoch-001",
+        "target": {"response_id": "resp-001", "generation": 1},
+        "outcome": "failed",
+        "played_samples": -1
+      }
+    },
+    {
+      "id": "reject-udp-opened-without-grant",
+      "reason": "missing_udp_grant",
+      "message": {
+        "type": "session.opened",
+        "request_id": "open-001",
+        "session_id": "session-001",
+        "session_epoch": "epoch-001",
+        "media_id": "0123456789abcdef",
+        "media_epoch": 1,
+        "selected_media_profile": "udp-opus-gcm-v2",
+        "audio": {"codec": "opus", "sample_rate_hz": 16000, "channels": 1, "frame_duration_ms": 60},
+        "heartbeat_interval_ms": 15000,
+        "idle_timeout_ms": 45000,
+        "max_control_message_bytes": 32768
+      }
+    },
+    {
+      "id": "reject-wss-opened-with-udp-grant",
+      "reason": "unexpected_udp_grant",
+      "message": {
+        "type": "session.opened",
+        "request_id": "open-001",
+        "session_id": "session-001",
+        "session_epoch": "epoch-001",
+        "media_id": "0123456789abcdef",
+        "media_epoch": 1,
+        "selected_media_profile": "wss-opus-v3",
+        "audio": {"codec": "opus", "sample_rate_hz": 16000, "channels": 1, "frame_duration_ms": 60},
+        "heartbeat_interval_ms": 15000,
+        "idle_timeout_ms": 45000,
+        "max_control_message_bytes": 32768,
+        "udp_grant": {
+          "host": "example.test",
+          "port": 1,
+          "expires_at_ms": 1,
+          "uplink_key_b64": "AAAAAAAAAAAAAAAAAAAAAA==",
+          "uplink_salt_b64": "AAAAAAAAAAA=",
+          "downlink_key_b64": "AAAAAAAAAAAAAAAAAAAAAA==",
+          "downlink_salt_b64": "AAAAAAAAAAA=",
+          "probe_timeout_ms": 100
+        }
+      }
+    },
+    {
+      "id": "reject-nul-text",
+      "reason": "embedded_nul",
+      "message": {
+        "type": "response.text",
+        "session_id": "session-001",
+        "session_epoch": "epoch-001",
+        "response_id": "resp-001",
+        "generation": 1,
+        "sequence": 0,
+        "text": "bad\u0000text"
+      }
+    },
+    {
+      "id": "reject-unknown-field",
+      "reason": "unknown_field",
+      "message": {
+        "type": "session.close",
+        "session_id": "session-001",
+        "session_epoch": "epoch-001",
+        "reason": "normal",
+        "initiated_by": "device",
+        "mode": "realtime"
+      }
+    }
+  ],
+  "raw_json_vectors": [
+    {
+      "id": "reject-duplicate-json-key",
+      "reason": "duplicate_field",
+      "json_text": "{\"type\":\"session.close\",\"session_id\":\"session-001\",\"session_epoch\":\"epoch-001\",\"reason\":\"normal\",\"reason\":\"protocol_error\",\"initiated_by\":\"device\"}"
+    }
+  ],
+  "semantic_vectors": [
+    {"id": "reject-stale-session", "rule": "session_epoch_match", "active": {"session_id": "session-001", "session_epoch": "epoch-008"}, "received": {"session_id": "session-001", "session_epoch": "epoch-007"}, "reason": "stale_session"},
+    {"id": "reject-repeated-control-sequence", "rule": "control_sequence_monotonic", "last_sequence": 4, "received_sequence": 4, "reason": "invalid_sequence"},
+    {"id": "reject-stale-response-generation", "rule": "generation_monotonic", "last_generation": 5, "received_generation": 4, "reason": "stale_generation"},
+    {"id": "reject-wrong-response-target", "rule": "active_response_exact_target", "active": {"response_id": "resp-002", "generation": 5}, "received": {"response_id": "resp-001", "generation": 5}, "reason": "response_target_mismatch"},
+    {"id": "reject-second-response-end", "rule": "response_terminal_once", "target": {"response_id": "resp-001", "generation": 5}, "first_outcome": "cancelled", "received_outcome": "failed", "reason": "response_already_terminal"},
+    {"id": "reject-wrong-final-media-sequence", "rule": "completed_final_media_exact", "last_emitted_sequence": 41, "received_final_media_sequence": 40, "reason": "final_media_sequence_mismatch"},
+    {"id": "reject-nonadvancing-playback-fence", "rule": "playback_fence_monotonic", "target_generation": 5, "last_fence_generation": 5, "received_fence_generation": 5, "reason": "stale_generation"},
+    {"id": "reject-stop-for-unknown-target", "rule": "playback_stop_exact_target", "known": {"response_id": "resp-002", "generation": 5}, "received": {"response_id": "resp-001", "generation": 5}, "reason": "playback_target_mismatch"},
+    {"id": "reject-conflicting-repeated-stop", "rule": "playback_stop_idempotent", "first": {"target": {"response_id": "resp-001", "generation": 5}, "fence_generation": 6, "cause": "explicit_user_request"}, "received": {"target": {"response_id": "resp-001", "generation": 5}, "fence_generation": 7, "cause": "explicit_user_request"}, "reason": "playback_stop_conflict"},
+    {"id": "reject-cancel-for-stale-target", "rule": "cancel_request_exact_target", "current": {"response_id": "resp-002", "generation": 5}, "received": {"response_id": "resp-001", "generation": 4}, "reason": "cancel_target_mismatch"},
+    {"id": "reject-request-id-reuse", "rule": "cancel_request_idempotent", "request_id": "cancel-001", "first_target": {"response_id": "resp-001", "generation": 4}, "received_target": {"response_id": "resp-002", "generation": 5}, "reason": "request_id_conflict"},
+    {"id": "reject-physical-fact-for-wrong-target", "rule": "physical_fact_exact_target", "known": {"response_id": "resp-002", "generation": 5}, "received": {"response_id": "resp-001", "generation": 5}, "reason": "playback_target_mismatch"},
+    {"id": "reject-second-playback-started", "rule": "playback_started_once", "started": true, "reason": "playback_already_started"},
+    {"id": "reject-second-playback-ended", "rule": "playback_ended_once", "ended": true, "reason": "playback_already_ended"},
+    {"id": "reject-completed-cursor-mismatch", "rule": "playback_completed_evidence", "response_final_media_sequence": 41, "received_last_media_sequence": 40, "played_samples": 1920, "reason": "playback_evidence_mismatch"},
+    {"id": "reject-zero-samples-cursor", "rule": "zero_samples_no_cursor", "played_samples": 0, "received_last_media_sequence": 0, "reason": "playback_evidence_mismatch"},
+    {"id": "reject-unsupported-preference", "rule": "preferred_profile_supported", "supported_media_profiles": ["wss-opus-v3"], "preferred_media_profile": "udp-opus-gcm-v2", "reason": "unsupported_preference"},
+    {"id": "reject-unoffered-selection", "rule": "selected_profile_offered", "supported_media_profiles": ["wss-opus-v3"], "selected_media_profile": "udp-opus-gcm-v2", "reason": "unsupported_selection"},
+    {"id": "reject-mid-session-transport-switch", "rule": "single_active_transport", "active_profile": "wss-opus-v3", "received_profile": "udp-opus-gcm-v2", "reason": "transport_mismatch"},
+    {"id": "reject-stale-media-identity", "rule": "media_identity_match", "active": {"media_id": "0123456789abcdef", "media_epoch": 8}, "received": {"media_id": "0123456789abcdef", "media_epoch": 7}, "reason": "stale_media_identity"},
+    {"id": "reject-media-wire-version-one", "rule": "media_wire_version_match", "expected_wire_version": 2, "received_wire_version": 1, "reason": "unsupported_media_version"},
+    {"id": "reject-uplink-playback-generation", "rule": "uplink_generation_zero", "direction": "uplink", "received_generation": 5, "reason": "invalid_uplink_generation"},
+    {"id": "reject-probe-generation", "rule": "non_audio_generation_zero", "flag": "probe_ack", "received_generation": 5, "reason": "invalid_media_generation"},
+    {"id": "drop-wrong-downlink-generation", "rule": "downlink_generation_exact", "active_generation": 6, "received_generation": 5, "reason": "stale_generation"},
+    {"id": "reject-media-after-close", "rule": "close_is_terminal", "session_closed": true, "reason": "session_closed"}
+  ]
+}

@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 from livekit import rtc
+from livekit.agents import StopResponse
 from pydantic import ValidationError
-from realtime_worker.agent import LiveKitAgentRunner, RoomlessAudioInput, RoomlessAudioOutput
+from realtime_worker.agent import LiveKitAgentRunner, RoomlessAudioInput, RoomlessAudioOutput, _DefaultAgent
 from realtime_worker.config import Settings
 
 pytestmark = pytest.mark.unit
@@ -32,6 +35,30 @@ async def test_public_custom_io_tracks_segment_and_physical_completion() -> None
 
 
 @pytest.mark.asyncio
+async def test_output_clear_buffer_only_discards_pending_pcm_without_stopping_active_playback() -> None:
+    segments = []
+    stop_calls = []
+
+    async def emit(segment):  # noqa: ANN001
+        segments.append(segment)
+
+    output = RoomlessAudioOutput(emit, lambda epoch: stop_calls.append(epoch))
+    frame = rtc.AudioFrame(data=b"\x00" * 640, sample_rate=16_000, num_channels=1, samples_per_channel=320)
+
+    await output.capture_frame(frame)
+    output.clear_buffer()
+    output.flush()
+    await output.capture_frame(frame)
+    output.flush()
+    await output.close()
+
+    assert stop_calls == []
+    assert len(segments) == 1
+    assert segments[0].producer_epoch == 2
+    assert len(segments[0].frames) == 1
+
+
+@pytest.mark.asyncio
 async def test_output_accepts_a_normal_segment_longer_than_five_seconds() -> None:
     segments = []
 
@@ -48,6 +75,29 @@ async def test_output_accepts_a_normal_segment_longer_than_five_seconds() -> Non
 
     assert len(segments) == 1
     assert len(segments[0].frames) == 300
+
+
+@pytest.mark.asyncio
+async def test_output_allows_multiple_flushes_while_previous_segment_is_pending() -> None:
+    release = asyncio.Event()
+    segments = []
+
+    async def emit(segment):  # noqa: ANN001
+        segments.append(segment)
+        await release.wait()
+
+    output = RoomlessAudioOutput(emit, lambda _epoch: None)
+    frame = rtc.AudioFrame(data=b"\x00" * 640, sample_rate=16_000, num_channels=1, samples_per_channel=320)
+
+    await output.capture_frame(frame)
+    output.flush()
+    await output.capture_frame(frame)
+    output.flush()
+
+    await asyncio.sleep(0)
+    assert len(segments) == 2
+    release.set()
+    await output.close()
 
 
 @pytest.mark.asyncio
@@ -200,3 +250,31 @@ async def test_custom_input_is_bounded_and_closes_iterator() -> None:
     audio_input.close()
     with pytest.raises(StopAsyncIteration):
         await audio_input.__anext__()
+
+
+@pytest.mark.asyncio
+async def test_default_agent_drops_each_marked_overlap_turn_exactly_once() -> None:
+    drops = iter((True, False))
+    agent = _DefaultAgent(lambda: next(drops))
+
+    with pytest.raises(StopResponse):
+        await agent.on_user_turn_completed(object(), object())
+    await agent.on_user_turn_completed(object(), object())
+
+
+def test_livekit_runner_marks_next_turn_from_runtime_transcript_callback() -> None:
+    async def emit(_segment):  # noqa: ANN001
+        return None
+
+    settings = Settings(
+        _env_file=None,
+        runner="livekit",
+        deepseek_api_key="test-key",
+    )
+    runner = LiveKitAgentRunner(settings, emit, lambda _epoch: None)
+    runner.set_text_sinks(lambda _text, _final: True, lambda _text: None)
+
+    runner._handle_user_transcript("overlap", True)  # noqa: SLF001
+
+    assert runner._consume_overlap_turn() is True  # noqa: SLF001
+    assert runner._consume_overlap_turn() is False  # noqa: SLF001

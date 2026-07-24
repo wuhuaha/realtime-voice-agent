@@ -1,0 +1,245 @@
+{
+  "vectors": [
+    {
+      "id": "open-with-v2-profiles",
+      "direction": "device_to_server",
+      "message": {
+        "type": "session.open",
+        "protocol_version": 2,
+        "request_id": "open-001",
+        "device_id": "esp32s3-a1b2c3",
+        "supported_media_profiles": ["udp-opus-gcm-v2", "wss-opus-v3"],
+        "preferred_media_profile": "wss-opus-v3",
+        "audio": {"codec": "opus", "sample_rate_hz": 16000, "channels": 1, "frame_duration_ms": 60},
+        "capabilities": {"aec": true, "vad": true, "wake_word": true, "display": true, "touch": true}
+      }
+    },
+    {
+      "id": "opened-wss-v3",
+      "direction": "server_to_device",
+      "message": {
+        "type": "session.opened",
+        "request_id": "open-001",
+        "session_id": "session-001",
+        "session_epoch": "epoch-007",
+        "media_id": "0123456789abcdef",
+        "media_epoch": 7,
+        "selected_media_profile": "wss-opus-v3",
+        "audio": {"codec": "opus", "sample_rate_hz": 16000, "channels": 1, "frame_duration_ms": 60},
+        "heartbeat_interval_ms": 15000,
+        "idle_timeout_ms": 45000,
+        "max_control_message_bytes": 32768
+      }
+    },
+    {
+      "id": "opened-udp-v2",
+      "direction": "server_to_device",
+      "notice": "Deterministic public fixture material; never use these keys in deployment.",
+      "message": {
+        "type": "session.opened",
+        "request_id": "open-002",
+        "session_id": "session-002",
+        "session_epoch": "epoch-008",
+        "media_id": "fedcba9876543210",
+        "media_epoch": 8,
+        "selected_media_profile": "udp-opus-gcm-v2",
+        "audio": {"codec": "opus", "sample_rate_hz": 16000, "channels": 1, "frame_duration_ms": 60},
+        "heartbeat_interval_ms": 15000,
+        "idle_timeout_ms": 45000,
+        "max_control_message_bytes": 32768,
+        "udp_grant": {
+          "host": "voice.example.test",
+          "port": 8443,
+          "expires_at_ms": 1780000000000,
+          "uplink_key_b64": "AAAAAAAAAAAAAAAAAAAAAA==",
+          "uplink_salt_b64": "AAAAAAAAAAA=",
+          "downlink_key_b64": "/////////////////////w==",
+          "downlink_salt_b64": "//////////8=",
+          "probe_timeout_ms": 1500
+        }
+      }
+    },
+    {
+      "id": "transcript-delta",
+      "direction": "server_to_device",
+      "message": {
+        "type": "transcript.delta",
+        "session_id": "session-001",
+        "session_epoch": "epoch-007",
+        "utterance_id": "utt-001",
+        "sequence": 0,
+        "text": "hello"
+      }
+    },
+    {
+      "id": "transcript-final",
+      "direction": "server_to_device",
+      "message": {
+        "type": "transcript.final",
+        "session_id": "session-001",
+        "session_epoch": "epoch-007",
+        "utterance_id": "utt-001",
+        "sequence": 1,
+        "text": "hello world"
+      }
+    },
+    {
+      "id": "response-begin",
+      "direction": "server_to_device",
+      "message": {
+        "type": "response.begin",
+        "session_id": "session-001",
+        "session_epoch": "epoch-007",
+        "response_id": "resp-001",
+        "generation": 3
+      }
+    },
+    {
+      "id": "response-text",
+      "direction": "server_to_device",
+      "message": {
+        "type": "response.text",
+        "session_id": "session-001",
+        "session_epoch": "epoch-007",
+        "response_id": "resp-001",
+        "generation": 3,
+        "sequence": 0,
+        "text": "Hi"
+      }
+    },
+    {
+      "id": "response-end-completed",
+      "direction": "server_to_device",
+      "message": {
+        "type": "response.end",
+        "session_id": "session-001",
+        "session_epoch": "epoch-007",
+        "response_id": "resp-001",
+        "generation": 3,
+        "outcome": "completed",
+        "final_media_sequence": 41
+      }
+    },
+    {
+      "id": "response-end-cancelled",
+      "direction": "server_to_device",
+      "message": {
+        "type": "response.end",
+        "session_id": "session-001",
+        "session_epoch": "epoch-007",
+        "response_id": "resp-002",
+        "generation": 4,
+        "outcome": "cancelled"
+      }
+    },
+    {
+      "id": "response-end-failed",
+      "direction": "server_to_device",
+      "message": {
+        "type": "response.end",
+        "session_id": "session-001",
+        "session_epoch": "epoch-007",
+        "response_id": "resp-003",
+        "generation": 5,
+        "outcome": "failed",
+        "error_code": "provider_timeout"
+      }
+    },
+    {
+      "id": "playback-stop",
+      "direction": "server_to_device",
+      "message": {
+        "type": "playback.stop",
+        "session_id": "session-001",
+        "session_epoch": "epoch-007",
+        "target": {"response_id": "resp-002", "generation": 4},
+        "fence_generation": 5,
+        "cause": "recognized_interrupt"
+      }
+    },
+    {
+      "id": "playback-started",
+      "direction": "device_to_server",
+      "message": {
+        "type": "playback.started",
+        "session_id": "session-001",
+        "session_epoch": "epoch-007",
+        "target": {"response_id": "resp-001", "generation": 3},
+        "first_media_sequence": 40
+      }
+    },
+    {
+      "id": "playback-ended-completed",
+      "direction": "device_to_server",
+      "message": {
+        "type": "playback.ended",
+        "session_id": "session-001",
+        "session_epoch": "epoch-007",
+        "target": {"response_id": "resp-001", "generation": 3},
+        "outcome": "completed",
+        "played_samples": 1920,
+        "last_media_sequence": 41
+      }
+    },
+    {
+      "id": "playback-ended-stopped-with-cursor",
+      "direction": "device_to_server",
+      "message": {
+        "type": "playback.ended",
+        "session_id": "session-001",
+        "session_epoch": "epoch-007",
+        "target": {"response_id": "resp-002", "generation": 4},
+        "outcome": "stopped",
+        "played_samples": 960,
+        "last_media_sequence": 50
+      }
+    },
+    {
+      "id": "playback-ended-failed-before-first-sample",
+      "direction": "device_to_server",
+      "message": {
+        "type": "playback.ended",
+        "session_id": "session-001",
+        "session_epoch": "epoch-007",
+        "target": {"response_id": "resp-003", "generation": 5},
+        "outcome": "failed",
+        "played_samples": 0
+      }
+    },
+    {
+      "id": "explicit-cancel-request",
+      "direction": "device_to_server",
+      "message": {
+        "type": "response.cancel.request",
+        "session_id": "session-001",
+        "session_epoch": "epoch-007",
+        "request_id": "cancel-button-001",
+        "target": {"response_id": "resp-002", "generation": 4},
+        "cause": "user_request"
+      }
+    },
+    {
+      "id": "session-error",
+      "direction": "server_to_device",
+      "message": {
+        "type": "session.error",
+        "session_id": "session-001",
+        "session_epoch": "epoch-007",
+        "code": "provider_timeout",
+        "retryable": true,
+        "message": "Upstream timed out"
+      }
+    },
+    {
+      "id": "session-close-server",
+      "direction": "server_to_device",
+      "message": {
+        "type": "session.close",
+        "session_id": "session-001",
+        "session_epoch": "epoch-007",
+        "reason": "server_shutdown",
+        "initiated_by": "server"
+      }
+    }
+  ]
+}

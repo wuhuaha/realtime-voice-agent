@@ -2,7 +2,7 @@
 
 #include <algorithm>
 
-namespace voice::contracts::udp_v1 {
+namespace voice::contracts::udp_v2 {
 
 namespace {
 
@@ -39,6 +39,12 @@ std::optional<DatagramType> ParseType(std::uint8_t value) {
 
 bool HeaderFieldsValid(const Header& header, Direction direction) {
     if (header.media_epoch == 0 || header.payload_length > kMaxPayloadBytes) {
+        return false;
+    }
+    const bool audio = header.type == DatagramType::kAudio;
+    if ((direction == Direction::kUplink && header.generation != 0) ||
+        (direction == Direction::kDownlink &&
+         (audio ? header.generation == 0 : header.generation != 0))) {
         return false;
     }
     switch (header.type) {
@@ -117,4 +123,4 @@ Nonce MakeNonce(const DirectionalSalt& salt, std::uint32_t sequence) {
     return nonce;
 }
 
-}  // namespace voice::contracts::udp_v1
+}  // namespace voice::contracts::udp_v2

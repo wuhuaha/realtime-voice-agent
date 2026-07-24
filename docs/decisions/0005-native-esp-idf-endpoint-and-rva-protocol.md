@@ -1,7 +1,7 @@
 # 决策 0005：ESP32 迁移为项目自有 ESP-IDF endpoint 与 RVA 协议
 
 日期：2026-07-21
-状态：accepted
+状态：accepted / protocol and compatibility boundary superseded by [0006](0006-server-authoritative-interruption-and-rva-v2.md)
 实施状态：native endpoint、RVA control 与中性 transport 已成为当前主线；下述“背景”描述决策作出时的旧状态，
 不代表当前 production composition。精确发布证据以 [Release readiness](../quality/release-readiness.md) 为准。
 
@@ -55,3 +55,4 @@ artifact 在同一板卡、网络和 provider 下达到受影响行为的同级�
 - [生产固件 composition](0003-production-firmware-composition.md)
 - [系统架构](../architecture/system.md)
 - [固件架构](../architecture/firmware.md)
+- [服务端打断单权威与 RVA v2](0006-server-authoritative-interruption-and-rva-v2.md)

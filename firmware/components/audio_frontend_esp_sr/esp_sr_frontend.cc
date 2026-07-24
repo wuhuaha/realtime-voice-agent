@@ -41,13 +41,17 @@ PortResult EspSrFrontend::Start() {
         return PortResult::kInvalidArgument;
     }
 
-    afe_config_ = afe_config_init(kInputFormat, model_list_, AFE_TYPE_VC, AFE_MODE_HIGH_PERF);
+    // ESP32-S3 still needs headroom for Wi-Fi, UDP/WSS, Opus and LVGL. The
+    // HIGH_PERF AEC path repeatedly starved the task watchdog during full voice
+    // sessions on the target board, so the production default uses the bounded
+    // low-cost VoIP profile and leaves higher-cost AEC for explicit lab builds.
+    afe_config_ = afe_config_init(kInputFormat, model_list_, AFE_TYPE_VC, AFE_MODE_LOW_COST);
     if (afe_config_ == nullptr) {
         return PortResult::kResourceExhausted;
     }
 
     afe_config_->aec_init = config_.enable_aec;
-    afe_config_->aec_mode = AEC_MODE_VOIP_HIGH_PERF;
+    afe_config_->aec_mode = AEC_MODE_VOIP_LOW_COST;
     afe_config_->vad_init = config_.enable_vad;
     afe_config_->vad_mode = VAD_MODE_0;
     afe_config_->vad_min_speech_ms = config_.vad_min_speech_ms;
@@ -136,7 +140,6 @@ PortResult EspSrFrontend::Start() {
     }
 
     vad_speech_.store(false);
-    speech_started_.store(false);
     started_.store(true);
     return PortResult::kOk;
 }
@@ -144,7 +147,6 @@ PortResult EspSrFrontend::Start() {
 PortResult EspSrFrontend::Stop() {
     started_.store(false);
     vad_speech_.store(false);
-    speech_started_.store(false);
     {
         std::lock_guard<std::mutex> lock(resampler_mutex_);
         if (input_resampler_ != nullptr) {
@@ -221,8 +223,7 @@ PortResult EspSrFrontend::Fetch(MutablePcmView* output, uint32_t timeout_ms) {
 
     if (config_.enable_vad) {
         const bool speech = result->vad_state == VAD_SPEECH;
-        const bool was_speech = vad_speech_.exchange(speech);
-        if (speech && !was_speech) speech_started_.store(true);
+        vad_speech_.store(speech);
     }
 
     const size_t samples = static_cast<size_t>(result->data_size) / sizeof(int16_t);
@@ -249,10 +250,6 @@ size_t EspSrFrontend::fetch_samples_per_channel() const {
         return 0;
     }
     return static_cast<size_t>(interface_->get_fetch_chunksize(instance_));
-}
-
-bool EspSrFrontend::ConsumeSpeechStarted() {
-    return config_.enable_vad && speech_started_.exchange(false);
 }
 
 }  // namespace rva::audio

@@ -189,15 +189,28 @@ def _process_identity_from_row(row: dict[str, Any]) -> dict[str, Any]:
 
 def _owned_process_identities(manifest: dict[str, Any]) -> dict[int, str]:
     owned: dict[int, str] = {}
-    pending = [int(entry["supervisor_pid"]) for entry in manifest["processes"]]
+    pending = [
+        (int(entry["supervisor_pid"]), str(entry["supervisor_start_time_utc_ticks"]))
+        for entry in manifest["processes"]
+    ]
     while pending:
-        process_id = pending.pop()
+        process_id, expected_creation = pending.pop()
         snapshot = _windows_process_snapshot(process_ids=[process_id], parent_process_ids=[process_id])
         row = snapshot.get(process_id)
         if row is None or process_id in owned:
             continue
-        owned[process_id] = _cim_creation_to_utc_ticks(row["CreationDate"])
-        pending.extend(child_id for child_id, child in snapshot.items() if int(child["ParentProcessId"]) == process_id)
+        actual_creation = _cim_creation_to_utc_ticks(row["CreationDate"])
+        if actual_creation != expected_creation:
+            continue
+        owned[process_id] = actual_creation
+        for child_id, child in snapshot.items():
+            if int(child["ParentProcessId"]) != process_id:
+                continue
+            child_creation = _cim_creation_to_utc_ticks(child["CreationDate"])
+            # Windows preserves PPID after a parent exits and may later reuse
+            # that PID. A process older than this exact parent cannot be its child.
+            if int(child_creation) >= int(actual_creation):
+                pending.append((child_id, child_creation))
     return owned
 
 
@@ -336,14 +349,9 @@ def _cluster_environment(
         "VOICE_GRANT_SIGNING_KEY=validator-horizontal-scale-grant-signing-key",
         f"VOICE_DEVICE_BOOTSTRAP_TOKEN={BOOTSTRAP_TOKEN}",
         "VOICE_LAB_TOKEN=validator-horizontal-scale-lab-token",
-        f"VOICE_WORKER_PUBLIC_WS_URL=ws://127.0.0.1:{worker_base_port}/v1/xiaozhi",
-        f"VOICE_RVA_PUBLIC_WS_URL=ws://127.0.0.1:{worker_base_port}/v1/voice",
-        "VOICE_RVA_ENABLED=true",
-        "VOICE_LEGACY_XIAOZHI_ENABLED=false",
+        f"VOICE_RVA_PUBLIC_WS_URL=ws://127.0.0.1:{worker_base_port}/v2/voice",
         "VOICE_WORKER_BIND_HOST=127.0.0.1",
         "VOICE_HEARTBEAT_INTERVAL_SECONDS=1",
-        "VOICE_XIAOZHI_UDP_ENABLED=false",
-        "VOICE_XIAOZHI_TRANSPORT_POLICY=force_wss",
         "VOICE_RUNNER=deterministic",
         "VOICE_ROUTE_LEASE_TTL_SECONDS=5",
     ]
@@ -457,11 +465,15 @@ def _running_cluster(
                 _invoke_stop(runtime_dir)
             except Exception:
                 pass
-        process_survivors = _wait_for(
-            lambda: [] if not _matching_process_identities(owned_identities) else None,
-            timeout=5,
-            description="Job Object process tree release",
-        )
+        try:
+            process_survivors = _wait_for(
+                lambda: [] if not _matching_process_identities(owned_identities) else None,
+                timeout=5,
+                description="Job Object process tree release",
+            )
+        except AssertionError as exc:
+            survivors = _matching_process_identities(owned_identities)
+            raise AssertionError(f"{exc}; surviving process identities: {survivors}") from exc
         released_ports = _wait_for(
             lambda: True if _ports_can_bind(ports) else None,
             timeout=5,
@@ -813,7 +825,7 @@ def test_two_worker_processes_spill_over_and_drain_with_redis(tmp_path: Path) ->
                         "max_sessions": 5,
                         "draining": False,
                         "healthy": True,
-                        "profiles": ["wss-opus-v2"],
+                        "profiles": ["wss-opus-v3"],
                         "bindings": workers["worker-local-1"]["bindings"],
                         "released_leases": [
                             {

@@ -1,0 +1,91 @@
+{
+  "profile": "udp-opus-gcm-v2",
+  "wire_version": 2,
+  "notice": "Public deterministic test material only. Never use these keys or salts in deployment.",
+  "header_bytes": 32,
+  "tag_bytes": 16,
+  "max_datagram_bytes": 1280,
+  "max_payload_bytes": 1200,
+  "vectors": [
+    {
+      "id": "uplink-probe-sequence-0",
+      "direction": "uplink",
+      "key_hex": "000102030405060708090a0b0c0d0e0f",
+      "salt_hex": "a0a1a2a3a4a5a6a7",
+      "fields": {
+        "flags": 2,
+        "media_id_hex": "0123456789abcdef",
+        "media_epoch": 270544960,
+        "sequence": 0,
+        "timestamp": 0,
+        "generation": 0,
+        "payload_length": 0
+      },
+      "payload_hex": "",
+      "header_hex": "564102020123456789abcdef1020304000000000000000000000000000000000",
+      "nonce_hex": "a0a1a2a3a4a5a6a700000000",
+      "ciphertext_and_tag_hex": "22ac8541d05261f1a6866039cb304e51",
+      "datagram_hex": "564102020123456789abcdef102030400000000000000000000000000000000022ac8541d05261f1a6866039cb304e51"
+    },
+    {
+      "id": "downlink-probe-ack-sequence-0",
+      "direction": "downlink",
+      "key_hex": "f0f1f2f3f4f5f6f7f8f9fafbfcfdfeff",
+      "salt_hex": "b0b1b2b3b4b5b6b7",
+      "fields": {
+        "flags": 4,
+        "media_id_hex": "0123456789abcdef",
+        "media_epoch": 270544960,
+        "sequence": 0,
+        "timestamp": 0,
+        "generation": 0,
+        "payload_length": 0
+      },
+      "payload_hex": "",
+      "header_hex": "564102040123456789abcdef1020304000000000000000000000000000000000",
+      "nonce_hex": "b0b1b2b3b4b5b6b700000000",
+      "ciphertext_and_tag_hex": "4e568d9bc6311b3429c9710e7ba10673",
+      "datagram_hex": "564102040123456789abcdef10203040000000000000000000000000000000004e568d9bc6311b3429c9710e7ba10673"
+    },
+    {
+      "id": "uplink-audio-sequence-1-generation-0",
+      "direction": "uplink",
+      "key_hex": "000102030405060708090a0b0c0d0e0f",
+      "salt_hex": "a0a1a2a3a4a5a6a7",
+      "fields": {
+        "flags": 1,
+        "media_id_hex": "0123456789abcdef",
+        "media_epoch": 270544960,
+        "sequence": 1,
+        "timestamp": 960,
+        "generation": 0,
+        "payload_length": 3
+      },
+      "payload_hex": "f8fffe",
+      "header_hex": "564102010123456789abcdef1020304000000001000003c00000000000000003",
+      "nonce_hex": "a0a1a2a3a4a5a6a700000001",
+      "ciphertext_and_tag_hex": "bdfd8e52602900f9790d756806e4cab14fde8d",
+      "datagram_hex": "564102010123456789abcdef1020304000000001000003c00000000000000003bdfd8e52602900f9790d756806e4cab14fde8d"
+    },
+    {
+      "id": "downlink-audio-generation-2",
+      "direction": "downlink",
+      "key_hex": "f0f1f2f3f4f5f6f7f8f9fafbfcfdfeff",
+      "salt_hex": "b0b1b2b3b4b5b6b7",
+      "fields": {
+        "flags": 1,
+        "media_id_hex": "0123456789abcdef",
+        "media_epoch": 270544960,
+        "sequence": 1,
+        "timestamp": 1920,
+        "generation": 2,
+        "payload_length": 12
+      },
+      "payload_hex": "112233445566778899aabbcc",
+      "header_hex": "564102010123456789abcdef102030400000000100000780000000020000000c",
+      "nonce_hex": "b0b1b2b3b4b5b6b700000001",
+      "ciphertext_and_tag_hex": "bcea45b737676524371e045f2710018a0688cb1a79a7d8fda2dcac9f",
+      "datagram_hex": "564102010123456789abcdef102030400000000100000780000000020000000cbcea45b737676524371e045f2710018a0688cb1a79a7d8fda2dcac9f"
+    }
+  ]
+}

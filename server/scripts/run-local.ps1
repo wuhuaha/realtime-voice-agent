@@ -511,25 +511,14 @@ if ($BaseEnvironment['VOICE_RUNNER'] -eq 'livekit') {
     Require-ConfiguredSecret 'VOICE_LLM_API_KEY'
 }
 
-$LegacyXiaozhiEnabled = $BaseEnvironment.ContainsKey('VOICE_LEGACY_XIAOZHI_ENABLED') -and
-    $BaseEnvironment['VOICE_LEGACY_XIAOZHI_ENABLED'].Equals('true', [StringComparison]::OrdinalIgnoreCase)
-$RvaEnabled = -not $BaseEnvironment.ContainsKey('VOICE_RVA_ENABLED') -or
-    $BaseEnvironment['VOICE_RVA_ENABLED'].Equals('true', [StringComparison]::OrdinalIgnoreCase)
-$PublicWorkerUri = $null
 $PublicRvaUri = $null
-if ($LegacyXiaozhiEnabled) {
-    try { $PublicWorkerUri = [Uri]$BaseEnvironment['VOICE_WORKER_PUBLIC_WS_URL'] }
-    catch { throw 'VOICE_WORKER_PUBLIC_WS_URL must be configured as an absolute ws:// or wss:// URL.' }
-    if ($PublicWorkerUri.Scheme -notin @('ws', 'wss') -or -not $PublicWorkerUri.IsAbsoluteUri) {
-        throw 'VOICE_WORKER_PUBLIC_WS_URL must be configured as an absolute ws:// or wss:// URL.'
-    }
-}
-if ($RvaEnabled) {
-    try { $PublicRvaUri = [Uri]$BaseEnvironment['VOICE_RVA_PUBLIC_WS_URL'] }
-    catch { throw 'VOICE_RVA_PUBLIC_WS_URL must be configured as an absolute ws:// or wss:// URL.' }
-    if ($PublicRvaUri.Scheme -notin @('ws', 'wss') -or -not $PublicRvaUri.IsAbsoluteUri) {
-        throw 'VOICE_RVA_PUBLIC_WS_URL must be configured as an absolute ws:// or wss:// URL.'
-    }
+try { $PublicRvaUri = [Uri]$BaseEnvironment['VOICE_RVA_PUBLIC_WS_URL'] }
+catch { throw 'VOICE_RVA_PUBLIC_WS_URL must be configured as an absolute ws:// or wss:// URL.' }
+if ($PublicRvaUri.Scheme -notin @('ws', 'wss') -or -not $PublicRvaUri.IsAbsoluteUri -or
+    [string]::IsNullOrWhiteSpace($PublicRvaUri.Host) -or -not [string]::IsNullOrEmpty($PublicRvaUri.UserInfo) -or
+    $PublicRvaUri.AbsolutePath -ne '/v2/voice' -or -not [string]::IsNullOrEmpty($PublicRvaUri.Query) -or
+    -not [string]::IsNullOrEmpty($PublicRvaUri.Fragment)) {
+    throw 'VOICE_RVA_PUBLIC_WS_URL must use the canonical /v2/voice WebSocket URL.'
 }
 
 if (-not (Test-Path -LiteralPath $Python)) {
@@ -710,16 +699,9 @@ try {
             VOICE_UDP_BIND_PORT = $udpPort
             VOICE_UDP_ADVERTISE_PORT = $udpPort
         }
-        if ($LegacyXiaozhiEnabled) {
-            $publicUriBuilder = [UriBuilder]$PublicWorkerUri
-            $publicUriBuilder.Port = $workerPort
-            $workerOverrides.VOICE_WORKER_PUBLIC_WS_URL = $publicUriBuilder.Uri.AbsoluteUri
-        }
-        if ($RvaEnabled) {
-            $publicRvaUriBuilder = [UriBuilder]$PublicRvaUri
-            $publicRvaUriBuilder.Port = $workerPort
-            $workerOverrides.VOICE_RVA_PUBLIC_WS_URL = $publicRvaUriBuilder.Uri.AbsoluteUri
-        }
+        $publicRvaUriBuilder = [UriBuilder]$PublicRvaUri
+        $publicRvaUriBuilder.Port = $workerPort
+        $workerOverrides.VOICE_RVA_PUBLIC_WS_URL = $publicRvaUriBuilder.Uri.AbsoluteUri
         $workerProcess = Start-LocalProcess -Name "realtime-worker-$workerNumber" -Arguments @('-m', 'realtime_worker') -Overrides $workerOverrides
         Wait-LocalHealth `
             -Process $workerProcess `

@@ -42,7 +42,7 @@ public:
     [[nodiscard]] bool started() const { return started_.load(); }
     [[nodiscard]] bool aec_enabled() const { return config_.enable_aec; }
     [[nodiscard]] bool vad_enabled() const { return config_.enable_vad; }
-    bool ConsumeSpeechStarted();
+    [[nodiscard]] bool speech_active() const { return !config_.enable_vad || vad_speech_.load(); }
 
 private:
     srmodel_list_t* model_list_ = nullptr;
@@ -57,7 +57,6 @@ private:
     std::mutex resampler_mutex_;
     std::atomic<bool> started_{false};
     std::atomic<bool> vad_speech_{false};
-    std::atomic<bool> speech_started_{false};
 };
 
 }  // namespace rva::audio

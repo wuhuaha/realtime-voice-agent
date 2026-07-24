@@ -1,9 +1,12 @@
 # ESP32 端侧稳定性优化方案与实施计划
 
-状态：active
+状态：superseded
 更新日期：2026-07-23
 依据：用户授权的端侧稳定性整改目标、`docs/decisions/0005-native-esp-idf-endpoint-and-rva-protocol.md`、当前
 Firmware 架构和 RVA 协议边界。
+
+本计划保存 v1 稳定性整改与 HIL 事实，已由 ADR 0006 的 clean-slate `rva-control-v2` 生命周期替代，不再作为
+当前 wire 或打断语义的实施入口。仍适用的资源 ownership、热路径和可观测性约束已提升到 Firmware 架构文档。
 
 ## 1. 目标与非目标
 

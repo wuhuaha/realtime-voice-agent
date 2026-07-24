@@ -1,4 +1,4 @@
-"""Strict wire primitives for rva-control-v1 and wss-opus-v2."""
+"""Strict wire primitives for rva-control-v2 and wss-opus-v3."""
 
 from __future__ import annotations
 
@@ -8,16 +8,16 @@ import struct
 from dataclasses import dataclass
 from typing import Any
 
-CONTROL_VERSION = 1
+CONTROL_VERSION = 2
 CONTROL_MAX_BYTES = 32_768
-WSS_PROFILE = "wss-opus-v2"
-UDP_PROFILE = "udp-opus-gcm-v1"
+WSS_PROFILE = "wss-opus-v3"
+UDP_PROFILE = "udp-opus-gcm-v2"
 SUPPORTED_PROFILES = frozenset({WSS_PROFILE, UDP_PROFILE})
 
-# Keep the canonical udp-opus-gcm-v1 wire identity. WSS v2 deliberately
+# Both v2 media profiles deliberately reuse the stable typed media header.
 # reuses the same typed header so a profile has one byte contract.
 MEDIA_MAGIC = b"VA"
-MEDIA_WIRE_VERSION = 1
+MEDIA_WIRE_VERSION = 2
 MEDIA_FLAG_AUDIO = 1
 MEDIA_HEADER_BYTES = 32
 MEDIA_MAX_PAYLOAD_BYTES = 1_200

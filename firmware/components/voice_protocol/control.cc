@@ -112,6 +112,20 @@ bool IsOneOf(std::string_view value, std::initializer_list<std::string_view> all
     return std::find(allowed.begin(), allowed.end(), value) != allowed.end();
 }
 
+bool IsErrorCode(std::string_view value) {
+    return !value.empty() && value.size() <= 64 &&
+           std::all_of(value.begin(), value.end(), [](unsigned char character) {
+               return (character >= 'a' && character <= 'z') ||
+                      (character >= '0' && character <= '9') || character == '_';
+           });
+}
+
+bool GetTarget(const cJSON* object, ResponseTarget* target) {
+    return target != nullptr && HasExactFields(object, {"response_id", "generation"}) &&
+           GetId(object, "response_id", &target->response_id) &&
+           GetU32(object, "generation", false, &target->generation);
+}
+
 bool ParseMediaId(const std::string& hex, std::array<uint8_t, 8>* output) {
     if (hex.size() != 16) {
         return false;
@@ -238,20 +252,20 @@ ControlError ParseOpened(const cJSON* root, ServerMessage* message) {
         !GetString(root, "media_id", 16, false, &media_id) || !ParseMediaId(media_id, &opened.media_id) ||
         !GetU32(root, "media_epoch", false, &opened.media_epoch) ||
         !GetString(root, "selected_media_profile", 32, false, &profile) ||
-        !IsOneOf(profile, {"wss-opus-v2", "udp-opus-gcm-v1"}) ||
+        !IsOneOf(profile, {"wss-opus-v3", "udp-opus-gcm-v2"}) ||
         !IsAudioProfile(cJSON_GetObjectItemCaseSensitive(root, "audio")) ||
         !GetU32(root, "heartbeat_interval_ms", false, &opened.heartbeat_interval_ms) ||
         opened.heartbeat_interval_ms < 5000 || opened.heartbeat_interval_ms > 60000 ||
         !GetU32(root, "idle_timeout_ms", false, &opened.idle_timeout_ms) || opened.idle_timeout_ms < 15000 ||
         opened.idle_timeout_ms > 180000 || !GetU32(root, "max_control_message_bytes", false, &max_control) ||
         max_control != kMaxControlBytes) {
-        return profile.empty() || IsOneOf(profile, {"wss-opus-v2", "udp-opus-gcm-v1"})
+        return profile.empty() || IsOneOf(profile, {"wss-opus-v3", "udp-opus-gcm-v2"})
                    ? ControlError::kMissingOrInvalidField
                    : ControlError::kUnsupportedProfile;
     }
     opened.selected_media_profile = profile;
     const cJSON* udp_grant = cJSON_GetObjectItemCaseSensitive(root, "udp_grant");
-    if (profile == "udp-opus-gcm-v1") {
+    if (profile == "udp-opus-gcm-v2") {
         UdpGrant parsed_grant;
         if (!ParseUdpGrant(udp_grant, &parsed_grant)) return ControlError::kMissingOrInvalidField;
         opened.udp_grant = std::move(parsed_grant);
@@ -281,7 +295,6 @@ ControlError ParseTranscript(const cJSON* root, bool final, ServerMessage* messa
 ControlError ParseResponse(const cJSON* root, ServerMessageType type, ServerMessage* message) {
     const bool has_sequence = type == ServerMessageType::kResponseText;
     const bool has_text = type == ServerMessageType::kResponseText;
-    const bool has_reason = type == ServerMessageType::kResponseEnd;
     if ((type == ServerMessageType::kResponseBegin &&
          !HasExactFields(root, {"type", "session_id", "session_epoch", "response_id", "generation"})) ||
         (type == ServerMessageType::kResponseText &&
@@ -289,7 +302,10 @@ ControlError ParseResponse(const cJSON* root, ServerMessageType type, ServerMess
              root,
              {"type", "session_id", "session_epoch", "response_id", "generation", "sequence", "text"})) ||
         (type == ServerMessageType::kResponseEnd &&
-         !HasExactFields(root, {"type", "session_id", "session_epoch", "response_id", "generation", "reason"}))) {
+         !HasExactFields(
+             root,
+             {"type", "session_id", "session_epoch", "response_id", "generation", "outcome"},
+             {"final_media_sequence", "error_code"}))) {
         return ControlError::kUnknownOrDuplicateField;
     }
     ResponseEvent event;
@@ -297,30 +313,61 @@ ControlError ParseResponse(const cJSON* root, ServerMessageType type, ServerMess
     if (!GetSession(root, &event.session) || !GetId(root, "response_id", &event.response_id) ||
         !GetU32(root, "generation", false, &event.generation) ||
         (has_sequence && !GetU32(root, "sequence", true, &event.sequence)) ||
-        (has_text && !GetString(root, "text", 4096, false, &event.text)) ||
-        (has_reason && (!GetString(root, "reason", 16, false, &event.reason) ||
-                        !IsOneOf(event.reason, {"completed", "failed"})))) {
+        (has_text && !GetString(root, "text", 4096, false, &event.text))) {
         return ControlError::kMissingOrInvalidField;
+    }
+    if (type == ServerMessageType::kResponseEnd) {
+        std::string outcome;
+        const bool has_final =
+            cJSON_GetObjectItemCaseSensitive(root, "final_media_sequence") != nullptr;
+        const bool has_error = cJSON_GetObjectItemCaseSensitive(root, "error_code") != nullptr;
+        if (!GetString(root, "outcome", 16, false, &outcome)) {
+            return ControlError::kMissingOrInvalidField;
+        }
+        if (outcome == "completed") {
+            uint32_t final_media_sequence = 0;
+            if (!has_final || has_error ||
+                !GetU32(root, "final_media_sequence", true, &final_media_sequence)) {
+                return ControlError::kMissingOrInvalidField;
+            }
+            event.outcome = ResponseOutcome::kCompleted;
+            event.final_media_sequence = final_media_sequence;
+        } else if (outcome == "cancelled") {
+            if (has_final || has_error) return ControlError::kMissingOrInvalidField;
+            event.outcome = ResponseOutcome::kCancelled;
+        } else if (outcome == "failed") {
+            if (has_final || !has_error ||
+                !GetString(root, "error_code", 64, false, &event.error_code) ||
+                !IsErrorCode(event.error_code)) {
+                return ControlError::kMissingOrInvalidField;
+            }
+            event.outcome = ResponseOutcome::kFailed;
+        } else {
+            return ControlError::kMissingOrInvalidField;
+        }
     }
     *message = std::move(event);
     return ControlError::kOk;
 }
 
-ControlError ParseCancelled(const cJSON* root, ServerMessage* message) {
-    if (!HasExactFields(root, {"type", "session_id", "session_epoch", "target", "reason"})) {
+ControlError ParsePlaybackStop(const cJSON* root, ServerMessage* message) {
+    if (!HasExactFields(
+            root,
+            {"type", "session_id", "session_epoch", "target", "fence_generation", "cause"})) {
         return ControlError::kUnknownOrDuplicateField;
     }
-    const cJSON* target = cJSON_GetObjectItemCaseSensitive(root, "target");
-    ResponseEvent event;
-    event.type = ServerMessageType::kResponseCancelled;
-    if (!GetSession(root, &event.session) || !HasExactFields(target, {"response_id", "generation"}) ||
-        !GetId(target, "response_id", &event.response_id) ||
-        !GetU32(target, "generation", false, &event.generation) ||
-        !GetString(root, "reason", 32, false, &event.reason) ||
-        !IsOneOf(event.reason, {"cancelled", "already_cancelled", "already_finished"})) {
+    PlaybackStop stop;
+    if (!GetSession(root, &stop.session) ||
+        !GetTarget(cJSON_GetObjectItemCaseSensitive(root, "target"), &stop.target) ||
+        !GetU32(root, "fence_generation", false, &stop.fence_generation) ||
+        stop.fence_generation <= stop.target.generation ||
+        !GetString(root, "cause", 32, false, &stop.cause) ||
+        !IsOneOf(
+            stop.cause,
+            {"explicit_user_request", "recognized_interrupt", "session_close", "response_failed"})) {
         return ControlError::kMissingOrInvalidField;
     }
-    *message = std::move(event);
+    *message = std::move(stop);
     return ControlError::kOk;
 }
 
@@ -371,6 +418,16 @@ bool AddSession(cJSON* object, const SessionIdentity& session) {
            AddString(object, "session_epoch", session.session_epoch);
 }
 
+bool AddTarget(cJSON* object, const ResponseTarget& target) {
+    if (object == nullptr || !IsIdentifier(target.response_id) || target.generation == 0) {
+        return false;
+    }
+    cJSON* target_json = cJSON_AddObjectToObject(object, "target");
+    return target_json != nullptr &&
+           AddString(target_json, "response_id", target.response_id) &&
+           cJSON_AddNumberToObject(target_json, "generation", target.generation) != nullptr;
+}
+
 ControlError Print(Json root, std::string* output) {
     if (output == nullptr || root == nullptr) return ControlError::kMissingOrInvalidField;
     char* printed = cJSON_PrintUnformatted(root.get());
@@ -416,7 +473,7 @@ ControlError ParseServerMessage(const uint8_t* data, size_t size, ServerMessage*
     if (type == "response.begin") return ParseResponse(root.get(), ServerMessageType::kResponseBegin, message);
     if (type == "response.text") return ParseResponse(root.get(), ServerMessageType::kResponseText, message);
     if (type == "response.end") return ParseResponse(root.get(), ServerMessageType::kResponseEnd, message);
-    if (type == "response.cancelled") return ParseCancelled(root.get(), message);
+    if (type == "playback.stop") return ParsePlaybackStop(root.get(), message);
     if (type == "session.error") return ParseError(root.get(), message);
     if (type == "session.close") return ParseClose(root.get(), message);
     return ControlError::kUnknownMessage;
@@ -431,7 +488,7 @@ ControlError EncodeSessionOpen(const SessionOpen& message, std::string* json) {
     }
     Json root(cJSON_CreateObject());
     if (root == nullptr || !AddString(root.get(), "type", "session.open") ||
-        cJSON_AddNumberToObject(root.get(), "protocol_version", 1) == nullptr ||
+        cJSON_AddNumberToObject(root.get(), "protocol_version", 2) == nullptr ||
         !AddString(root.get(), "request_id", message.request_id) ||
         !AddString(root.get(), "device_id", message.device_id)) {
         return ControlError::kMissingOrInvalidField;
@@ -440,7 +497,7 @@ ControlError EncodeSessionOpen(const SessionOpen& message, std::string* json) {
     if (profiles == nullptr) return ControlError::kMissingOrInvalidField;
     for (size_t index = 0; index < message.supported_media_profiles.size(); ++index) {
         const std::string& profile = message.supported_media_profiles[index];
-        if (!IsOneOf(profile, {"wss-opus-v2", "udp-opus-gcm-v1"}) ||
+        if (!IsOneOf(profile, {"wss-opus-v3", "udp-opus-gcm-v2"}) ||
             std::find(message.supported_media_profiles.begin(),
                       message.supported_media_profiles.begin() + index, profile) !=
                 message.supported_media_profiles.begin() + index ||
@@ -462,23 +519,54 @@ ControlError EncodeSessionOpen(const SessionOpen& message, std::string* json) {
     return Print(std::move(root), json);
 }
 
-ControlError EncodeResponseCancel(
-    const SessionIdentity& session,
-    const CancelTarget& target,
-    const std::string& reason,
+ControlError EncodeResponseCancelRequest(
+    const ResponseCancelRequest& message,
     std::string* json) {
-    if (!IsIdentifier(target.response_id) || target.generation == 0 ||
-        !IsOneOf(reason, {"user_request", "barge_in", "new_wake", "session_close"})) {
+    if (!IsIdentifier(message.request_id)) {
         return ControlError::kMissingOrInvalidField;
     }
     Json root(cJSON_CreateObject());
-    if (root == nullptr || !AddString(root.get(), "type", "response.cancel") || !AddSession(root.get(), session)) {
+    if (root == nullptr || !AddString(root.get(), "type", "response.cancel.request") ||
+        !AddSession(root.get(), message.session) ||
+        !AddString(root.get(), "request_id", message.request_id) ||
+        !AddTarget(root.get(), message.target) ||
+        !AddString(root.get(), "cause", "user_request")) {
         return ControlError::kMissingOrInvalidField;
     }
-    cJSON* target_json = cJSON_AddObjectToObject(root.get(), "target");
-    if (target_json == nullptr || !AddString(target_json, "response_id", target.response_id) ||
-        cJSON_AddNumberToObject(target_json, "generation", target.generation) == nullptr ||
-        !AddString(root.get(), "reason", reason)) {
+    return Print(std::move(root), json);
+}
+
+ControlError EncodePlaybackStarted(const PlaybackStarted& message, std::string* json) {
+    Json root(cJSON_CreateObject());
+    if (root == nullptr || !AddString(root.get(), "type", "playback.started") ||
+        !AddSession(root.get(), message.session) || !AddTarget(root.get(), message.target) ||
+        cJSON_AddNumberToObject(
+            root.get(), "first_media_sequence", message.first_media_sequence) == nullptr) {
+        return ControlError::kMissingOrInvalidField;
+    }
+    return Print(std::move(root), json);
+}
+
+ControlError EncodePlaybackEnded(const PlaybackEnded& message, std::string* json) {
+    constexpr uint64_t kMaximumExactJsonInteger = 9007199254740991ULL;
+    const bool completed = message.outcome == PlaybackEndedOutcome::kCompleted;
+    if (message.played_samples > kMaximumExactJsonInteger ||
+        (completed && !message.last_media_sequence.has_value()) ||
+        (!completed && message.played_samples == 0 && message.last_media_sequence.has_value())) {
+        return ControlError::kMissingOrInvalidField;
+    }
+    const char* outcome = completed
+                              ? "completed"
+                              : (message.outcome == PlaybackEndedOutcome::kStopped ? "stopped" : "failed");
+    Json root(cJSON_CreateObject());
+    if (root == nullptr || !AddString(root.get(), "type", "playback.ended") ||
+        !AddSession(root.get(), message.session) || !AddTarget(root.get(), message.target) ||
+        !AddString(root.get(), "outcome", outcome) ||
+        cJSON_AddNumberToObject(
+            root.get(), "played_samples", static_cast<double>(message.played_samples)) == nullptr ||
+        (message.last_media_sequence.has_value() &&
+         cJSON_AddNumberToObject(
+             root.get(), "last_media_sequence", *message.last_media_sequence) == nullptr)) {
         return ControlError::kMissingOrInvalidField;
     }
     return Print(std::move(root), json);

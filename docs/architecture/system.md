@@ -1,7 +1,7 @@
 # 系统架构
 
 状态：accepted target architecture
-更新日期：2026-07-22
+更新日期：2026-07-23
 
 ## 1. 架构目标
 
@@ -31,9 +31,10 @@ flowchart LR
 
 ### Realtime Worker
 
-- 终止 `/v1/voice` RVA WSS control；仅在显式兼容配置下隔离提供 `/v1/xiaozhi` legacy binding。
-- commit `wss-opus-v2` 或 `udp-opus-gcm-v1`，并持有对应媒体 transport。
+- 终止 `/v2/voice` RVA WSS control；active runtime 不注册 v1 或 Xiaozhi route。
+- commit `wss-opus-v3` 或 `udp-opus-gcm-v2`，并持有对应媒体 transport。
 - 一个 active session 内唯一持有 AgentSession、codec、provider stream、playback generation 和 teardown。
+- 通过 `InterruptionCoordinator` 独占语音打断裁决；Endpoint VAD 只产生观测事实，不改变播放状态。
 - 执行本地 `max_sessions` admission，默认 `5`，可按部署配置覆盖。
 - 上报 heartbeat、active sessions、profiles、health 和 draining。
 
@@ -73,7 +74,7 @@ sequenceDiagram
     D->>S: read eligible workers and route lease
     D->>S: fenced lease + single-use grant metadata
     D-->>E: worker_wss_url + connect_grant + epoch
-    E->>W: WSS /v1/voice + grant
+    E->>W: WSS /v2/voice + grant
     W->>D: consume grant through internal API
     D->>S: atomically consume jti + validate route/fence
     W-->>E: session.opened + committed profile
@@ -92,7 +93,9 @@ source，固定小型 reorder/jitter 等待处理轻度乱序，超时丢弃并�
 ### Agent turn
 
 Endpoint audio -> codec decode -> AgentSession input -> streaming ASR -> LLM delta -> 中文 TTS chunking -> streaming
-PCM/Opus -> selected transport -> endpoint playout。Abort/近讲打断递增 generation，旧队列和旧网络包不得恢复。
+PCM/Opus -> selected transport -> endpoint playout。播放期间音频仍进入同一 STT；服务端按声学候选、ASR 文本和
+strict explicit policy 裁决打断。裁决成立后先发布 generation fence，再异步停止 Agent/provider；旧队列和旧网络包
+不得恢复。
 
 ## 5. 信任边界
 
@@ -115,8 +118,8 @@ PCM/Opus -> selected transport -> endpoint playout。Abort/近讲打断递增 ge
 
 ## 7. 当前实现与目标差距
 
-Server 已实现 Director、memory/Redis store、双 control binding、shared admission/lease、Realtime Worker、roomless
-Agent runtime 和 providers。RVA contract、binding/runtime 与 Server full suite 已有软件证据。
+Server 实现 Director、memory/Redis store、单一 RVA v2 binding、shared admission/lease、Realtime Worker、roomless
+Agent runtime 和 providers。当前验证等级与未运行项只在 Release readiness 记录。
 
 Native ESP-IDF endpoint 已完成 board/audio/config/WSS/UI/UDP 组件化实现，composition 的完整性由 build、
 host test 与 HIL 分层验证。当前实现、构建和发布差距只在

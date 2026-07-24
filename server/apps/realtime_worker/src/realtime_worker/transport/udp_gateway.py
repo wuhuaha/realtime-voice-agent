@@ -185,12 +185,12 @@ class UdpMediaSession:
             self.stats.invalid,
         )
 
-    async def send_audio(self, payload: bytes, *, timestamp: int, generation: int) -> None:
+    async def send_audio(self, payload: bytes, *, timestamp: int, generation: int) -> int:
         if self._expired or time.time() >= self.grant.expires_at:
             raise UdpMediaError("UDP media session expired")
         if self._closed or self._source is None or not self._ready.is_set():
             raise UdpMediaError("UDP media path is not ready")
-        await self._send(UDP_FLAG_AUDIO, payload, timestamp=timestamp, generation=generation)
+        return await self._send(UDP_FLAG_AUDIO, payload, timestamp=timestamp, generation=generation)
 
     async def close(self) -> None:
         if self._closed:
@@ -390,7 +390,7 @@ class UdpMediaSession:
         except BaseException as exc:
             self._report_failure(exc)
 
-    async def _send(self, flags: int, payload: bytes, *, timestamp: int, generation: int) -> None:
+    async def _send(self, flags: int, payload: bytes, *, timestamp: int, generation: int) -> int:
         if self._expired or time.time() >= self.grant.expires_at:
             raise UdpMediaError("UDP media session expired")
         if len(payload) > UDP_MAX_PAYLOAD_BYTES:
@@ -419,6 +419,7 @@ class UdpMediaSession:
             raise UdpMediaError("UDP datagram exceeds conservative MTU")
         transport.sendto(datagram, source)
         self.stats.sent += 1
+        return sequence
 
 
 class UdpMediaGateway:

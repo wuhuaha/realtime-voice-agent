@@ -6,9 +6,8 @@
 namespace voice::contracts {
 
 enum class TransportProfile {
-    kWssOpusV1,
-    kWssOpusV2,
-    kUdpOpusGcmV1,
+    kWssOpusV3,
+    kUdpOpusGcmV2,
 };
 
 std::string_view ToWireName(TransportProfile profile);

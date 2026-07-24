@@ -1,7 +1,7 @@
 # Server 架构
 
 状态：accepted target architecture
-更新日期：2026-07-20
+更新日期：2026-07-23
 
 ## 1. 设计原则
 
@@ -29,8 +29,7 @@ server/
         app.py
         config.py
         auth.py
-        bindings/rva/         # current /v1/voice control and session binding
-        bindings/xiaozhi/     # isolated legacy compatibility facade
+        bindings/rva/         # current /v2/voice control and session binding
         transport/            # protocol-neutral media wire/gateway
         voice/livekit/        # roomless runner and audio/text I/O
         providers/
@@ -42,8 +41,8 @@ server/
     voice_testkit/
 ```
 
-目录反映依赖方向而不是展示层级：RVA binding 是当前产品入口，legacy binding 只能依赖共享 runtime/transport，
-共享实现不得从 legacy package 导入。拆分必须保持行为和测试，不得同时改变 wire、provider 和 runtime。
+目录反映依赖方向而不是展示层级：RVA binding 是唯一产品入口，transport、Agent runtime 与 provider 保持单向
+依赖。拆分必须保持行为和测试，不得同时改变 wire、provider 和 runtime。
 
 ## 3. Director
 
@@ -96,7 +95,7 @@ Connection/Binding
   -> Opus codec and bounded queues
   -> roomless LiveKit AgentSession
   -> provider streams
-  -> playback generation and close coordinator
+  -> playback generation and interruption/close coordinators
 ```
 
 外部 callback 只能投递有界事件，不得在 callback 内执行完整 teardown。Close 由 supervisor 幂等串行化，顺序为：
@@ -105,8 +104,13 @@ Connection/Binding
 
 ### 4.3 Roomless LiveKit Agent
 
-LiveKit `AgentSession` 是 VAD、STT、EOU、interruption、turn 和 response 的实时语义内核；它不加入 Room，
-也不承担设备 transport。Worker 使用自定义 input/output adapter 把选中 profile 的 PCM 流映射到 AgentSession。
+LiveKit `AgentSession` 提供 VAD、STT、EOU、turn 和 response 的实时语义内核；它不加入 Room，也不承担设备
+transport。Worker 使用自定义 input/output adapter 把选中 profile 的 PCM 流映射到 AgentSession。
+
+`InterruptionCoordinator` 是语音打断的唯一裁决者。播放期间 uplink 不得被 binding 丢弃，必须进入同一个 STT；
+LiveKit automatic interruption 保持关闭，且不得因 response 暂时不可打断而丢弃输入音频。Endpoint AEC 已提供稳定
+reference 时不使用额外 AEC warmup 静音窗口。strict explicit policy 只接受归一化后的完整命令/有限语法匹配，
+不得用任意子串命中；未命中的 overlap 继续作为 STT 事实，但不取消当前回复，也不自动生成额外 reply。
 
 中文配置应具备：适合现场噪声的 VAD threshold、流式/2-pass FunASR、中文 system prompt、按 `。！？` 优先且
 按 provider pause 的 `，；：` 辅助切分 TTS，以及禁止 Markdown 进入 TTS 的文本规范化。具体阈值必须通过
@@ -114,13 +118,15 @@ LiveKit `AgentSession` 是 VAD、STT、EOU、interruption、turn 和 response �
 
 ### 4.4 Binding 与 transport
 
-- `rva` binding：`session.open/opened`、typed WSS media、transcript/response、exact cancel 和 generation fence。
-- `wss-opus-v2`：共享 32-byte media header、session/media identity、directional sequence 和 generation admission。
-- `udp-opus-gcm-v1`：grant、socket/session map、AEAD、replay、source pin、reorder、expiry 和 stats。
-- compatibility binding：旧 headers/JSON/WSS framing 的边界转换；不得拥有 provider、Agent turn 或共享 transport
-  实现，也不得成为新 endpoint 的依赖。
+- `rva` binding：`session.open/opened`、typed WSS media、transcript/response、server stop fence 和 playback facts。
+- `wss-opus-v3`：共享 media header、session/media identity、directional sequence 和 generation admission。
+- `udp-opus-gcm-v2`：grant、socket/session map、AEAD、replay、source pin、reorder、expiry 和 stats。
 - 所有 profile 对上暴露一致的 bounded audio/control port；不得把 WebSocket 或 `asyncio.DatagramTransport`
   泄漏到 Agent application。
+
+一个 Agent speech 从 `response.begin` 到 `response.end` 只使用一个 `response_id + generation`；provider 多次 TTS
+flush 不能创建多个 wire response。服务端取消顺序为：原子提升 fence -> 立即发送 `playback.stop` -> 在锁外停止
+Agent/provider。Endpoint 用 `playback.started/ended` 上报真实 DAC 播放事实，不用网络发送完成代替物理播放完成。
 
 ## 5. 并发与背压
 
@@ -164,9 +170,9 @@ provider error/429/timeout。日志不得替代 metrics，也不得记录 token�
 
 ## 8. 实现状态
 
-Director 默认选择 RVA binding，并可对显式兼容 client 选择 legacy binding；grant 绑定 Worker、device、session
-epoch、fencing token、profiles、control protocol、expiry 和单次 `jti`。Worker 的 binding registry 共用 process
-admission，并聚合 active lease、release、revoke 和 heartbeat，但新功能只进入 RVA 路径。
+Director 只选择 RVA v2 binding；grant 绑定 Worker、device、session epoch、fencing token、profiles、control
+protocol、expiry 和单次 `jti`。Worker 的 binding registry 共用 process admission，并聚合 active lease、release、
+revoke 和 heartbeat。
 
-`/v1/voice`、RVA WSS binding/runtime、strict parser、Opus、bounded queues、transcript/response 和 exact cancel 已有
-unit/contract evidence。真实 provider、部署和设备结论只在 [Release readiness](../quality/release-readiness.md) 更新。
+`/v2/voice`、RVA WSS binding/runtime、strict parser、Opus、bounded queues、transcript/response、server-authoritative
+interruption 和 playback facts 的精确证据只在 [Release readiness](../quality/release-readiness.md) 更新。

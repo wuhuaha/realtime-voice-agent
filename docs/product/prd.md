@@ -2,7 +2,7 @@
 
 版本：1.0
 状态：accepted
-更新日期：2026-07-22
+更新日期：2026-07-23
 
 ## 1. 产品定义
 
@@ -11,8 +11,8 @@ endpoint 是立创实战派 ESP32-S3，但协议、服务端和测试体系不�
 
 首版以通用中文闲聊为评测载荷，目标不是业务知识正确性，而是证明端云语音链路、实时交互、打断、
 字幕、配置、故障恢复和水平扩展边界。Server 使用 roomless LiveKit `AgentSession` 组织 VAD、STT、LLM、
-TTS 和 interruption；ESP32 使用 `rva-control-v1`，媒体可选择 `wss-opus-v2` 或
-`udp-opus-gcm-v1`。
+TTS 和 interruption；ESP32 使用 `rva-control-v2`，媒体可选择 `wss-opus-v3` 或
+`udp-opus-gcm-v2`。
 
 ## 2. 用户与场景
 
@@ -29,9 +29,9 @@ TTS 和 interruption；ESP32 使用 `rva-control-v1`，媒体可选择 `wss-opus
 
 - ESP32-S3 启动、联网、音频采集/播放、AEC 配置、触摸/唤醒、状态和流式字幕。
 - 未配置网络时的 Wi-Fi 扫描、选择、软键盘输入和持久化；LiveKit Agent 服务 endpoint 配置和持久化。
-- `rva-control-v1` 控制协议与 `/v1/voice` Worker endpoint。
-- 始终可用的 `wss-opus-v2` baseline。
-- 显式选择或灰度使用的 `udp-opus-gcm-v1` challenger；WSS 始终保留控制连接。
+- `rva-control-v2` 控制协议与 `/v2/voice` Worker endpoint。
+- 始终可用的 `wss-opus-v3` baseline。
+- 显式选择或灰度使用的 `udp-opus-gcm-v2` challenger；WSS 始终保留控制连接。
 - Session Director、可水平扩展 Realtime Worker、共享 coordination store 适配和 worker-bound grant。
 - roomless LiveKit Agent，支持流式 FunASR、DeepSeek-compatible LLM 和可配置流式 TTS provider。
 - 中文 VAD/EOU、流式字幕、提前准备回复、自然打断和 playback generation fence。
@@ -53,13 +53,13 @@ TTS 和 interruption；ESP32 使用 `rva-control-v1`，媒体可选择 `wss-opus
 | FR-001 | 设备配置 | 无有效 Wi-Fi 时可扫描、选择、输入并保存网络；可配置并保存服务 endpoint |
 | FR-002 | 会话 bootstrap | 设备可获得唯一 Worker endpoint、短期 connect grant、epoch、fencing token 和允许 profile |
 | FR-003 | 身份与鉴权 | Director/Worker 拒绝缺失、过期、错设备、错 Worker、重放或篡改的 grant |
-| FR-004 | 控制连接 | 客户端通过 `/v1/voice` 完成 `session.open/opened`、transcript、response、精确 cancel 和 close 流程 |
+| FR-004 | 控制连接 | 客户端通过 `/v2/voice` 完成 session、transcript、response、server stop fence、playback facts 和 close 流程 |
 | FR-005 | WSS 媒体 | WSS 二进制帧双向承载完整 Opus packet，控制与媒体队列均有界 |
 | FR-006 | UDP 媒体 | WSS 协商短期 UDP grant，UDP 通过 AES-128-GCM、anti-replay、source pin 和小型 jitter 传输 Opus |
 | FR-007 | Profile 选择 | 设备可在 UI 显式选择 WSS/UDP；`auto` 必须遵守 server policy 和设备 capability |
 | FR-008 | 中文语音链路 | 支持流式 ASR、LLM 增量响应、流式 TTS 和中文文本规范化 |
 | FR-009 | 状态与字幕 | 设备展示连接、聆听、思考、播放、错误状态以及流式 ASR/TTS 文本 |
-| FR-010 | 触发与打断 | 触摸或唤醒可开始交互；用户近讲可中止当前回复并阻止旧音频继续播放 |
+| FR-010 | 触发与打断 | 触摸或唤醒可开始交互；服务端独占语音打断裁决，端侧只执行精确 stop fence；显式按钮可发起 cancel request |
 | FR-011 | Fresh session | WSS 断开、UDP 失活、lease/fencing 失败或网络切换后关闭旧 session 并重新 bootstrap |
 | FR-012 | Worker admission | Worker 根据可配置 `max_sessions` 拒绝超额新会话；默认值为 `5` |
 | FR-013 | Worker drain | Director 可将 Worker 标记 draining；不再分配新会话，现有会话有界收敛 |
@@ -95,7 +95,7 @@ TTS 和 interruption；ESP32 使用 `rva-control-v1`，媒体可选择 `wss-opus
 
 1. 设备向 Director bootstrap；开发模式可使用明确标记的直连 Worker 路径。
 2. Director 选择 non-draining 且有容量、支持所需 profile 的 Worker，签发短期 grant。
-3. 设备连接 Worker `/v1/voice`，发送 `session.open`。
+3. 设备连接 Worker `/v2/voice`，发送 `session.open`。
 4. Worker 返回 `session.opened` 并 commit 一个媒体 profile。WSS 立即可用；UDP 需完成 authenticated probe 后才 active。
 5. 设备开始上行音频，Worker 启动 roomless AgentSession。
 
@@ -105,7 +105,9 @@ TTS 和 interruption；ESP32 使用 `rva-control-v1`，媒体可选择 `wss-opus
 2. 端侧持续发送 Opus；服务端发回 ASR partial/final。
 3. LLM 增量文本按中文标点切分并提前触发 TTS。
 4. 服务端发送 `response.begin/text/end` 和音频；端侧有界预缓冲后播放。
-5. 用户再次讲话或点击停止时发送精确 `response.cancel`；generation fence 让旧音频在服务端和设备端均被拒绝。
+5. 用户近讲音频继续进入服务端 STT；只有 strict explicit policy 命中时服务端发送精确 `playback.stop`。点击停止则
+   发送 `response.cancel.request`，由服务端确认并发布同一 fence。Endpoint 不用 VAD 自行清队列。
+6. Endpoint 在首个样本进入 DAC 时发送 `playback.started`，在真实播放完成、停止或失败时发送 `playback.ended`。
 
 ## 7. 验收与发布门禁
 
@@ -134,5 +136,4 @@ Compatibility baseline 只用于回归对照，不能替代 native artifact 的�
 
 - [系统架构](../architecture/system.md)
 - [协议总览](../protocol/overview.md)
-- [兼容基线](../quality/compatibility-baseline.md)
 - [需求追踪](../quality/requirements-traceability.md)

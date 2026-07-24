@@ -52,7 +52,7 @@ async def test_livekit_runner_passes_configured_threshold_to_silero(
     monkeypatch.setattr(agent_module, "create_deepseek_llm", lambda _settings: object())
     monkeypatch.setattr(agent_module.silero.VAD, "load", load_vad)
     monkeypatch.setattr(agent_module, "AgentSession", lambda **_options: FakeSession())
-    monkeypatch.setattr(agent_module, "_DefaultAgent", lambda: object())
+    monkeypatch.setattr(agent_module, "_DefaultAgent", lambda _consume_overlap: object())
 
     async def emit_segment(_frames: object) -> None:
         return None
@@ -74,6 +74,52 @@ async def test_livekit_runner_passes_configured_threshold_to_silero(
         "sample_rate": agent_module.PCM_SAMPLE_RATE,
         "activation_threshold": expected_threshold,
     }
+
+
+@pytest.mark.asyncio
+async def test_livekit_runner_exposes_interruption_controls_to_agent_session(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured_session_options: dict[str, object] = {}
+
+    async def create_tts(_settings: Settings, *, tracer: object) -> object:
+        return object()
+
+    monkeypatch.setattr(agent_module, "configure_trace_logging", lambda: None)
+    monkeypatch.setattr(agent_module, "create_tts", create_tts)
+    monkeypatch.setattr(agent_module, "FunASRSTT", lambda _config, *, tracer: object())
+    monkeypatch.setattr(agent_module, "create_deepseek_llm", lambda _settings: object())
+    monkeypatch.setattr(agent_module.silero.VAD, "load", lambda **_options: object())
+    monkeypatch.setattr(
+        agent_module,
+        "AgentSession",
+        lambda **options: captured_session_options.update(options) or FakeSession(),
+    )
+    monkeypatch.setattr(agent_module, "_DefaultAgent", lambda _consume_overlap: object())
+
+    async def emit_segment(_frames: object) -> None:
+        return None
+
+    runner = LiveKitAgentRunner(
+        Settings(
+            _env_file=None,
+            runner="livekit",
+            deepseek_api_key="test-key",
+            agent_interruption_enabled=False,
+            agent_interruption_min_duration_seconds=1.4,
+        ),
+        emit_segment,
+        lambda _epoch: None,
+    )
+    await runner.start()
+
+    turn_handling = captured_session_options["turn_handling"]
+    assert isinstance(turn_handling, dict)
+    assert turn_handling["interruption"]["enabled"] is False
+    assert turn_handling["interruption"]["min_duration"] == 1.4
+    assert turn_handling["interruption"]["discard_audio_if_uninterruptible"] is False
+    assert turn_handling["turn_detection"] == "vad"
+    assert captured_session_options["aec_warmup_duration"] is None
 
 
 def test_vad_activation_threshold_uses_conservative_default(monkeypatch: pytest.MonkeyPatch) -> None:

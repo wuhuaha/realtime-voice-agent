@@ -12,7 +12,7 @@ def claims(clock: MutableClock, **changes: object) -> ConnectGrantClaims:
         "worker_id": "worker-1",
         "session_epoch": "epoch-1",
         "fencing_token": 7,
-        "profiles": ("wss-opus-v2", "udp-opus-gcm-v1"),
+        "profiles": ("wss-opus-v3", "udp-opus-gcm-v2"),
         "iat": clock(),
         "exp": clock() + 30,
         "jti": "jti-1",
@@ -41,8 +41,8 @@ def test_grant_is_bound_to_worker_device_and_expiry() -> None:
 
 def test_grant_defaults_to_native_rva_control() -> None:
     value = claims(MutableClock())
-    assert value.control_protocol == "rva-control-v1"
-    assert value.profiles == ("wss-opus-v2", "udp-opus-gcm-v1")
+    assert value.control_protocol == "rva-control-v2"
+    assert value.profiles == ("wss-opus-v3", "udp-opus-gcm-v2")
 
 
 def test_grant_tampering_fails_before_claims_are_accepted() -> None:
@@ -61,21 +61,11 @@ def test_route_key_encoding_is_unambiguous_for_colon_identifiers() -> None:
     assert encode_route_key("tenant", "aa:bb:cc:dd:ee:ff") == "tenant:aa%3Abb%3Acc%3Add%3Aee%3Aff"
 
 
-@pytest.mark.parametrize(
-    ("control_protocol", "path", "profiles"),
-    [
-        ("xiaozhi-control-v1", "/v1/xiaozhi", ("wss-opus-v1", "udp-opus-gcm-v1")),
-        ("rva-control-v1", "/v1/voice", ("wss-opus-v2", "udp-opus-gcm-v1")),
-    ],
-)
-def test_binding_accepts_routable_control_profile_combinations(
-    control_protocol: str,
-    path: str,
-    profiles: tuple[str, ...],
-) -> None:
+def test_binding_accepts_rva_v2_control_profiles_at_canonical_path() -> None:
+    profiles = ("wss-opus-v3", "udp-opus-gcm-v2")
     binding = BindingAdvertisement(
-        control_protocol=control_protocol,
-        public_wss_url=f"wss://worker.test{path}",
+        control_protocol="rva-control-v2",
+        public_wss_url="wss://worker.test/v2/voice",
         profiles=profiles,
     )
     assert binding.profiles == profiles
@@ -84,8 +74,9 @@ def test_binding_accepts_routable_control_profile_combinations(
 @pytest.mark.parametrize(
     ("control_protocol", "path", "profiles"),
     [
-        ("xiaozhi-control-v1", "/v1/xiaozhi", ("wss-opus-v2",)),
-        ("rva-control-v1", "/v1/voice", ("wss-opus-v1",)),
+        ("xiaozhi-control-v1", "/v1/xiaozhi", ("wss-opus-v1",)),
+        ("rva-control-v1", "/v1/voice", ("wss-opus-v2",)),
+        ("rva-control-v2", "/v2/voice", ("udp-opus-gcm-v1",)),
     ],
 )
 def test_binding_rejects_unroutable_control_profile_combinations(
@@ -93,7 +84,7 @@ def test_binding_rejects_unroutable_control_profile_combinations(
     path: str,
     profiles: tuple[str, ...],
 ) -> None:
-    with pytest.raises(ValueError, match="cannot route transport profiles"):
+    with pytest.raises(ValueError):
         BindingAdvertisement(
             control_protocol=control_protocol,
             public_wss_url=f"wss://worker.test{path}",
@@ -101,7 +92,19 @@ def test_binding_rejects_unroutable_control_profile_combinations(
         )
 
 
-def test_connect_grant_rejects_unroutable_control_profile_combination() -> None:
+def test_connect_grant_rejects_legacy_control_and_profile_values() -> None:
     clock = MutableClock()
-    with pytest.raises(ValueError, match="rva-control-v1 cannot route.*wss-opus-v1"):
-        claims(clock, control_protocol="rva-control-v1", profiles=("wss-opus-v1",))
+    with pytest.raises(ValueError):
+        claims(clock, control_protocol="rva-control-v1", profiles=("wss-opus-v3",))
+    with pytest.raises(ValueError):
+        claims(clock, control_protocol="rva-control-v2", profiles=("wss-opus-v2",))
+
+
+@pytest.mark.parametrize("path", ["/v1/voice", "/v1/xiaozhi", "/v2/voice/"])
+def test_binding_rejects_noncanonical_websocket_paths(path: str) -> None:
+    with pytest.raises(ValueError, match="canonical /v2/voice"):
+        BindingAdvertisement(
+            control_protocol="rva-control-v2",
+            public_wss_url=f"wss://worker.test{path}",
+            profiles=("wss-opus-v3",),
+        )

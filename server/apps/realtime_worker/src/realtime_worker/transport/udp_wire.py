@@ -1,4 +1,4 @@
-"""Canonical packet primitives for the udp-opus-gcm-v1 media profile."""
+"""Canonical packet primitives for the udp-opus-gcm-v2 media profile."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ import struct
 from dataclasses import dataclass
 
 UDP_MAGIC = b"VA"
-UDP_VERSION = 1
+UDP_VERSION = 2
 UDP_FLAG_AUDIO = 0x01
 UDP_FLAG_PROBE = 0x02
 UDP_FLAG_PROBE_ACK = 0x04

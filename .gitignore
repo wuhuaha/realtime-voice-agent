@@ -15,6 +15,7 @@ __pycache__/
 htmlcov/
 
 .runtime/
+.em_skill.json
 .playwright-cli/
 .local-test/
 external/

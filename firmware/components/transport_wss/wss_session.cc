@@ -5,6 +5,23 @@
 
 namespace rva::wss {
 
+WssSession::PlaybackStopCause WssSession::ParsePlaybackStopCause(
+    const std::string& cause) {
+    if (cause == "explicit_user_request") {
+        return WssSession::PlaybackStopCause::kExplicitUserRequest;
+    }
+    if (cause == "recognized_interrupt") {
+        return WssSession::PlaybackStopCause::kRecognizedInterrupt;
+    }
+    if (cause == "session_close") {
+        return WssSession::PlaybackStopCause::kSessionClose;
+    }
+    if (cause == "response_failed") {
+        return WssSession::PlaybackStopCause::kResponseFailed;
+    }
+    return WssSession::PlaybackStopCause::kNone;
+}
+
 bool WssSession::SessionMatches(const protocol::SessionIdentity& session) const {
     return opened_ && session.session_id == session_.session_id && session.session_epoch == session_.session_epoch;
 }
@@ -20,6 +37,8 @@ AdmissionResult WssSession::Accept(const protocol::ServerMessage& message) {
                 return AcceptTranscript(typed);
             } else if constexpr (std::is_same_v<Type, protocol::ResponseEvent>) {
                 return AcceptResponse(typed);
+            } else if constexpr (std::is_same_v<Type, protocol::PlaybackStop>) {
+                return AcceptPlaybackStop(typed);
             } else if constexpr (std::is_same_v<Type, protocol::SessionError>) {
                 return !opened_ ? AdmissionResult::kSessionNotOpen
                                 : (SessionMatches(typed.session) ? AdmissionResult::kAccepted
@@ -29,6 +48,7 @@ AdmissionResult WssSession::Accept(const protocol::ServerMessage& message) {
                 if (!SessionMatches(typed.session)) return AdmissionResult::kStaleSession;
                 closed_ = true;
                 response_active_ = false;
+                media_active_ = false;
                 utterance_active_ = false;
                 return AdmissionResult::kAccepted;
             }
@@ -78,6 +98,10 @@ AdmissionResult WssSession::AcceptResponse(const protocol::ResponseEvent& respon
         next_response_text_sequence_ = 0;
         next_media_sequence_ = 0;
         response_active_ = true;
+        media_active_ = true;
+        stop_recorded_ = false;
+        last_stop_fence_generation_ = 0;
+        last_stop_cause_ = PlaybackStopCause::kNone;
         return AdmissionResult::kAccepted;
     }
     if (!response_active_) return AdmissionResult::kResponseAlreadyTerminal;
@@ -90,12 +114,42 @@ AdmissionResult WssSession::AcceptResponse(const protocol::ResponseEvent& respon
         ++next_response_text_sequence_;
         return AdmissionResult::kAccepted;
     }
-    if (response.type == protocol::ServerMessageType::kResponseEnd ||
-        response.type == protocol::ServerMessageType::kResponseCancelled) {
+    if (response.type == protocol::ServerMessageType::kResponseEnd) {
         response_active_ = false;
+        media_active_ = false;
         return AdmissionResult::kAccepted;
     }
     return AdmissionResult::kUnexpectedMessage;
+}
+
+AdmissionResult WssSession::AcceptPlaybackStop(const protocol::PlaybackStop& stop) {
+    if (!opened_) return AdmissionResult::kSessionNotOpen;
+    if (!SessionMatches(stop.session)) return AdmissionResult::kStaleSession;
+    if (stop.target.response_id != response_id_ ||
+        stop.target.generation != response_generation_) {
+        return stop.target.generation < playback_fence_
+                   ? AdmissionResult::kStaleGeneration
+                   : AdmissionResult::kCancelTargetMismatch;
+    }
+    const PlaybackStopCause cause = ParsePlaybackStopCause(stop.cause);
+    if (cause == PlaybackStopCause::kNone) {
+        return AdmissionResult::kUnexpectedMessage;
+    }
+    if (stop_recorded_) {
+        return stop.fence_generation == last_stop_fence_generation_ &&
+                       cause == last_stop_cause_
+                   ? AdmissionResult::kAccepted
+                   : AdmissionResult::kPlaybackStopConflict;
+    }
+    if (stop.fence_generation <= playback_fence_) {
+        return AdmissionResult::kStaleGeneration;
+    }
+    playback_fence_ = stop.fence_generation;
+    last_stop_fence_generation_ = stop.fence_generation;
+    last_stop_cause_ = cause;
+    stop_recorded_ = true;
+    media_active_ = false;
+    return AdmissionResult::kAccepted;
 }
 
 AdmissionResult WssSession::AcceptMedia(
@@ -112,7 +166,8 @@ AdmissionResult WssSession::AcceptMedia(
     if (parsed.media_id != media_id_ || parsed.media_epoch != media_epoch_) {
         return AdmissionResult::kStaleMediaIdentity;
     }
-    if (parsed.generation < playback_fence_ || !response_active_ || parsed.generation != response_generation_) {
+    if (parsed.generation < playback_fence_ || !media_active_ ||
+        parsed.generation != response_generation_) {
         return AdmissionResult::kStaleGeneration;
     }
     if (parsed.sequence != next_media_sequence_) return AdmissionResult::kInvalidSequence;
@@ -121,10 +176,17 @@ AdmissionResult WssSession::AcceptMedia(
     return AdmissionResult::kAccepted;
 }
 
-protocol::ControlError WssSession::EncodeCancel(const std::string& reason, std::string* json) const {
-    if (!opened_ || closed_ || !response_active_) return protocol::ControlError::kMissingOrInvalidField;
-    return protocol::EncodeResponseCancel(
-        session_, protocol::CancelTarget{response_id_, response_generation_}, reason, json);
+protocol::ControlError WssSession::EncodeCancelRequest(
+    const std::string& request_id,
+    std::string* json) const {
+    if (!opened_ || closed_ || response_id_.empty() || response_generation_ == 0) {
+        return protocol::ControlError::kMissingOrInvalidField;
+    }
+    return protocol::EncodeResponseCancelRequest(
+        {.session = session_,
+         .request_id = request_id,
+         .target = {response_id_, response_generation_}},
+        json);
 }
 
 }  // namespace rva::wss

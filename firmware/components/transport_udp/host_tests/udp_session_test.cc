@@ -90,7 +90,11 @@ Endpoint Server() {
 }
 
 SessionGrant Grant() {
-    SessionGrant grant{.server = Server(), .media_epoch = 0x10203040, .initial_generation = 1};
+    SessionGrant grant{
+        .server = Server(),
+        .media_epoch = 0x10203040,
+        .initial_downlink_generation = 1,
+    };
     grant.media_id = {1, 2, 3, 4, 5, 6, 7, 8};
     for (size_t i = 0; i < kAes128KeyBytes; ++i) {
         grant.uplink_key[i] = static_cast<uint8_t>(i);
@@ -154,11 +158,20 @@ int main() {
     const auto keepalive = wire::ParseDatagram(
         uplink_datagram.data(), uplink_size, wire::Direction::kUplink);
     assert(keepalive && keepalive->header.type == wire::DatagramType::kKeepalive);
-    assert(keepalive->header.sequence == 1 && keepalive->header.generation == 1);
+    assert(keepalive->header.sequence == 1 && keepalive->header.generation == 0);
+
+    const uint8_t opus[] = {0xF8, 0xFF, 0xFE};
+    assert(session.BuildAudio(
+        opus, sizeof(opus), 960, uplink_datagram.data(),
+        uplink_datagram.size(), &uplink_size));
+    const auto uplink_audio = wire::ParseDatagram(
+        uplink_datagram.data(), uplink_size, wire::Direction::kUplink);
+    assert(uplink_audio && uplink_audio->header.type == wire::DatagramType::kAudio);
+    assert(uplink_audio->header.sequence == 2 && uplink_audio->header.generation == 0);
 
     std::array<uint8_t, wire::kMaxDatagramBytes> datagram{};
     size_t size = Downlink(downlink, grant, wire::DatagramType::kProbeAck,
-                           0, 1, nullptr, 0, datagram);
+                           0, 0, nullptr, 0, datagram);
     assert(session.Receive(Server(), datagram.data(), size, 0) ==
            AdmissionResult::kAcceptedProbeAck);
     assert(session.Receive(Server(), datagram.data(), size, 0) == AdmissionResult::kReplay);
@@ -176,7 +189,6 @@ int main() {
            AdmissionResult::kAcceptedProbeAck);
 
     assert(UdpSessionTestPeer::AdvanceGeneration(&session, 1));
-    const uint8_t opus[] = {0xF8, 0xFF, 0xFE};
     size = Downlink(downlink, grant, wire::DatagramType::kAudio,
                     1, 1, opus, sizeof(opus), datagram);
     datagram[size - 1] ^= 1;
@@ -189,12 +201,11 @@ int main() {
     assert(session.PopPlayout(1000).kind == PlayoutKind::kAudio);
     assert(session.Receive(Server(), datagram.data(), size, 1000) == AdmissionResult::kReplay);
 
-    // Authenticated stale media advances replay admission but never reaches playout.
+    // Downlink audio must always carry a non-zero active generation.
     size = Downlink(downlink, grant, wire::DatagramType::kAudio,
                     2, 0, opus, sizeof(opus), datagram);
     assert(session.Receive(Server(), datagram.data(), size, 2000) ==
-           AdmissionResult::kStaleGeneration);
-    assert(session.Receive(Server(), datagram.data(), size, 2000) == AdmissionResult::kReplay);
+           AdmissionResult::kInvalidFraming);
 
     // The canonical forward window is 1024 packets; a larger jump is rejected.
     size = Downlink(downlink, grant, wire::DatagramType::kAudio,
@@ -248,7 +259,7 @@ int main() {
         assert(session.Receive(Server(), datagram.data(), size, 260000 + sequence) ==
                AdmissionResult::kFutureGeneration);
     }
-    assert(session.generation() == 1);
+    assert(session.downlink_generation() == 1);
     assert(UdpSessionTestPeer::BufferedCount(session) == 4);
     assert(session.PopPlayout(500000).kind == PlayoutKind::kNone);
 
@@ -260,7 +271,7 @@ int main() {
            AdmissionResult::kReplay);
 
     assert(UdpSessionTestPeer::AdvanceGeneration(&session, 2));
-    assert(session.generation() == 2);
+    assert(session.downlink_generation() == 2);
     assert(UdpSessionTestPeer::BufferedCount(session) == 0);
     assert(UdpSessionTestPeer::BuffersAreZero(session));
     for (int index = 0; index < 4; ++index) {
@@ -274,7 +285,7 @@ int main() {
     const Stats stats = session.stats();
     assert(stats.authentication_failed == 2);
     assert(stats.wrong_source == 1);
-    assert(stats.stale_generation == 1);
+    assert(stats.stale_generation == 0);
     assert(stats.future_generation == 5);
     assert(stats.lost == 2);
     assert(stats.played == 8);
@@ -311,7 +322,7 @@ int main() {
     UdpSession cadence(cadence_uplink, cadence_downlink);
     assert(cadence.Configure(grant));
     size = Downlink(cadence_downlink, grant, wire::DatagramType::kProbeAck,
-                    0, 1, nullptr, 0, datagram);
+                    0, 0, nullptr, 0, datagram);
     assert(cadence.Receive(Server(), datagram.data(), size, 0) ==
            AdmissionResult::kAcceptedProbeAck);
     assert(UdpSessionTestPeer::AdvanceGeneration(&cadence, 1));
@@ -320,7 +331,7 @@ int main() {
     assert(cadence.Receive(Server(), datagram.data(), size, 1000) ==
            AdmissionResult::kAcceptedAudio);
     size = Downlink(cadence_downlink, grant, wire::DatagramType::kKeepalive,
-                    2, 1, nullptr, 0, datagram);
+                    2, 0, nullptr, 0, datagram);
     assert(cadence.Receive(Server(), datagram.data(), size, 2000) ==
            AdmissionResult::kAcceptedKeepalive);
     size = Downlink(cadence_downlink, grant, wire::DatagramType::kAudio,
@@ -339,7 +350,7 @@ int main() {
     UdpSession fenced(fenced_uplink, fenced_downlink);
     assert(fenced.Configure(grant));
     size = Downlink(fenced_downlink, grant, wire::DatagramType::kProbeAck,
-                    0, 1, nullptr, 0, datagram);
+                    0, 0, nullptr, 0, datagram);
     assert(fenced.Receive(Server(), datagram.data(), size, 0) ==
            AdmissionResult::kAcceptedProbeAck);
     size = Downlink(fenced_downlink, grant, wire::DatagramType::kAudio,

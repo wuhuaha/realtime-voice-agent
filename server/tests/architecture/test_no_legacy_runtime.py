@@ -11,7 +11,21 @@ SOURCE_ROOTS = (
 
 
 def test_server_source_excludes_frozen_direct_protocols() -> None:
-    forbidden = ("aiortc", "webrtc", "aimp", "datachannel", "direct_session_v1", '"/v1/direct"')
+    forbidden = (
+        "aiortc",
+        "webrtc",
+        "aimp",
+        "datachannel",
+        "direct_session_v1",
+        '"/v1/direct"',
+        "xiaozhi-control-v1",
+        "rva-control-v1",
+        "wss-opus-v1",
+        "wss-opus-v2",
+        "udp-opus-gcm-v1",
+        "/v1/voice",
+        "/v1/xiaozhi",
+    )
     violations: list[str] = []
     for root in SOURCE_ROOTS:
         for path in root.rglob("*.py"):
@@ -20,6 +34,16 @@ def test_server_source_excludes_frozen_direct_protocols() -> None:
                 if token in content:
                     violations.append(f"{path.relative_to(SERVER_ROOT)}: {token}")
     assert not violations, "legacy runtime references found:\n" + "\n".join(violations)
+
+
+def test_realtime_worker_excludes_xiaozhi_bindings() -> None:
+    bindings = SERVER_ROOT / "apps" / "realtime_worker" / "src" / "realtime_worker" / "bindings"
+    forbidden = (
+        bindings / "xiaozhi_runtime.py",
+        bindings / "xiaozhi_udp.py",
+    )
+    assert not [path.relative_to(SERVER_ROOT) for path in forbidden if path.exists()]
+    assert not list((bindings / "xiaozhi").rglob("*.py"))
 
 
 def test_realtime_worker_does_not_depend_on_legacy_packages() -> None:

@@ -1,18 +1,18 @@
 # realtime-voice-agent
 
 面向嵌入式设备、浏览器和移动端的实时语音 Agent 端云工程。首个 endpoint 是立创实战派 ESP32-S3；
-设备通过项目定义的 `rva-control-v1` 与 `wss-opus-v2` / `udp-opus-gcm-v1` 接入 roomless LiveKit
+设备通过项目定义的 `rva-control-v2` 与 `wss-opus-v3` / `udp-opus-gcm-v2` 接入 roomless LiveKit
 `AgentSession`。服务端由 Session Director、可水平扩展的 Realtime Worker 和 provider adapters 组成。
 
-默认产品路径是 native ESP-IDF endpoint、`/v1/voice` 和 RVA wire。隔离的 compatibility target、route、
-schema 与 provenance 仅用于兼容验证和回滚，不作为产品默认入口或新功能依赖。
+默认产品路径是 native ESP-IDF endpoint、`/v2/voice` 和 RVA wire。历史 migration provenance 只用于追溯
+已验证来源，不参与当前构建、运行或协议兼容。
 
 ## 当前能力
 
 - Director 提供 Worker registry、capacity、route lease、fencing 和单次 connect grant。
 - Worker 统一拥有 active session、Opus、Agent runtime、playback generation 和有界 teardown。
 - Native ESP-IDF endpoint 将 board、audio/AFE、transport、config 和可选 LVGL UI 分离为独立组件。
-- Legacy compatibility binding/target 只在退役门禁完成前作为回滚线保留，不承载新功能。
+- Server 是语音打断的唯一裁决者；Endpoint 只执行带 `response_id + generation` 的播放 fence 并上报物理播放事实。
 - `VOICE_WORKER_MAX_SESSIONS=5` 是可配置启动值，不代表容量 SLO。
 
 发布状态和未运行项以 [Release readiness](docs/quality/release-readiness.md) 为准。任何 build、host test 或
@@ -23,7 +23,7 @@ schema 与 provenance 仅用于兼容验证和回滚，不作为产品默认入�
 ```text
 protocol/       canonical control/media contracts and fixtures
 server/         session_director, realtime_worker, shared contracts and tests
-firmware/       native application, reusable components and compatibility target
+firmware/       native application and reusable endpoint components
 docs/           product, architecture, protocol, security, quality and operations
 tests/          repository and cross-endpoint contract gates
 migration/      compatibility evidence and rollback provenance

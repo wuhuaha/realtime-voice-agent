@@ -46,6 +46,19 @@ def test_allowed_templates_are_not_reported() -> None:
     assert VERIFY.validate_tracked_paths((".env.example", "firmware/device/sdkconfig.defaults")) == []
 
 
+def test_retired_protocol_and_compatibility_runtime_paths_are_rejected() -> None:
+    paths = (
+        "protocol/rva_control_v1/contract.yaml",
+        "protocol/xiaozhi_control_v1/messages.schema.json",
+        "firmware/targets/lichuang-dev/README.md",
+        "server/apps/realtime_worker/src/realtime_worker/bindings/xiaozhi/protocol.py",
+        "server/apps/realtime_worker/src/realtime_worker/bindings/xiaozhi_runtime.py",
+    )
+    assert VERIFY.validate_tracked_paths(paths) == [
+        f"retired runtime path is tracked: {path}" for path in paths
+    ]
+
+
 def test_protocol_contract_is_consistent() -> None:
     assert VERIFY.validate_protocol(ROOT) == []
 
@@ -102,6 +115,27 @@ def test_manifest_historical_identity_does_not_track_current_file_bytes(tmp_path
             },
         ],
         "traceability": {},
+    }
+    (baseline / "source-manifest.yaml").write_text(yaml.safe_dump(manifest), encoding="utf-8")
+
+    assert VERIFY.validate_manifest(manifest_root) == []
+
+
+def test_manifest_retired_prefix_preserves_missing_historical_identity(tmp_path: Path) -> None:
+    manifest_root = tmp_path / "repository"
+    baseline = manifest_root / "migration" / "baseline"
+    baseline.mkdir(parents=True)
+    manifest = {
+        "retired_prefixes": ["protocol/rva_control_v1/"],
+        "files": [
+            {
+                "production_path": "protocol/rva_control_v1/contract.yaml",
+                "sha256": "0" * 64,
+            }
+        ],
+        "traceability": {
+            "historical_wire": ["protocol/rva_control_v1/contract.yaml"],
+        },
     }
     (baseline / "source-manifest.yaml").write_text(yaml.safe_dump(manifest), encoding="utf-8")
 

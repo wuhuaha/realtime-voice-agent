@@ -4,7 +4,7 @@ $deviceRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $repoRoot = (Resolve-Path (Join-Path $deviceRoot "../..")).Path
 $contractsRoot = Join-Path $repoRoot "firmware/components/voice_contracts"
 $coreRoot = Join-Path $repoRoot "firmware/components/voice_core"
-$canonicalFixtures = Join-Path $repoRoot "protocol/udp_opus_gcm_v1/fixtures"
+$canonicalFixtures = Join-Path $repoRoot "protocol/udp_opus_gcm_v2/fixtures"
 
 foreach ($fixture in @("positive.json", "negative.json")) {
     if (-not (Test-Path -LiteralPath (Join-Path $canonicalFixtures $fixture))) {
@@ -44,8 +44,8 @@ if ($duplicateFixtures.Count -ne 0) {
 $hostTestScript = Get-Content -Raw -LiteralPath (
     Join-Path $PSScriptRoot "test-headless-contract.ps1")
 foreach ($fixturePath in @(
-    "protocol/udp_opus_gcm_v1/fixtures/positive.json",
-    "protocol/udp_opus_gcm_v1/fixtures/negative.json"
+    "protocol/udp_opus_gcm_v2/fixtures/positive.json",
+    "protocol/udp_opus_gcm_v2/fixtures/negative.json"
 )) {
     if (-not $hostTestScript.Contains($fixturePath, [StringComparison]::Ordinal)) {
         throw "Target host tests must consume the canonical root fixture: $fixturePath"

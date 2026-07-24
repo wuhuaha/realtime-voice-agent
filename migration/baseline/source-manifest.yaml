@@ -29,6 +29,11 @@ delivery_snapshots:
   server_readiness_tree: aa7fdc3c81ab1868bb022e86c7c0190f08d31960
   server_lifecycle_tree: a89e6ba4d23b70c6374dfd27d96c45d35c1e4fbd
   dependency_lock_blob: e5538d7e54cd2792b4d385e226f59c92e33907c5
+retired_prefixes:
+  - protocol/rva_control_v1/
+  - protocol/udp_opus_gcm_v1/
+  - protocol/xiaozhi_control_v1/
+  - firmware/targets/lichuang-dev/
 files:
   - production_path: protocol/udp_opus_gcm_v1/README.md
     sha256: 5b424d69dde4701f3439471065a8f6471e40c456e69b6b21c480b0d4e9cb5dd9

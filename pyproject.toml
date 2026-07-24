@@ -27,7 +27,6 @@ testpaths = [
   "tests/contract",
   "tests/compatibility",
   "tests/protocol",
-  "firmware/targets/lichuang-dev/tests",
   "firmware/tools/tests",
 ]
 addopts = ["-q", "--strict-markers", "-p", "no:cacheprovider"]

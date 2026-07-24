@@ -20,6 +20,7 @@ enum class AdmissionResult {
     kCancelTargetMismatch,
     kResponseAlreadyActive,
     kResponseAlreadyTerminal,
+    kPlaybackStopConflict,
     kStaleMediaIdentity,
     kInvalidMedia,
     kSessionClosed,
@@ -32,17 +33,28 @@ public:
 
     AdmissionResult Accept(const protocol::ServerMessage& message);
     AdmissionResult AcceptMedia(const uint8_t* frame, size_t size, protocol::MediaHeader* header);
-    protocol::ControlError EncodeCancel(const std::string& reason, std::string* json) const;
+    protocol::ControlError EncodeCancelRequest(
+        const std::string& request_id, std::string* json) const;
 
     bool opened() const { return opened_; }
     bool closed() const { return closed_; }
     uint32_t playback_fence() const { return playback_fence_; }
 
 private:
+    enum class PlaybackStopCause : uint8_t {
+        kNone,
+        kExplicitUserRequest,
+        kRecognizedInterrupt,
+        kSessionClose,
+        kResponseFailed,
+    };
+
+    static PlaybackStopCause ParsePlaybackStopCause(const std::string& cause);
     bool SessionMatches(const protocol::SessionIdentity& session) const;
     AdmissionResult AcceptOpened(const protocol::SessionOpened& opened);
     AdmissionResult AcceptTranscript(const protocol::Transcript& transcript);
     AdmissionResult AcceptResponse(const protocol::ResponseEvent& response);
+    AdmissionResult AcceptPlaybackStop(const protocol::PlaybackStop& stop);
 
     const std::string open_request_id_;
     protocol::SessionIdentity session_;
@@ -55,10 +67,14 @@ private:
     std::string utterance_id_;
     std::string response_id_;
     uint32_t response_generation_ = 0;
+    uint32_t last_stop_fence_generation_ = 0;
+    PlaybackStopCause last_stop_cause_ = PlaybackStopCause::kNone;
     bool opened_ = false;
     bool closed_ = false;
     bool utterance_active_ = false;
     bool response_active_ = false;
+    bool media_active_ = false;
+    bool stop_recorded_ = false;
 };
 
 }  // namespace rva::wss

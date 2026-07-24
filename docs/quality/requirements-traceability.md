@@ -1,6 +1,6 @@
 # 需求追踪矩阵
 
-更新日期：2026-07-21
+更新日期：2026-07-23
 上游需求：[PRD](../product/prd.md)
 发布状态：[Release readiness](release-readiness.md)
 
@@ -13,13 +13,13 @@
 | FR-001 | `architecture/firmware.md` | Wi-Fi/NVS 配置、重启回读、失败恢复 HIL |
 | FR-002 | `architecture/server.md` | 独立进程 Director/Worker bootstrap、binding selection 与 process E2E |
 | FR-003 | `security/credentials.md` | grant tamper/replay/single-use 与 credential-origin tests |
-| FR-004 | `protocol/rva-control-v1.md` | schema fixtures、双端 parser 与真实 WSS session |
-| FR-005 | `protocol/wss-opus-v2.md` | 真实 provider process E2E、真机 ASR/TTS/playout 与 congestion |
-| FR-006 | `protocol/udp-opus-gcm-v1.md` | canonical vectors、tamper/replay、真实 provider GCM process E2E、真机双向 UDP 和弱网 |
+| FR-004 | `protocol/rva-control-v2.md` | schema fixtures、双端 parser 与真实 WSS session |
+| FR-005 | `protocol/wss-opus-v3.md` | 真实 provider process E2E、真机 ASR/TTS/playout 与 congestion |
+| FR-006 | `protocol/udp-opus-gcm-v2.md` | canonical vectors、tamper/replay、真实 provider GCM process E2E、真机双向 UDP 和弱网 |
 | FR-007 | `protocol/overview.md` | WSS/UDP profile selection、fresh reconnect 与 UI mode |
 | FR-008 | `architecture/server.md` | provider fake、真实 provider stream 与错误隔离 |
 | FR-009 | `architecture/firmware.md` | 中文字幕、状态、触摸开始/停止与 headless boundary |
-| FR-010 | `protocol/lifecycle-errors.md` | exact cancel、stale generation、近讲/double-talk |
+| FR-010 | ADR 0006、`protocol/rva-control-v2.md` | audio→STT、strict explicit policy、atomic fence、stop tail、非命中 overlap |
 | FR-011 | `protocol/lifecycle-errors.md` | disconnect、Wi-Fi flap、bounded teardown/reconnect |
 | FR-012 | `architecture/server.md` | shared admission、overload、queue limits |
 | FR-013 | `architecture/server.md` | heartbeat、drain、lease revoke/release |
@@ -38,7 +38,7 @@
 | NFR-006 | `security/credentials.md` | retention/redaction/secret scan 与轮换演练 |
 | NFR-007 | AGENTS/architecture | import/dependency/repository contracts |
 | NFR-008 | source locks/build | clean native build、size、artifact digest |
-| NFR-009 | compatibility baseline | legacy/native affected-behavior parity |
+| NFR-009 | `protocol/registry.yaml` | v2 strict parse、旧 wire fail closed、双端 canonical fixture 一致性 |
 | NFR-010 | deployment/runbooks | readiness、drain、rolling update 与 rollback |
 | NFR-011 | capacity plan | CPU/RSS/event-loop/provider/queue pressure measurement |
 

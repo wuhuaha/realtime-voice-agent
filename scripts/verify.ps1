@@ -16,11 +16,16 @@ try {
         uv run --directory (Join-Path $Root 'server') ruff check .
         uv run --directory (Join-Path $Root 'server') pytest
     }
-    if (Test-Path -LiteralPath (Join-Path $Root 'firmware/targets/lichuang-dev/scripts/verify-source-contract.ps1')) {
-        & (Join-Path $Root 'firmware/targets/lichuang-dev/scripts/verify-source-contract.ps1')
-    }
     if ($BuildFirmware) {
-        & (Join-Path $Root 'firmware/targets/lichuang-dev/scripts/build.ps1') -Clean
+        Push-Location (Join-Path $Root 'firmware/apps/voice_terminal')
+        try {
+            idf.py -B build-verify build
+            if ($LASTEXITCODE -ne 0) { throw 'Native firmware build failed.' }
+            idf.py -B build-verify size
+            if ($LASTEXITCODE -ne 0) { throw 'Native firmware size check failed.' }
+        } finally {
+            Pop-Location
+        }
     }
 } finally {
     Pop-Location

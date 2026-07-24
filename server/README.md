@@ -59,20 +59,19 @@ GET  /health/ready
 Worker API：
 
 ```text
-WS   /v1/voice
-WS   /v1/xiaozhi  (legacy compatibility only)
+WS   /v2/voice
 POST /internal/v1/drain
 GET  /health/live
 GET  /health/ready
 ```
 
-`/v1/voice` 是默认且唯一的新功能入口。`/v1/xiaozhi` 必须由兼容需求显式选择，只允许依赖共享 runtime/transport，
-共享模块不得反向依赖 legacy binding。
+`/v2/voice` 是唯一设备语音入口。当前 runtime 不注册 `/v1/voice` 或 `/v1/xiaozhi`，协议升级通过 fresh session
+完成，不在同一进程保留 dual stack。
 
 Worker `max_sessions` 默认 `5`，可用 `VOICE_WORKER_MAX_SESSIONS` 覆盖。生产多 Director/多 Worker 必须使用
 `VOICE_COORDINATION_BACKEND=redis`；memory backend只允许测试和单进程开发。
 
-Worker兼容实验室共享 token，也接受 Director 签发的 worker/device/session epoch/fencing/profile/jti/expiry
+Worker 在开发模式可接受实验室共享 token，也接受 Director 签发的 worker/device/session epoch/fencing/profile/jti/expiry
 绑定 grant。Worker 连接前通过 Director 在 shared coordination store 原子消费 grant；WSS和所选 UDP media
 始终由同一 worker持有。
 

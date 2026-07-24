@@ -29,9 +29,21 @@ enum class ServerMessageType {
     kResponseBegin,
     kResponseText,
     kResponseEnd,
-    kResponseCancelled,
+    kPlaybackStop,
     kSessionError,
     kSessionClose,
+};
+
+enum class ResponseOutcome : uint8_t {
+    kCompleted,
+    kCancelled,
+    kFailed,
+};
+
+enum class PlaybackEndedOutcome : uint8_t {
+    kCompleted,
+    kStopped,
+    kFailed,
 };
 
 struct SessionIdentity final {
@@ -76,7 +88,21 @@ struct ResponseEvent final {
     uint32_t generation = 0;
     uint32_t sequence = 0;
     std::string text;
-    std::string reason;
+    ResponseOutcome outcome = ResponseOutcome::kCompleted;
+    std::optional<uint32_t> final_media_sequence;
+    std::string error_code;
+};
+
+struct ResponseTarget final {
+    std::string response_id;
+    uint32_t generation = 0;
+};
+
+struct PlaybackStop final {
+    SessionIdentity session;
+    ResponseTarget target;
+    uint32_t fence_generation = 0;
+    std::string cause;
 };
 
 struct SessionError final {
@@ -93,7 +119,8 @@ struct SessionClose final {
     std::string detail;
 };
 
-using ServerMessage = std::variant<SessionOpened, Transcript, ResponseEvent, SessionError, SessionClose>;
+using ServerMessage =
+    std::variant<SessionOpened, Transcript, ResponseEvent, PlaybackStop, SessionError, SessionClose>;
 
 struct DeviceCapabilities final {
     bool aec = false;
@@ -111,18 +138,31 @@ struct SessionOpen final {
     DeviceCapabilities capabilities;
 };
 
-struct CancelTarget final {
-    std::string response_id;
-    uint32_t generation = 0;
+struct ResponseCancelRequest final {
+    SessionIdentity session;
+    std::string request_id;
+    ResponseTarget target;
+};
+
+struct PlaybackStarted final {
+    SessionIdentity session;
+    ResponseTarget target;
+    uint32_t first_media_sequence = 0;
+};
+
+struct PlaybackEnded final {
+    SessionIdentity session;
+    ResponseTarget target;
+    PlaybackEndedOutcome outcome = PlaybackEndedOutcome::kCompleted;
+    uint64_t played_samples = 0;
+    std::optional<uint32_t> last_media_sequence;
 };
 
 ControlError ParseServerMessage(const uint8_t* data, size_t size, ServerMessage* message);
 ControlError EncodeSessionOpen(const SessionOpen& message, std::string* json);
-ControlError EncodeResponseCancel(
-    const SessionIdentity& session,
-    const CancelTarget& target,
-    const std::string& reason,
-    std::string* json);
+ControlError EncodeResponseCancelRequest(const ResponseCancelRequest& message, std::string* json);
+ControlError EncodePlaybackStarted(const PlaybackStarted& message, std::string* json);
+ControlError EncodePlaybackEnded(const PlaybackEnded& message, std::string* json);
 ControlError EncodeSessionClose(const SessionClose& message, std::string* json);
 
 }  // namespace rva::protocol

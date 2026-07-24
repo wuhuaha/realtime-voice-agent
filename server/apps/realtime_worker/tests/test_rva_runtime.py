@@ -13,6 +13,7 @@ from realtime_worker.bindings.rva import (
     RvaWssConnection,
     WssMediaFrame,
 )
+from realtime_worker.interruption import InterruptionPolicyConfig, LayeredInterruptionPolicy
 
 
 def pcm_frame(sequence: int) -> PcmFrame:
@@ -23,11 +24,11 @@ def session_open() -> str:
     return json.dumps(
         {
             "type": "session.open",
-            "protocol_version": 1,
+            "protocol_version": 2,
             "request_id": "open-001",
             "device_id": "device-001",
-            "supported_media_profiles": ["wss-opus-v2"],
-            "preferred_media_profile": "wss-opus-v2",
+            "supported_media_profiles": ["wss-opus-v3"],
+            "preferred_media_profile": "wss-opus-v3",
             "audio": {"codec": "opus", "sample_rate_hz": 16_000, "channels": 1, "frame_duration_ms": 60},
             "capabilities": {"aec": True, "vad": True},
         }
@@ -78,16 +79,26 @@ class FakeWebSocket:
 
         return await asyncio.wait_for(find(), timeout=timeout)
 
+    async def wait_media_count(self, count: int, *, timeout: float = 2.0) -> None:
+        async def wait() -> None:
+            async with self.changed:
+                while len(self.media) < count:
+                    await self.changed.wait()
+
+        await asyncio.wait_for(wait(), timeout=timeout)
+
 
 class FakeRunner:
     def __init__(
         self,
         emit: Callable[[AgentOutputSegment], Awaitable[None]],
+        response_end: Callable[[int], None],
         *,
         trigger_frames: int = 9,
         output_frames: int = 10,
     ) -> None:
         self.emit = emit
+        self.response_end = response_end
         self.trigger_frames = trigger_frames
         self.output_frames = output_frames
         self.pushes = 0
@@ -96,6 +107,7 @@ class FakeRunner:
         self.close_calls = 0
         self.started = False
         self.playback: list[tuple[float, bool]] = []
+        self.playback_started_event = asyncio.Event()
         self.block_interrupt = False
         self.interrupt_started = asyncio.Event()
         self.interrupt_release = asyncio.Event()
@@ -127,12 +139,14 @@ class FakeRunner:
                 [pcm_frame(index) for index in range(self.output_frames)],
             )
         )
+        self.response_end(self.producer_epoch)
 
     async def commit_text(self, text: str) -> None:
         return None
 
     async def playback_started(self, created_at: float) -> None:
-        return None
+        del created_at
+        self.playback_started_event.set()
 
     async def playback_finished(self, position: float, interrupted: bool) -> None:
         self.playback.append((position, interrupted))
@@ -155,6 +169,7 @@ def create_connection(
     trigger_frames: int = 9,
     output_frames: int = 10,
     limits: RvaRuntimeLimits | None = None,
+    interruption_policy: LayeredInterruptionPolicy | None = None,
 ) -> tuple[RvaWssConnection, list[FakeRunner]]:
     runners: list[FakeRunner] = []
 
@@ -162,8 +177,7 @@ def create_connection(
         emit: Callable[[AgentOutputSegment], Awaitable[None]],
         stop: Callable[[int], None],
     ) -> FakeRunner:
-        del stop
-        runner = FakeRunner(emit, trigger_frames=trigger_frames, output_frames=output_frames)
+        runner = FakeRunner(emit, stop, trigger_frames=trigger_frames, output_frames=output_frames)
         runners.append(runner)
         return runner
 
@@ -176,6 +190,7 @@ def create_connection(
         media_epoch=7,
         runner_factory=factory,
         limits=limits,
+        interruption_policy=interruption_policy,
     )
     return connection, runners
 
@@ -205,7 +220,7 @@ def test_runtime_passes_non_default_close_stage_timeout_to_session_state() -> No
         limits=RvaRuntimeLimits(agent_close_stage_timeout_seconds=0.125),
     )
 
-    assert connection.binding._state._close_stage_timeout_seconds == 0.125  # noqa: SLF001
+    assert connection.binding._responses._state._close_stage_timeout_seconds == 0.125  # noqa: SLF001
 
 
 @pytest.mark.unit
@@ -251,8 +266,12 @@ async def test_three_uplink_packets_produce_text_and_generation_framed_audio() -
     assert [frame.sequence for frame in decoded_media] == [0, 1, 2, 3]
     assert {frame.generation for frame in decoded_media} == {begin["generation"]}
     assert end["generation"] == begin["generation"]
+    assert end["outcome"] == "completed"
+    assert end["final_media_sequence"] == decoded_media[-1].sequence
     assert runner.pushes == 9
-    assert runner.playback == [(10 * PCM_SAMPLES / 16_000, False)]
+    # Physical playout is endpoint-owned in rva-control-v2 and is only
+    # acknowledged after playback.started/playback.ended arrive from the device.
+    assert runner.playback == []
     assert runner.close_calls == 1
     assert websocket.closed == [(1_000, "normal")]
 
@@ -274,6 +293,55 @@ async def test_exact_cancel_wakes_pacing_and_fences_old_segment() -> None:
             "type": "websocket.receive",
             "text": json.dumps(
                 {
+                    "type": "response.cancel.request",
+                    "session_id": "session-001",
+                    "session_epoch": "grant-epoch-001",
+                    "request_id": "cancel-001",
+                    "target": {"response_id": begin["response_id"], "generation": begin["generation"]},
+                    "cause": "user_request",
+                }
+            ),
+        }
+    )
+    await runners[0].interrupt_started.wait()
+    await asyncio.sleep(0.02)
+    assert sum(event["type"] == "response.begin" for event in websocket.control) == 1
+    runners[0].interrupt_release.set()
+    stopped = await websocket.wait_control("playback.stop")
+    ended = await websocket.wait_control("response.end")
+    media_after_cancel = len(websocket.media)
+    await runners[0].emit(AgentOutputSegment(1, [pcm_frame(index) for index in range(3)]))
+    await asyncio.sleep(0.08)
+    websocket.disconnect()
+    await asyncio.wait_for(task, timeout=2.0)
+
+    assert runners[0].interrupts == 1
+    assert stopped["target"] == {"response_id": begin["response_id"], "generation": begin["generation"]}
+    assert ended["outcome"] == "cancelled"
+    assert len(websocket.media) == media_after_cancel
+    assert runners[0].playback == []
+
+
+@pytest.mark.integration
+async def test_legacy_device_barge_in_cancel_fails_closed() -> None:
+    websocket = FakeWebSocket()
+    connection, runners = create_connection(
+        websocket,
+        trigger_frames=3,
+        output_frames=12,
+        limits=RvaRuntimeLimits(playback_prebuffer_packets=0),
+    )
+    websocket.feed_open()
+    task = asyncio.create_task(connection.run())
+    await websocket.wait_control("session.opened")
+    websocket.feed_media(uplink_packets(1)[0])
+    begin = await websocket.wait_control("response.begin")
+    await websocket.wait_media_count(1)
+    websocket.inbound.put_nowait(
+        {
+            "type": "websocket.receive",
+            "text": json.dumps(
+                {
                     "type": "response.cancel",
                     "session_id": "session-001",
                     "session_epoch": "grant-epoch-001",
@@ -283,21 +351,99 @@ async def test_exact_cancel_wakes_pacing_and_fences_old_segment() -> None:
             ),
         }
     )
-    await runners[0].interrupt_started.wait()
-    await asyncio.sleep(0.02)
-    assert sum(event["type"] == "response.begin" for event in websocket.control) == 1
-    runners[0].interrupt_release.set()
-    await websocket.wait_control("response.cancelled")
-    media_after_cancel = len(websocket.media)
-    await runners[0].emit(AgentOutputSegment(1, [pcm_frame(index) for index in range(3)]))
-    await asyncio.sleep(0.08)
+
+    await asyncio.wait_for(task, timeout=2.0)
+
+    assert websocket.closed == [(1_002, "protocol_error")]
+    assert runners[0].interrupts == 0
+    assert not any(event["type"] == "playback.stop" for event in websocket.control)
+
+
+@pytest.mark.integration
+async def test_layered_interruption_policy_cancels_active_playback_on_explicit_phrase() -> None:
+    websocket = FakeWebSocket()
+    policy = LayeredInterruptionPolicy(InterruptionPolicyConfig())
+    connection, runners = create_connection(
+        websocket,
+        trigger_frames=3,
+        output_frames=60,
+        limits=RvaRuntimeLimits(playback_prebuffer_packets=0),
+        interruption_policy=policy,
+    )
+    websocket.feed_open()
+    task = asyncio.create_task(connection.run())
+    await websocket.wait_control("session.opened")
+    websocket.feed_media(uplink_packets(1)[0])
+    begin = await websocket.wait_control("response.begin")
+    await websocket.wait_media_count(1)
+    websocket.inbound.put_nowait(
+        {
+            "type": "websocket.receive",
+            "text": json.dumps(
+                {
+                    "type": "playback.started",
+                    "session_id": "session-001",
+                    "session_epoch": "grant-epoch-001",
+                    "target": {"response_id": begin["response_id"], "generation": begin["generation"]},
+                    "first_media_sequence": 0,
+                }
+            ),
+        }
+    )
+    await runners[0].playback_started_event.wait()
+
+    connection._emit_user_transcript("停一下", True)  # noqa: SLF001
+    stopped = await websocket.wait_control("playback.stop")
+    ended = await websocket.wait_control("response.end")
     websocket.disconnect()
     await asyncio.wait_for(task, timeout=2.0)
 
+    assert stopped["target"] == {"response_id": begin["response_id"], "generation": begin["generation"]}
+    assert ended["outcome"] == "cancelled"
     assert runners[0].interrupts == 1
-    assert len(websocket.media) == media_after_cancel
-    assert not any(event["type"] == "response.end" for event in websocket.control)
-    assert runners[0].playback[-1][1] is True
+
+
+@pytest.mark.integration
+async def test_layered_interruption_policy_keeps_playback_for_backchannel() -> None:
+    websocket = FakeWebSocket()
+    policy = LayeredInterruptionPolicy(InterruptionPolicyConfig())
+    connection, runners = create_connection(
+        websocket,
+        trigger_frames=3,
+        output_frames=12,
+        limits=RvaRuntimeLimits(playback_prebuffer_packets=0),
+        interruption_policy=policy,
+    )
+    websocket.feed_open()
+    task = asyncio.create_task(connection.run())
+    await websocket.wait_control("session.opened")
+    websocket.feed_media(uplink_packets(1)[0])
+    begin = await websocket.wait_control("response.begin")
+    await websocket.wait_media_count(1)
+    websocket.inbound.put_nowait(
+        {
+            "type": "websocket.receive",
+            "text": json.dumps(
+                {
+                    "type": "playback.started",
+                    "session_id": "session-001",
+                    "session_epoch": "grant-epoch-001",
+                    "target": {"response_id": begin["response_id"], "generation": begin["generation"]},
+                    "first_media_sequence": 0,
+                }
+            ),
+        }
+    )
+    await runners[0].playback_started_event.wait()
+
+    connection._emit_user_transcript("嗯嗯", True)  # noqa: SLF001
+    end = await websocket.wait_control("response.end")
+    websocket.disconnect()
+    await asyncio.wait_for(task, timeout=2.0)
+
+    assert end["type"] == "response.end"
+    assert not any(event["type"] == "response.cancelled" for event in websocket.control)
+    assert runners[0].interrupts == 0
 
 
 @pytest.mark.integration
@@ -333,19 +479,23 @@ async def test_idle_session_is_closed_at_the_advertised_deadline() -> None:
 
 
 @pytest.mark.unit
-async def test_stale_udp_uplink_generation_is_dropped_without_failing_session() -> None:
+async def test_nonzero_udp_uplink_generation_is_dropped_without_failing_session() -> None:
     websocket = FakeWebSocket()
     connection, _ = create_connection(websocket)
 
-    await connection._receive_udp_audio(b"stale-opus", 960, 0)  # noqa: SLF001
+    await connection._receive_udp_audio(b"stale-opus", 960, 1)  # noqa: SLF001
 
     assert connection._audio_port.queue.empty()  # noqa: SLF001
     assert connection._failures.empty()  # noqa: SLF001
 
 
 class SlowRunner(FakeRunner):
-    def __init__(self, emit: Callable[[AgentOutputSegment], Awaitable[None]]) -> None:
-        super().__init__(emit, trigger_frames=1_000)
+    def __init__(
+        self,
+        emit: Callable[[AgentOutputSegment], Awaitable[None]],
+        response_end: Callable[[int], None],
+    ) -> None:
+        super().__init__(emit, response_end, trigger_frames=1_000)
         self.release = asyncio.Event()
 
     async def push_audio(self, frame: PcmFrame) -> None:
@@ -361,8 +511,7 @@ async def test_input_queue_overload_fails_connection_explicitly() -> None:
         emit: Callable[[AgentOutputSegment], Awaitable[None]],
         stop: Callable[[int], None],
     ) -> SlowRunner:
-        del stop
-        runner = SlowRunner(emit)
+        runner = SlowRunner(emit, stop)
         runners.append(runner)
         return runner
 
@@ -389,8 +538,12 @@ async def test_input_queue_overload_fails_connection_explicitly() -> None:
 
 
 class BlockingCloseRunner(FakeRunner):
-    def __init__(self, emit: Callable[[AgentOutputSegment], Awaitable[None]]) -> None:
-        super().__init__(emit, trigger_frames=1_000)
+    def __init__(
+        self,
+        emit: Callable[[AgentOutputSegment], Awaitable[None]],
+        response_end: Callable[[int], None],
+    ) -> None:
+        super().__init__(emit, response_end, trigger_frames=1_000)
         self.close_started = asyncio.Event()
         self.close_release = asyncio.Event()
 
@@ -409,8 +562,7 @@ async def test_close_wait_is_bounded_while_shielded_cleanup_continues() -> None:
         emit: Callable[[AgentOutputSegment], Awaitable[None]],
         stop: Callable[[int], None],
     ) -> BlockingCloseRunner:
-        del stop
-        runner = BlockingCloseRunner(emit)
+        runner = BlockingCloseRunner(emit, stop)
         runners.append(runner)
         return runner
 

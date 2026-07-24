@@ -13,7 +13,7 @@ from functools import lru_cache
 from typing import Any, Protocol
 
 from livekit import rtc
-from livekit.agents import Agent, AgentSession
+from livekit.agents import Agent, AgentSession, StopResponse
 from livekit.agents.voice import io
 from livekit.plugins import silero
 
@@ -41,7 +41,7 @@ class AgentOutputSegment:
 
 SegmentSink = Callable[[AgentOutputSegment], Awaitable[None]]
 StopSink = Callable[[int], None]
-UserTranscriptSink = Callable[[str, bool], None]
+UserTranscriptSink = Callable[[str, bool], bool | None]
 AssistantTextSink = Callable[[str], None]
 
 
@@ -62,8 +62,9 @@ class AgentRunner(Protocol):
 
 
 class DeterministicAgentRunner:
-    def __init__(self, emit_segment: SegmentSink) -> None:
+    def __init__(self, emit_segment: SegmentSink, response_end: StopSink | None = None) -> None:
         self._emit_segment = emit_segment
+        self._response_end = response_end
         self._closed = False
         self._input_frames = 0
         self._responded = False
@@ -94,6 +95,8 @@ class DeterministicAgentRunner:
             pcm = struct.pack(f"<{PCM_SAMPLES}h", *samples)
             frames.append(PcmFrame(0, sequence, sequence * PCM_SAMPLES, pcm))
         await self._emit_segment(AgentOutputSegment(self._producer_epoch, frames))
+        if self._response_end is not None:
+            self._response_end(self._producer_epoch)
 
     def set_text_sinks(
         self,
@@ -166,7 +169,7 @@ class RoomlessTextOutput(io.TextOutput):
 
 
 class RoomlessAudioOutput(io.AudioOutput):
-    def __init__(self, emit_segment: SegmentSink, stop_playback: StopSink, *, max_segment_frames: int = 1_500) -> None:
+    def __init__(self, emit_segment: SegmentSink, response_end: StopSink, *, max_segment_frames: int = 1_500) -> None:
         if max_segment_frames <= 0:
             raise ValueError("max_segment_frames must be positive")
         super().__init__(
@@ -175,7 +178,7 @@ class RoomlessAudioOutput(io.AudioOutput):
             sample_rate=PCM_SAMPLE_RATE,
         )
         self._emit_segment = emit_segment
-        self._stop_playback = stop_playback
+        self._response_end = response_end
         self._max_segment_frames = max_segment_frames
         self._frames: list[PcmFrame] = []
         self._pending_pcm = bytearray()
@@ -184,7 +187,7 @@ class RoomlessAudioOutput(io.AudioOutput):
         self._frames_epoch: int | None = None
         self._producer_epoch = 1
         self._sequence = 0
-        self._task: asyncio.Task[None] | None = None
+        self._tasks: set[asyncio.Task[None]] = set()
         self._segment_rejected = False
         self._closed = False
 
@@ -265,19 +268,28 @@ class RoomlessAudioOutput(io.AudioOutput):
         producer_epoch, self._frames_epoch = self._frames_epoch, None
         if not frames:
             return
-        if self._task is not None and not self._task.done():
-            raise BufferError("previous Direct audio segment is still pending")
         assert producer_epoch is not None
-        self._task = asyncio.create_task(
+        task = asyncio.create_task(
             self._emit_segment(AgentOutputSegment(producer_epoch, frames)),
             name="roomless-output-segment",
         )
+        self._tasks.add(task)
+        task.add_done_callback(self._on_segment_task_done)
+
+    async def wait_for_playout(self) -> io.PlaybackFinishedEvent:
+        producer_epoch = self._producer_epoch
+        if self._tasks:
+            await asyncio.gather(*tuple(self._tasks))
+        self._response_end(producer_epoch)
+        result = await super().wait_for_playout()
+        if self._producer_epoch == producer_epoch:
+            self.advance_producer_epoch()
+        return result
 
     def clear_buffer(self) -> None:
-        producer_epoch = self.advance_producer_epoch()
+        self.advance_producer_epoch()
         super().clear_buffer()
         super().flush()
-        self._stop_playback(producer_epoch)
 
     def advance_producer_epoch(self) -> int:
         self._producer_epoch += 1
@@ -288,6 +300,17 @@ class RoomlessAudioOutput(io.AudioOutput):
         self._segment_rejected = False
         return self._producer_epoch
 
+    def _on_segment_task_done(self, task: asyncio.Task[None]) -> None:
+        self._tasks.discard(task)
+        if task.cancelled():
+            return
+        exception = task.exception()
+        if exception is not None:
+            logger.error(
+                "Roomless output segment delivery failed",
+                exc_info=(type(exception), exception, exception.__traceback__),
+            )
+
     async def close(self) -> None:
         self._closed = True
         self._frames.clear()
@@ -295,8 +318,9 @@ class RoomlessAudioOutput(io.AudioOutput):
         self._reset_callback_diagnostics()
         self._frames_epoch = None
         self._segment_rejected = False
-        if self._task is not None:
-            await asyncio.gather(self._task, return_exceptions=True)
+        if self._tasks:
+            await asyncio.gather(*self._tasks, return_exceptions=True)
+            self._tasks.clear()
 
     def _reset_callback_diagnostics(self) -> None:
         self._callback_sizes.clear()
@@ -304,13 +328,19 @@ class RoomlessAudioOutput(io.AudioOutput):
 
 
 class _DefaultAgent(Agent):
-    def __init__(self) -> None:
+    def __init__(self, consume_overlap_turn: Callable[[], bool]) -> None:
+        self._consume_overlap_turn = consume_overlap_turn
         super().__init__(
             instructions=(
                 "你是一个简洁、自然的中文语音助手。只输出适合直接朗读的纯文本，不使用 Markdown。"
                 "不知道时明确说明，不虚构设备状态。"
             )
         )
+
+    async def on_user_turn_completed(self, turn_ctx: Any, new_message: Any) -> None:
+        del turn_ctx, new_message
+        if self._consume_overlap_turn():
+            raise StopResponse
 
 
 class _LiveKitPlaybackTrace:
@@ -360,13 +390,13 @@ def _load_vad(activation_threshold: float):  # type: ignore[no-untyped-def]
 
 
 class LiveKitAgentRunner:
-    def __init__(self, settings: Settings, emit_segment: SegmentSink, stop_playback: StopSink) -> None:
+    def __init__(self, settings: Settings, emit_segment: SegmentSink, response_end: StopSink) -> None:
         settings.require_livekit()
         self._settings = settings
         self._input = RoomlessAudioInput(settings.media_queue_frames)
         self._output = RoomlessAudioOutput(
             emit_segment,
-            stop_playback,
+            response_end,
             max_segment_frames=settings.output_segment_max_frames,
         )
         self._session: AgentSession | None = None
@@ -379,6 +409,7 @@ class LiveKitAgentRunner:
         self._user_transcript_sink: UserTranscriptSink | None = None
         self._assistant_text_sink: AssistantTextSink | None = None
         self._text_output: RoomlessTextOutput | None = None
+        self._drop_next_user_turn = False
 
     def set_text_sinks(
         self,
@@ -399,17 +430,19 @@ class LiveKitAgentRunner:
             turn_handling={
                 "turn_detection": "vad",
                 "interruption": {
-                    "enabled": True,
-                    "min_duration": 0.5,
+                    "enabled": False,
+                    "discard_audio_if_uninterruptible": False,
+                    "min_duration": self._settings.agent_interruption_min_duration_seconds,
                     "min_words": 0,
                     "resume_false_interruption": False,
                 },
             },
+            aec_warmup_duration=None,
         )
         self._trace_observer = _register_livekit_observers(
             session,
             self._tracer,
-            user_transcript=self._user_transcript_sink,
+            user_transcript=self._handle_user_transcript,
         )
         session.input.audio = self._input
         session.output.audio = self._output
@@ -417,7 +450,17 @@ class LiveKitAgentRunner:
             self._text_output = RoomlessTextOutput(self._assistant_text_sink)
             session.output.transcription = self._text_output
         self._session = session
-        await session.start(_DefaultAgent())
+        await session.start(_DefaultAgent(self._consume_overlap_turn))
+
+    def _handle_user_transcript(self, text: str, is_final: bool) -> None:
+        sink = self._user_transcript_sink
+        if sink is not None and sink(text, is_final):
+            self._drop_next_user_turn = True
+
+    def _consume_overlap_turn(self) -> bool:
+        drop = self._drop_next_user_turn
+        self._drop_next_user_turn = False
+        return drop
 
     async def push_audio(self, frame: PcmFrame) -> None:
         self._input.push(frame)
@@ -493,10 +536,10 @@ class LiveKitAgentRunner:
             raise failures[0]
 
 
-def create_runner(settings: Settings, emit_segment: SegmentSink, stop_playback: StopSink) -> AgentRunner:
+def create_runner(settings: Settings, emit_segment: SegmentSink, response_end: StopSink) -> AgentRunner:
     if settings.runner == "livekit":
-        return LiveKitAgentRunner(settings, emit_segment, stop_playback)
-    return DeterministicAgentRunner(emit_segment)
+        return LiveKitAgentRunner(settings, emit_segment, response_end)
+    return DeterministicAgentRunner(emit_segment, response_end)
 
 
 def _register_livekit_observers(

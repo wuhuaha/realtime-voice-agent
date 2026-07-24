@@ -20,6 +20,17 @@ FORBIDDEN_PARTS = {
     "client/archive",
 }
 FORBIDDEN_SUFFIXES = {".bin", ".elf", ".map", ".wav", ".pcm", ".key", ".pem"}
+FORBIDDEN_PREFIXES = (
+    "firmware/targets/lichuang-dev/",
+    "protocol/rva_control_v1/",
+    "protocol/udp_opus_gcm_v1/",
+    "protocol/xiaozhi_control_v1/",
+    "server/apps/realtime_worker/src/realtime_worker/bindings/xiaozhi/",
+)
+FORBIDDEN_FILES = {
+    "server/apps/realtime_worker/src/realtime_worker/bindings/xiaozhi_runtime.py",
+    "server/apps/realtime_worker/src/realtime_worker/bindings/xiaozhi_udp.py",
+}
 SHA256_PATTERN = re.compile(r"^[0-9a-fA-F]{64}$")
 NATIVE_FIRMWARE_APP = "firmware/apps/voice_terminal"
 NATIVE_COMPONENT_ROOT = "firmware/components"
@@ -94,6 +105,8 @@ def validate_tracked_paths(paths: tuple[str, ...]) -> list[str]:
     for raw_path in paths:
         normalized = raw_path.replace("\\", "/")
         lowered = normalized.lower()
+        if lowered.startswith(FORBIDDEN_PREFIXES) or lowered in FORBIDDEN_FILES:
+            errors.append(f"retired runtime path is tracked: {raw_path}")
         if lowered.endswith((".env.example", ".env.local.example")):
             continue
         if any(part in lowered for part in FORBIDDEN_PARTS):
@@ -114,6 +127,15 @@ def validate_manifest(root: Path) -> list[str]:
     if not isinstance(entries, list):
         return ["source manifest files must be a list"]
     errors: list[str] = []
+    raw_retired_prefixes = payload.get("retired_prefixes", [])
+    retired_prefixes: tuple[str, ...] = ()
+    if not isinstance(raw_retired_prefixes, list) or not all(
+        isinstance(prefix, str) and prefix and prefix.endswith("/")
+        for prefix in raw_retired_prefixes
+    ):
+        errors.append("source manifest retired_prefixes must be path-prefix strings ending in slash")
+    else:
+        retired_prefixes = tuple(prefix.replace("\\", "/") for prefix in raw_retired_prefixes)
     manifest_paths: set[str] = set()
     for entry in entries:
         if not isinstance(entry, dict) or not isinstance(entry.get("production_path"), str):
@@ -141,11 +163,14 @@ def validate_manifest(root: Path) -> list[str]:
         if not target.is_relative_to(root.resolve()):
             errors.append(f"manifest path escapes repository: {relative}")
             continue
+        historical = entry.get("historical") is True or normalized_path.startswith(retired_prefixes)
+        if not target.is_file() and historical:
+            continue
         if not target.is_file():
             errors.append(f"manifest file missing: {relative.as_posix()}")
             continue
         actual = sha256(target)
-        if entry.get("historical") is not True and actual.lower() != expected_hash.lower():
+        if not historical and actual.lower() != expected_hash.lower():
             errors.append(f"manifest hash mismatch: {relative.as_posix()}")
     traceability = payload.get("traceability", {})
     if not isinstance(traceability, dict):
@@ -236,7 +261,9 @@ def validate_firmware_composition(root: Path) -> list[str]:
         ),
         root / "firmware" / "apps" / "voice_terminal" / "README.md": (
             "Product native ESP-IDF endpoint",
-            LEGACY_FIRMWARE_PATH,
+            "rva-control-v2",
+            "wss-opus-v3",
+            "udp-opus-gcm-v2",
         ),
         root / ".github" / "workflows" / "ci.yml": (
             "native-firmware-host-contracts:",
@@ -349,16 +376,20 @@ def validate_protocol(root: Path) -> list[str]:
                     errors.append(
                         f"protocol registry reference missing: {entry.get('id')}:{field}: {reference}"
                     )
-    if control_ids != {"xiaozhi-control-v1", "rva-control-v1"}:
+    if control_ids != {"rva-control-v2"}:
         errors.append(f"unexpected control protocols: {sorted(control_ids)}")
     profile_ids = {profile["id"] for profile in registry["media_profiles"]}
-    if profile_ids != {"wss-opus-v1", "wss-opus-v2", "udp-opus-gcm-v1"}:
+    if profile_ids != {"wss-opus-v3", "udp-opus-gcm-v2"}:
         errors.append(f"unexpected media profiles: {sorted(profile_ids)}")
     for profile in registry["media_profiles"]:
         controls = set(profile.get("controls", ()))
         if not controls or not controls <= control_ids:
             errors.append(f"media profile has invalid controls: {profile.get('id')}")
-    positive_path = root / "protocol" / "udp_opus_gcm_v1" / "fixtures" / "positive.json"
+        if profile.get("media_wire_version") != 2:
+            errors.append(f"media profile must use wire version 2: {profile.get('id')}")
+        if profile.get("uplink_generation") != 0:
+            errors.append(f"media profile must use uplink generation zero: {profile.get('id')}")
+    positive_path = root / "protocol" / "udp_opus_gcm_v2" / "fixtures" / "positive.json"
     positive = json.loads(positive_path.read_text(encoding="utf-8"))
     for vector in positive["vectors"]:
         datagram = bytes.fromhex(vector["datagram_hex"])
@@ -371,7 +402,7 @@ def validate_protocol(root: Path) -> list[str]:
         if len(datagram) > positive["max_datagram_bytes"]:
             errors.append(f"UDP fixture exceeds MTU: {vector['id']}")
 
-    rva_root = root / "protocol" / "rva_control_v1"
+    rva_root = root / "protocol" / "rva_control_v2"
     schema = json.loads((rva_root / "messages.schema.json").read_text(encoding="utf-8"))
     try:
         Draft202012Validator.check_schema(schema)
@@ -404,6 +435,7 @@ def main() -> int:
     paths = repository_files(root)
     errors = [
         *validate_tracked_paths(paths),
+        *validate_manifest(root),
         *validate_optional_legacy_rollback(root),
         *validate_protocol(root),
         *validate_firmware_composition(root),

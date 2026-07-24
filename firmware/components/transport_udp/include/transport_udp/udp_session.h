@@ -27,12 +27,12 @@ public:
     bool BuildProbe(uint8_t* output, size_t capacity, size_t* size);
     bool BuildKeepalive(uint8_t* output, size_t capacity, size_t* size);
     bool BuildAudio(const uint8_t* opus, size_t opus_size, uint32_t timestamp,
-                    uint32_t generation, uint8_t* output, size_t capacity, size_t* size);
+                    uint8_t* output, size_t capacity, size_t* size);
     AdmissionResult Receive(const Endpoint& source, const uint8_t* datagram,
                             size_t size, int64_t now_us);
     PlayoutFrame PopPlayout(int64_t now_us);
     [[nodiscard]] bool ready() const;
-    [[nodiscard]] uint32_t generation() const;
+    [[nodiscard]] uint32_t downlink_generation() const;
     [[nodiscard]] Stats stats() const;
     [[nodiscard]] int64_t last_authenticated_receive_us() const;
     [[nodiscard]] Endpoint server() const;
@@ -70,7 +70,7 @@ private:
     Stats stats_{};
     Endpoint bound_source_{};
     uint32_t send_sequence_ = 0;
-    uint32_t generation_ = 1;
+    uint32_t downlink_generation_ = 1;
     int64_t last_authenticated_receive_us_ = 0;
     bool playback_active_ = false;
     bool configured_ = false;

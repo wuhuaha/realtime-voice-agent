@@ -290,7 +290,7 @@ async def test_livekit_runner_passes_one_session_tracer_to_stt_tts_and_observers
     monkeypatch.setattr(agent_module, "create_deepseek_llm", lambda _settings: object())
     monkeypatch.setattr(agent_module.silero.VAD, "load", lambda **_options: object())
     monkeypatch.setattr(agent_module, "AgentSession", lambda **_options: fake_session)
-    monkeypatch.setattr(agent_module, "_DefaultAgent", lambda: object())
+    monkeypatch.setattr(agent_module, "_DefaultAgent", lambda _overlap_consumer: object())
 
     async def emit_segment(_frames: object) -> None:
         return None

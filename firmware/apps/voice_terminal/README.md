@@ -4,7 +4,7 @@
 
 - `board_lichuang_s3`、`audio_pipeline` 与 `audio_frontend_esp_sr`；
 - `device_config`、Wi-Fi/NVS 和 Director bootstrap；
-- `rva-control-v1`、WSS/UDP Opus transport 与 session/generation lifecycle；
+- `rva-control-v2`、`wss-opus-v3`/`udp-opus-gcm-v2` 与 session/playback lifecycle；
 - 可选 `ui_lvgl`，核心语音组件不依赖显示。
 
 ## 配置
@@ -16,6 +16,14 @@ build input 注入；生成的 `sdkconfig`、`managed_components/`、`build/` �
 设置页只允许编辑 Director bootstrap URL。设备仅会复用与已 provisioned credential 完全相同 origin
 （scheme、host、port）的 token；界面不会显示 token，也不会把 token 拼入 URL。跨 origin 切换必须通过安全的
 credential reprovision 流程重新绑定，不能仅在屏幕上修改地址。
+
+持续 HIL/联调应通过 provisioning 固定一个稳定的公网 bootstrap origin，使设备切换 Wi-Fi 后无需重新构建固件。
+真实 host inventory、Wi-Fi credential、bootstrap token 和 provider secret 必须保存在 ignored/private 配置中，不进入
+本 README、tracked defaults 或任何 firmware artifact metadata。
+
+当前 bring-up 默认启用自动会话：Wi-Fi 就绪后直接 bootstrap 并开始交互。MIC session lifecycle control 默认关闭，
+按钮只保留视觉反馈；这是稳定基础链路期间的临时运行配置，不代表目标 UX 已取消。重新启用 MIC 控制后须验证
+start/stop、exact-target `response.cancel.request` 和 fresh bootstrap 全流程。
 
 ## 构建
 
@@ -60,6 +68,8 @@ glyph descriptor，因此必须启用 `CONFIG_LV_FONT_FMT_TXT_LARGE`。分区未
   必须在有/无 model 分区两种状态分别验证近讲、播放中 double-talk、上行 PCM 与 ASR。
 - Opus encode 的 task stack 不能按调用前 watermark 估算；内部峰值必须包含在内。当前 uplink task 依据实机首帧
   encode 后约 26 KiB 的使用量配置为 36 KiB，保留约 10 KiB 余量；后续调整必须继续以 HIL high-water 证据为准。
+- AEC 后音频按连续 60 ms cadence 进入启用 DTX 的 Opus encoder，本地 VAD 只保留观测用途，不门控上行、清理
+  播放队列或发起打断。WSS/UDP 上行 generation 恒为 `0`。
 - `esp_websocket_client` 会自动处理 PING/PONG，并另外派发 CLOSED/DISCONNECTED。Transport callback 不得把
   PING/PONG/CLOSE 的零长度 DATA event 送入 RVA frame assembler，也不得在 callback 内 teardown。
 - WebSocket inner close deadline 为 1000 ms，runtime 外层 teardown watchdog 为 1500 ms。Close/destroy 无法确认时，
@@ -69,12 +79,10 @@ glyph descriptor，因此必须启用 `CONFIG_LV_FONT_FMT_TXT_LARGE`。分区未
   重试。每次 `Stop -> Start` 都先 release 并 fresh bootstrap，不复用旧 grant。
 - UDP frame 经过 reorder/generation 后仍须通过 decode/playout 前 360 ms 最终 media-age gate；超限数据清零丢弃并
   结束当前 UDP session。
+- server `playback.stop` 通过有界命令队列进入 playback task；只有该 task 执行 generation fence、清理待播队列、
+  decode 和 DAC 写入。`response.end(completed)` 由 `final_media_sequence` 收口，不使用固定 drain timeout；
+  `playback.started/ended` 只报告成功写入 DAC 后的物理事实。
 - `esp_ae_rate_cvt_process()` 的 output capacity 必须来自 `esp_ae_rate_cvt_get_max_out_sample_num()`；不能把
   nominal output sample count 当作最大写入容量。
 - `esp_opus_enc_process()` 的 input/output frame size 与 alignment 来自 frame-info API。协议 MTU buffer 可以更大，
   但传给 codec 的单帧 output length 使用其推荐 frame size。
-
-## 回滚
-
-在 native endpoint 完成同级 WSS/UDP/UI/audio/HIL 门禁前，`firmware/targets/lichuang-dev/` 保留为 compatibility
-rollback lane。新功能和协议修改只进入 native application 与 canonical `protocol/`。

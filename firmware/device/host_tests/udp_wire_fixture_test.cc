@@ -9,7 +9,7 @@
 
 namespace {
 
-namespace wire = voice::contracts::udp_v1;
+namespace wire = voice::contracts::udp_v2;
 
 int HexNibble(char value) {
     if (value >= '0' && value <= '9') return value - '0';
@@ -134,7 +134,7 @@ int TypedBoundaries(int argc) {
     keepalive.media_epoch = 1;
     keepalive.sequence = 7;
     keepalive.timestamp = 123456;
-    keepalive.generation = 1;
+    keepalive.generation = 0;
     const auto bytes = wire::EncodeHeader(keepalive);
     std::array<std::uint8_t, wire::kHeaderBytes + wire::kTagBytes> datagram{};
     std::copy(bytes.begin(), bytes.end(), datagram.begin());

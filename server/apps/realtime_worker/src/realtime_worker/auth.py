@@ -10,8 +10,8 @@ from voice_contracts import GrantCodec, GrantError
 
 from .config import Settings
 
-ControlProtocol = Literal["xiaozhi-control-v1", "rva-control-v1"]
-TransportProfile = Literal["wss-opus-v1", "wss-opus-v2", "udp-opus-gcm-v1"]
+ControlProtocol = Literal["rva-control-v2"]
+TransportProfile = Literal["wss-opus-v3", "udp-opus-gcm-v2"]
 logger = logging.getLogger(__name__)
 
 
@@ -24,11 +24,11 @@ def device_ref(tenant_id: str, device_id: str, key: str) -> str:
 class AuthContext:
     tenant_id: str
     device_id: str
-    allowed_profiles: tuple[TransportProfile, ...] = ("wss-opus-v2", "udp-opus-gcm-v1")
+    allowed_profiles: tuple[TransportProfile, ...] = ("wss-opus-v3", "udp-opus-gcm-v2")
     session_epoch: str | None = None
     fencing_token: int | None = None
     expires_at: float | None = None
-    control_protocol: ControlProtocol = "rva-control-v1"
+    control_protocol: ControlProtocol = "rva-control-v2"
 
 
 @dataclass(frozen=True, slots=True)
@@ -52,7 +52,7 @@ class WorkerAuthenticator:
         authorization: str | None,
         device_id: str | None,
         *,
-        control_protocol: ControlProtocol = "rva-control-v1",
+        control_protocol: ControlProtocol = "rva-control-v2",
     ) -> VerifiedAuth | None:
         if authorization is None:
             logger.warning("worker_auth_rejected reason=missing_authorization worker_id=%s", self._worker_id)
@@ -69,14 +69,11 @@ class WorkerAuthenticator:
             )
             return None
         if self._lab_token is not None and hmac.compare_digest(supplied, self._lab_token):
-            if control_protocol == "rva-control-v1":
-                profiles: tuple[TransportProfile, ...] = (
-                    ("wss-opus-v2", "udp-opus-gcm-v1")
-                    if self._rva_udp_enabled
-                    else ("wss-opus-v2",)
-                )
-            else:
-                profiles = ("wss-opus-v1", "udp-opus-gcm-v1")
+            profiles: tuple[TransportProfile, ...] = (
+                ("wss-opus-v3", "udp-opus-gcm-v2")
+                if self._rva_udp_enabled
+                else ("wss-opus-v3",)
+            )
             return VerifiedAuth(
                 AuthContext("lab", device_id, profiles, control_protocol=control_protocol),
                 None,

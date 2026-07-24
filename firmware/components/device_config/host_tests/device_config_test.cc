@@ -77,36 +77,41 @@ public:
 
 void TestEndpointParsingAndBounds() {
     EndpointSnapshot endpoint;
-    assert(DeviceConfig::ParseEndpoint("wss://Voice.Example:8443/v1/voice?mode=udp", &endpoint) == ConfigResult::kOk);
+    assert(DeviceConfig::ParseEndpoint("wss://Voice.Example:8443/v2/voice", &endpoint) == ConfigResult::kOk);
     assert(endpoint.secure);
     assert(endpoint.host == "voice.example");
     assert(endpoint.port == 8443);
     assert(endpoint.origin == "wss://voice.example:8443");
 
-    assert(DeviceConfig::ParseEndpoint("ws://127.0.0.1/v1/voice", &endpoint) == ConfigResult::kOk);
+    assert(DeviceConfig::ParseEndpoint("ws://127.0.0.1/v2/voice", &endpoint) == ConfigResult::kOk);
     assert(!endpoint.secure && endpoint.port == 80);
     assert(endpoint.origin == "ws://127.0.0.1:80");
     assert(DeviceConfig::ParseEndpoint("https://director.example/v1/session/bootstrap", &endpoint) ==
            ConfigResult::kOk);
     assert(endpoint.secure && endpoint.origin == "https://director.example:443");
-    assert(DeviceConfig::ParseEndpoint("wss://[2001:db8::1]/voice", &endpoint) == ConfigResult::kOk);
+    assert(DeviceConfig::ParseEndpoint("wss://[2001:db8::1]/v2/voice", &endpoint) == ConfigResult::kOk);
     assert(endpoint.host == "[2001:db8::1]" && endpoint.port == 443);
 
-    const std::string maximum = "ws://a/" + std::string(rva::config::kMaxWebsocketUrlBytes - 7, 'x');
+    const std::string maximum =
+        "ws://" + std::string(rva::config::kMaxWebsocketUrlBytes - 13, 'a') + "/v2/voice";
     assert(maximum.size() == rva::config::kMaxWebsocketUrlBytes);
     assert(DeviceConfig::ParseEndpoint(maximum, &endpoint) == ConfigResult::kOk);
     assert(DeviceConfig::ParseEndpoint(maximum + "x", &endpoint) == ConfigResult::kInvalidArgument);
-    assert(DeviceConfig::ParseEndpoint("ftp://voice.example/v1/voice", &endpoint) == ConfigResult::kInvalidArgument);
-    assert(DeviceConfig::ParseEndpoint("ws:///v1/voice", &endpoint) == ConfigResult::kInvalidArgument);
-    assert(DeviceConfig::ParseEndpoint("ws://:8080/v1/voice", &endpoint) == ConfigResult::kInvalidArgument);
-    assert(DeviceConfig::ParseEndpoint("ws://voice.example:/v1/voice", &endpoint) == ConfigResult::kInvalidArgument);
-    assert(DeviceConfig::ParseEndpoint("ws://user@voice.example/v1/voice", &endpoint) ==
+    assert(DeviceConfig::ParseEndpoint("ftp://voice.example/v2/voice", &endpoint) == ConfigResult::kInvalidArgument);
+    assert(DeviceConfig::ParseEndpoint("ws:///v2/voice", &endpoint) == ConfigResult::kInvalidArgument);
+    assert(DeviceConfig::ParseEndpoint("ws://:8080/v2/voice", &endpoint) == ConfigResult::kInvalidArgument);
+    assert(DeviceConfig::ParseEndpoint("ws://voice.example:/v2/voice", &endpoint) == ConfigResult::kInvalidArgument);
+    assert(DeviceConfig::ParseEndpoint("ws://user@voice.example/v2/voice", &endpoint) ==
            ConfigResult::kInvalidArgument);
-    assert(DeviceConfig::ParseEndpoint("ws://voice.example/v1/voice#fragment", &endpoint) ==
+    assert(DeviceConfig::ParseEndpoint("ws://voice.example/v2/voice#fragment", &endpoint) ==
            ConfigResult::kInvalidArgument);
-    assert(DeviceConfig::ParseEndpoint("ws://voice%2eexample/v1/voice", &endpoint) ==
+    assert(DeviceConfig::ParseEndpoint("ws://voice%2eexample/v2/voice", &endpoint) ==
            ConfigResult::kInvalidArgument);
-    assert(DeviceConfig::ParseEndpoint("ws://voice\\example/v1/voice", &endpoint) ==
+    assert(DeviceConfig::ParseEndpoint("ws://voice\\example/v2/voice", &endpoint) ==
+           ConfigResult::kInvalidArgument);
+    assert(DeviceConfig::ParseEndpoint("wss://voice.example/v1/voice", &endpoint) ==
+           ConfigResult::kInvalidArgument);
+    assert(DeviceConfig::ParseEndpoint("wss://voice.example/v2/voice?mode=udp", &endpoint) ==
            ConfigResult::kInvalidArgument);
 }
 
@@ -114,7 +119,7 @@ void TestEndpointSelectionBindsTokenToExactOrigin() {
     MemoryStore store;
     MemoryWifi wifi;
     DeviceConfig config(store, wifi);
-    store.values[rva::config::kEndpointUrlKey] = "wss://voice.example/v1/voice";
+    store.values[rva::config::kEndpointUrlKey] = "wss://voice.example/v2/voice";
     store.values[rva::config::kEndpointTokenKey] = "stored-token";
     store.values[rva::config::kEndpointTokenOriginKey] = "wss://other.example:443";
 
@@ -130,16 +135,25 @@ void TestEndpointSelectionBindsTokenToExactOrigin() {
     store.values.erase(rva::config::kEndpointTokenKey);
     store.values.erase(rva::config::kEndpointTokenOriginKey);
     const std::vector<EndpointCandidate> same_origin = {
-        {"wss://voice.example/another-path", "provisioned-token", "wss://voice.example:443"},
+        {"wss://voice.example/v2/voice", "provisioned-token", "wss://voice.example:443"},
     };
     assert(config.ResolveEndpoint(same_origin, &endpoint) == ConfigResult::kOk);
     assert(endpoint.source == EndpointSource::kSaved);
     assert(endpoint.token == "provisioned-token");
 
+    store.values[rva::config::kEndpointUrlKey] = "wss://old.example/v1/voice";
+    const std::vector<EndpointCandidate> new_origin = {
+        {"https://director.example/v1/session/bootstrap", "director-token", "https://director.example:443"},
+    };
+    assert(config.ResolveEndpoint(new_origin, &endpoint) == ConfigResult::kOk);
+    assert(endpoint.source == EndpointSource::kProvisioned);
+    assert(endpoint.host == "director.example");
+    assert(endpoint.token == "director-token");
+
     store.values[rva::config::kEndpointUrlKey] = "invalid";
     const std::vector<EndpointCandidate> provisioned = {
         {"ftp://invalid", "ignored", "ftp://invalid:21"},
-        {"ws://fallback.example/v1/voice", "fallback-token", "ws://fallback.example:80"},
+        {"ws://fallback.example/v2/voice", "fallback-token", "ws://fallback.example:80"},
     };
     assert(config.ResolveEndpoint(provisioned, &endpoint) == ConfigResult::kOk);
     assert(endpoint.source == EndpointSource::kProvisioned);
@@ -151,26 +165,26 @@ void TestEndpointOriginChangeClearsTokenBeforeSavingUrl() {
     MemoryStore store;
     MemoryWifi wifi;
     DeviceConfig config(store, wifi);
-    store.values[rva::config::kEndpointUrlKey] = "wss://old.example/v1/voice";
+    store.values[rva::config::kEndpointUrlKey] = "wss://old.example/v2/voice";
     store.values[rva::config::kEndpointTokenKey] = "old-token";
     store.values[rva::config::kEndpointTokenOriginKey] = "wss://old.example:443";
 
-    assert(config.SaveEndpoint("wss://new.example/v1/voice") == ConfigResult::kOk);
+    assert(config.SaveEndpoint("wss://new.example/v2/voice") == ConfigResult::kOk);
     assert(store.values.count(rva::config::kEndpointTokenKey) == 0);
     assert(store.values.count(rva::config::kEndpointTokenOriginKey) == 0);
-    assert(store.values[rva::config::kEndpointUrlKey] == "wss://new.example/v1/voice");
+    assert(store.values[rva::config::kEndpointUrlKey] == "wss://new.example/v2/voice");
     assert((store.events == std::vector<std::string>{
         "erase:token", "erase:token_origin", "write:ws_url"}));
 
     store.events.clear();
-    assert(config.BindToken("wss://new.example/v1/voice", "new-token") == ConfigResult::kOk);
+    assert(config.BindToken("wss://new.example/v2/voice", "new-token") == ConfigResult::kOk);
     assert((store.events == std::vector<std::string>{
         "erase:token", "write:token_origin", "write:token"}));
     assert(store.values[rva::config::kEndpointTokenOriginKey] == "wss://new.example:443");
 
     store.events.clear();
-    assert(config.SaveEndpoint("wss://new.example/another-path") == ConfigResult::kOk);
-    assert((store.events == std::vector<std::string>{"write:ws_url"}));
+    assert(config.SaveEndpoint("wss://new.example/another-path") == ConfigResult::kInvalidArgument);
+    assert(store.events.empty());
     assert(store.values[rva::config::kEndpointTokenKey] == "new-token");
 }
 
@@ -180,7 +194,7 @@ void TestUnboundLegacyTokenIsCleared() {
     DeviceConfig config(store, wifi);
     store.values[rva::config::kEndpointTokenKey] = "legacy-token";
 
-    assert(config.SaveEndpoint("wss://voice.example/v1/voice") == ConfigResult::kOk);
+    assert(config.SaveEndpoint("wss://voice.example/v2/voice") == ConfigResult::kOk);
     assert(store.values.count(rva::config::kEndpointTokenKey) == 0);
 }
 
@@ -188,13 +202,13 @@ void TestEndpointChangeDoesNotCommitIfCredentialCleanupFails() {
     MemoryStore store;
     MemoryWifi wifi;
     DeviceConfig config(store, wifi);
-    store.values[rva::config::kEndpointUrlKey] = "wss://old.example/v1/voice";
+    store.values[rva::config::kEndpointUrlKey] = "wss://old.example/v2/voice";
     store.values[rva::config::kEndpointTokenKey] = "old-token";
     store.values[rva::config::kEndpointTokenOriginKey] = "wss://old.example:443";
     store.erase_result = ConfigResult::kStorageFailure;
 
-    assert(config.SaveEndpoint("wss://new.example/v1/voice") == ConfigResult::kStorageFailure);
-    assert(store.values[rva::config::kEndpointUrlKey] == "wss://old.example/v1/voice");
+    assert(config.SaveEndpoint("wss://new.example/v2/voice") == ConfigResult::kStorageFailure);
+    assert(store.values[rva::config::kEndpointUrlKey] == "wss://old.example/v2/voice");
     const std::vector<std::string> expected_events = {"erase:token"};
     assert(store.events == expected_events);
 }

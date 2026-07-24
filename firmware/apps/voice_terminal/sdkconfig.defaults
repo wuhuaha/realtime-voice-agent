@@ -18,8 +18,13 @@ CONFIG_COMPILER_CXX_EXCEPTIONS_EMG_POOL_SIZE=1024
 CONFIG_COMPILER_CXX_RTTI=y
 CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192
 CONFIG_ESP_TASK_WDT_TIMEOUT_S=10
+# CPU1 runs the display and continuous audio playout workload. In the current
+# voice terminal profile the idle task on CPU1 is not a reliable health signal;
+# keep CPU0 idle watchdog enabled and use task high-water / transport logs for
+# the media tasks instead.
+# CONFIG_ESP_TASK_WDT_CHECK_IDLE_TASK_CPU1 is not set
 CONFIG_LOG_DEFAULT_LEVEL_INFO=y
-CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
+CONFIG_ESP_CONSOLE_UART_DEFAULT=y
 CONFIG_ESP_CONSOLE_SECONDARY_NONE=y
 CONFIG_RVA_ENABLE_UI=y
 CONFIG_RVA_AUTO_START_CONVERSATION=y

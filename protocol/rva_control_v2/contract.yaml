@@ -1,0 +1,287 @@
+schema_version: 1
+protocol:
+  id: rva-control-v2
+  version: 2
+  transport: websocket
+  path: /v2/voice
+  schema: messages.schema.json
+  max_control_message_bytes: 32768
+  heartbeat_interval_ms:
+    default: 15000
+    minimum: 5000
+    maximum: 60000
+  idle_timeout_ms:
+    default: 45000
+    minimum: 15000
+    maximum: 180000
+
+identifiers:
+  session_epoch:
+    type: string
+    minimum_bytes: 1
+    maximum_bytes: 128
+    semantics: Opaque Director grant identifier; changes whenever a logical session is reopened.
+  media_epoch:
+    type: uint32
+    minimum: 1
+    semantics: Changes whenever media admission is reopened; stale media epochs are rejected.
+  generation:
+    type: uint32
+    minimum: 1
+    semantics: Server-owned downlink playback identity; a non-zero generation is never sent uplink.
+  fence_generation:
+    type: uint32
+    minimum: 1
+    semantics: Minimum generation eligible for future downlink admission after playback.stop.
+  sequence:
+    type: uint32
+    minimum: 0
+    semantics: Monotonic within its documented stream scope; reopen before wrap.
+  played_samples:
+    type: uint64
+    minimum: 0
+    semantics: Samples that crossed the endpoint DAC-near render boundary for the exact target.
+  playback_target:
+    fields: [response_id, generation]
+    semantics: Both fields form an exact immutable target; stale facts and commands never redirect to current playback.
+  request_id:
+    type: string
+    minimum_bytes: 1
+    maximum_bytes: 128
+    semantics: Idempotency key for one device response.cancel.request within a session epoch.
+
+messages:
+  - type: session.open
+    direction: device_to_server
+    allowed_before_open: true
+  - type: session.opened
+    direction: server_to_device
+    establishes_session: true
+  - type: transcript.delta
+    direction: server_to_device
+    sequence_scope: utterance_id
+  - type: transcript.final
+    direction: server_to_device
+    terminates_sequence_scope: utterance_id
+  - type: response.begin
+    direction: server_to_device
+    opens_response: true
+  - type: response.text
+    direction: server_to_device
+    sequence_scope: response_id
+  - type: response.end
+    direction: server_to_device
+    terminal_for: playback_target
+    terminal_once: true
+  - type: playback.stop
+    direction: server_to_device
+    requires_exact_target: true
+    advances_fence: true
+  - type: playback.started
+    direction: device_to_server
+    physical_fact: true
+    requires_exact_target: true
+  - type: playback.ended
+    direction: device_to_server
+    physical_terminal_fact: true
+    requires_exact_target: true
+  - type: response.cancel.request
+    direction: device_to_server
+    requires_request_id: true
+    requires_exact_target: true
+  - type: session.error
+    direction: bidirectional
+  - type: session.close
+    direction: bidirectional
+    terminal: true
+
+response_end_outcomes:
+  completed:
+    required: [final_media_sequence]
+    forbidden: [error_code]
+    semantics: Server has emitted every downlink packet for the response; physical playout remains device-owned.
+  cancelled:
+    required: []
+    forbidden: [final_media_sequence, error_code]
+    semantics: Server generation is terminal after its output fence advanced.
+  failed:
+    required: [error_code]
+    forbidden: [final_media_sequence]
+    semantics: Server generation failed with a bounded stable error code.
+
+playback_stop:
+  causes: [explicit_user_request, recognized_interrupt, session_close, response_failed]
+  semantics: Server-authored exact-target command; its cause is not copied verbatim from device input.
+
+cancel_request:
+  cause: user_request
+  semantics: Device-originated request reserved for an explicit local user action.
+
+playback_facts:
+  scope: response
+  started:
+    cardinality: at_most_once
+    linearization_point: First sample for target crosses the DAC-near render gate.
+    required: [first_media_sequence]
+  ended:
+    cardinality: exactly_once_while_session_connected
+    linearization_point: Target is physically drained, stopped, or failed at the endpoint render boundary.
+    required: [outcome, played_samples]
+    completed_requires: [last_media_sequence]
+    stopped_or_failed_optional: [last_media_sequence]
+  segment_flush_semantics: TTS or AudioOutput flush does not open a generation and does not emit playback facts.
+
+state_rules:
+  - id: session_epoch_match
+    rule: Every post-open message must match the active session_id and session_epoch.
+    violation: stale_session
+  - id: control_sequence_monotonic
+    rule: Transcript and response.text sequence starts at zero and is strictly increasing in its declared scope.
+    violation: invalid_sequence
+  - id: generation_monotonic
+    rule: response.begin generation exceeds every earlier generation and is not below the active fence.
+    violation: stale_generation
+  - id: active_response_exact_target
+    rule: response.text and response.end must match the response_id and generation opened by response.begin.
+    violation: response_target_mismatch
+  - id: response_terminal_once
+    rule: Each playback target is terminated exactly once by one response.end outcome.
+    violation: response_already_terminal
+  - id: completed_final_media_exact
+    rule: completed final_media_sequence equals the last downlink media sequence emitted for that exact target.
+    violation: final_media_sequence_mismatch
+  - id: playback_fence_monotonic
+    rule: playback.stop fence_generation is greater than target generation and every previous fence.
+    violation: stale_generation
+  - id: playback_stop_exact_target
+    rule: playback.stop target must match a known, not-yet-physically-ended playback lifecycle.
+    violation: playback_target_mismatch
+  - id: playback_stop_idempotent
+    rule: An identical repeated stop is a no-op; the same target with conflicting fence or cause is rejected.
+    violation: playback_stop_conflict
+  - id: cancel_request_exact_target
+    rule: response.cancel.request target must match the endpoint's current, not-yet-ended playback lifecycle.
+    violation: cancel_target_mismatch
+  - id: cancel_request_idempotent
+    rule: Repeating request_id with identical content has no extra effect; reusing it with different content is rejected.
+    violation: request_id_conflict
+  - id: physical_fact_exact_target
+    rule: playback.started and playback.ended must match the lifecycle created by the exact response.begin target.
+    violation: playback_target_mismatch
+  - id: playback_started_once
+    rule: A target emits playback.started at most once and only when its first sample crosses the DAC-near gate.
+    violation: playback_already_started
+  - id: playback_ended_once
+    rule: A target emits at most one playback.ended; stop-before-first-sample may end without started.
+    violation: playback_already_ended
+  - id: playback_completed_evidence
+    rule: completed playback.ended has positive played_samples and last_media_sequence equal to response.end final_media_sequence.
+    violation: playback_evidence_mismatch
+  - id: zero_samples_no_cursor
+    rule: playback.ended with played_samples zero omits last_media_sequence; zero is not an unknown cursor sentinel.
+    violation: playback_evidence_mismatch
+  - id: preferred_profile_supported
+    rule: preferred_media_profile must also appear in supported_media_profiles.
+    violation: unsupported_preference
+  - id: selected_profile_offered
+    rule: selected_media_profile must appear in the supported_media_profiles from the corresponding session.open.
+    violation: unsupported_selection
+  - id: single_active_transport
+    rule: Exactly one selected_media_profile is active; switching requires a fresh session.open.
+    violation: transport_mismatch
+  - id: media_identity_match
+    rule: Every media packet must match media_id and media_epoch returned by session.opened.
+    violation: stale_media_identity
+  - id: media_wire_version_match
+    rule: v2 media profiles accept shared header wire_version 2 and reject every other value.
+    violation: unsupported_media_version
+  - id: uplink_generation_zero
+    rule: Every WSS and UDP uplink packet carries generation zero, including AUDIO and liveness packets.
+    violation: invalid_uplink_generation
+  - id: non_audio_generation_zero
+    rule: UDP PROBE, PROBE_ACK, and KEEPALIVE carry generation zero in both directions.
+    violation: invalid_media_generation
+  - id: downlink_generation_exact
+    rule: Downlink AUDIO generation must exactly match its active response target and current device render admission.
+    violation: stale_generation
+  - id: close_is_terminal
+    rule: No control or media input is accepted after session.close for the same session epoch.
+    violation: session_closed
+
+audio:
+  codec: opus
+  sample_rate_hz: 16000
+  channels: 1
+  frame_duration_ms: 60
+  samples_per_frame: 960
+  dtx: true
+  fec: false
+  uplink_cadence: continuous_with_dtx
+
+media_header:
+  byte_order: network
+  bytes: 32
+  wire_version: 2
+  authenticated_as_aad_for_udp: true
+  fields:
+    - {name: magic, offset: 0, bytes: 2, type: fixed, value_hex: "5641"}
+    - {name: wire_version, offset: 2, bytes: 1, type: uint8, value: 2}
+    - {name: flags, offset: 3, bytes: 1, type: uint8}
+    - {name: media_id, offset: 4, bytes: 8, type: opaque}
+    - {name: media_epoch, offset: 12, bytes: 4, type: uint32}
+    - {name: sequence, offset: 16, bytes: 4, type: uint32}
+    - {name: timestamp, offset: 20, bytes: 4, type: uint32, clock_rate_hz: 16000}
+    - {name: generation, offset: 24, bytes: 4, type: uint32, semantics: Zero except active downlink AUDIO.}
+    - {name: payload_length, offset: 28, bytes: 4, type: uint32}
+  flags:
+    audio: 1
+    probe: 2
+    probe_ack: 4
+    keepalive: 8
+
+media_profiles:
+  - id: wss-opus-v3
+    carrier: websocket-binary
+    control: rva-control-v2
+    media_header: shared
+    encrypted: false
+    authenticated: websocket_tls
+    uplink_generation: 0
+    downlink_audio_generation: active_response_generation
+    max_payload_bytes: 1200
+    max_frame_bytes: 1232
+  - id: udp-opus-gcm-v2
+    carrier: udp
+    control: rva-control-v2
+    media_header: shared
+    canonical_positive_fixture: ../udp_opus_gcm_v2/fixtures/positive.json
+    canonical_negative_fixture: ../udp_opus_gcm_v2/fixtures/negative.json
+    cipher: AES-128-GCM
+    directional_keys: true
+    nonce: directional_salt_8_bytes_plus_sequence_uint32
+    tag_bytes: 16
+    max_payload_bytes: 1200
+    max_datagram_bytes: 1280
+    replay_window_packets: 64
+    sequence_max_forward_jump: 1024
+    jitter_window_packets: 4
+    late_deadline_ms: 120
+    uplink_generation: 0
+    non_audio_generation: 0
+    downlink_audio_generation: active_response_generation
+    packet_loss_action: opus_plc
+    retransmission: false
+
+limits:
+  supported_media_profiles: 2
+  device_id_bytes: 128
+  session_id_bytes: 128
+  response_id_bytes: 128
+  utterance_id_bytes: 128
+  request_id_bytes: 128
+  transcript_delta_bytes: 4096
+  transcript_final_bytes: 16384
+  response_text_delta_bytes: 4096
+  error_code_bytes: 64
+  error_message_bytes: 512
+  close_detail_bytes: 256

@@ -4,12 +4,14 @@
 #include <limits>
 
 #include "esp_event.h"
+#include "esp_log.h"
 #include "esp_websocket_client.h"
 #include "freertos/FreeRTOS.h"
 
 namespace rva::wss {
 namespace {
 
+constexpr char kLogTag[] = "rva-wss-port";
 constexpr int kCloseOpcode = 0x08;
 constexpr int kPingOpcode = 0x09;
 constexpr int kPongOpcode = 0x0a;
@@ -62,8 +64,9 @@ bool EspIdfWebsocketClientPort::SendBinary(const uint8_t* data, size_t size, uin
 }
 
 bool EspIdfWebsocketClientPort::Close(uint32_t timeout_ms) {
-    return native_handle_ == nullptr || destroyed_ ||
-           esp_websocket_client_close(Native(native_handle_), TimeoutTicks(timeout_ms)) == ESP_OK;
+    if (native_handle_ == nullptr || destroyed_) return true;
+    if (!esp_websocket_client_is_connected(Native(native_handle_))) return true;
+    return esp_websocket_client_close(Native(native_handle_), TimeoutTicks(timeout_ms)) == ESP_OK;
 }
 
 bool EspIdfWebsocketClientPort::Destroy() {
@@ -86,14 +89,17 @@ void EspIdfWebsocketClientPort::HandleNativeEvent(int32_t event_id, void* event_
     WssOwner* sink = sink_;
     if (sink == nullptr || destroyed_) return;
     if (event_id == WEBSOCKET_EVENT_CONNECTED) {
+        ESP_LOGI(kLogTag, "websocket connected");
         sink->OnClientCallback({ClientEventType::kConnected});
         return;
     }
     if (event_id == WEBSOCKET_EVENT_DISCONNECTED || event_id == WEBSOCKET_EVENT_CLOSED) {
+        ESP_LOGW(kLogTag, "websocket disconnected event_id=%ld", static_cast<long>(event_id));
         sink->OnClientCallback({ClientEventType::kDisconnected});
         return;
     }
     if (event_id == WEBSOCKET_EVENT_ERROR) {
+        ESP_LOGW(kLogTag, "websocket error");
         sink->OnClientCallback({ClientEventType::kError});
         return;
     }

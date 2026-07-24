@@ -8,6 +8,7 @@ from pathlib import Path
 import yaml
 
 ROOT = Path(__file__).resolve().parents[2]
+ROOT_ENV_EXAMPLE_PATH = ROOT / ".env.example"
 DEPLOYMENT = ROOT / "deployment" / "single-node"
 COMPOSE_PATH = DEPLOYMENT / "compose.yaml"
 ENV_EXAMPLE_PATH = DEPLOYMENT / "env.example"
@@ -86,6 +87,40 @@ def test_env_example_defaults_capacity_and_fixed_udp_port() -> None:
     assert "VOICE_UDP_ADVERTISE_PORT=" not in env_text
     assert not re.search(r"\bsk-[A-Za-z0-9_-]{8,}", env_text)
     assert "replace-with-" in env_text
+
+
+def test_interruption_configuration_matches_worker_settings_contract() -> None:
+    worker_environment = _compose()["services"]["worker"]["environment"]
+    env_text = ENV_EXAMPLE_PATH.read_text(encoding="utf-8")
+    root_env_text = ROOT_ENV_EXAMPLE_PATH.read_text(encoding="utf-8")
+    expected = {
+        "VOICE_INTERRUPTION_POLICY_ENABLED": "${VOICE_INTERRUPTION_POLICY_ENABLED:-true}",
+        "VOICE_AGENT_INTERRUPTION_MIN_DURATION_SECONDS": (
+            "${VOICE_AGENT_INTERRUPTION_MIN_DURATION_SECONDS:-1.2}"
+        ),
+    }
+    for name, compose_value in expected.items():
+        assert worker_environment[name] == compose_value
+        assert f"{name}=" in env_text
+        assert f"{name}=" in root_env_text
+
+    retired = {
+        "VOICE_AGENT_INTERRUPTION_ENABLED",
+        "VOICE_INTERRUPTION_PLAYBACK_GUARD_SECONDS",
+        "VOICE_INTERRUPTION_MIN_CANDIDATE_SECONDS",
+        "VOICE_INTERRUPTION_MIN_CHARS",
+    }
+    for name in retired:
+        assert name not in worker_environment
+        assert f"{name}=" not in env_text
+        assert f"{name}=" not in root_env_text
+
+
+def test_production_worker_requires_provider_readiness() -> None:
+    worker_environment = _compose()["services"]["worker"]["environment"]
+    assert worker_environment["VOICE_PROVIDER_READINESS_REQUIRED"] == "true"
+    assert "VOICE_PROVIDER_READINESS_REQUIRED=true" in ENV_EXAMPLE_PATH.read_text(encoding="utf-8")
+    assert "VOICE_PROVIDER_READINESS_REQUIRED=" in ROOT_ENV_EXAMPLE_PATH.read_text(encoding="utf-8")
 
 
 def test_image_uses_locked_workspace_and_non_root_runtime() -> None:

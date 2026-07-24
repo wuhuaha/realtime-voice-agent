@@ -13,6 +13,7 @@ enum class JitterInsertResult : uint8_t { kAccepted, kLate, kDuplicate, kOutOfWi
 
 struct PlayoutFrame final {
     PlayoutKind kind = PlayoutKind::kNone;
+    uint32_t sequence = 0;
     uint32_t timestamp = 0;
     uint32_t generation = 0;
     int64_t arrived_us = 0;

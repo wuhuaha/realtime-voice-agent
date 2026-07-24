@@ -12,7 +12,12 @@ namespace rva::udp {
 namespace {
 
 constexpr char kLogTag[] = "rva-udp-runtime";
-constexpr uint32_t kRuntimeTaskStackBytes = 4096;
+// The UDP runtime task does more than socket receive: it authenticates packets
+// with AES-GCM, updates replay/jitter state, and copies bounded Opus payloads
+// into the playout queue. 4 KiB overflowed on ESP32-S3 during real UDP TTS
+// downlink; keep this stack intentionally boring and measured rather than
+// shaving bytes on the media control path.
+constexpr uint32_t kRuntimeTaskStackBytes = 16 * 1024;
 
 }  // namespace
 
@@ -52,7 +57,7 @@ bool UdpRuntime::Start() {
     stop_requested_.store(false);
     queue_dropped_.store(0);
     media_age_dropped_.store(0);
-    playout_queue_.Open(session_.generation());
+    playout_queue_.Open(session_.downlink_generation());
     TaskHandle_t created = nullptr;
     if (xTaskCreateWithCaps(TaskEntry, "rva_udp", kRuntimeTaskStackBytes, this, 4,
                             &created, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) != pdPASS) {
@@ -86,13 +91,13 @@ bool UdpRuntime::SendKeepalive() {
            SendDatagram(datagram.data(), size);
 }
 
-bool UdpRuntime::SendAudio(const uint8_t* opus, size_t opus_size,
-                           uint32_t timestamp, uint32_t generation) {
+bool UdpRuntime::SendAudio(
+    const uint8_t* opus, size_t opus_size, uint32_t timestamp) {
     std::lock_guard<std::mutex> lock(send_mutex_);
     std::array<uint8_t, wire::kMaxDatagramBytes> datagram{};
     size_t size = 0;
     if (stop_requested_.load()) return false;
-    return session_.BuildAudio(opus, opus_size, timestamp, generation,
+    return session_.BuildAudio(opus, opus_size, timestamp,
                                datagram.data(), datagram.size(), &size) &&
            SendDatagram(datagram.data(), size);
 }
@@ -100,7 +105,7 @@ bool UdpRuntime::SendAudio(const uint8_t* opus, size_t opus_size,
 bool UdpRuntime::FenceGeneration(uint32_t generation) {
     std::lock_guard<std::mutex> control_lock(control_mutex_);
     std::lock_guard<std::mutex> send_lock(send_mutex_);
-    if (stop_requested_.load() || generation < session_.generation()) return false;
+    if (stop_requested_.load() || generation < session_.downlink_generation()) return false;
     playout_queue_.AdvanceGeneration(generation);
     return session_.FenceGeneration(generation);
 }
@@ -108,7 +113,7 @@ bool UdpRuntime::FenceGeneration(uint32_t generation) {
 bool UdpRuntime::AdvanceGeneration(uint32_t generation) {
     std::lock_guard<std::mutex> control_lock(control_mutex_);
     std::lock_guard<std::mutex> send_lock(send_mutex_);
-    if (stop_requested_.load() || generation < session_.generation()) return false;
+    if (stop_requested_.load() || generation < session_.downlink_generation()) return false;
     playout_queue_.AdvanceGeneration(generation);
     return session_.AdvanceGeneration(generation);
 }
@@ -172,6 +177,8 @@ void UdpRuntime::Run() {
             }
         }
     }
+    ESP_LOGI(kLogTag, "udp task minimum free stack: %lu bytes",
+             static_cast<unsigned long>(uxTaskGetStackHighWaterMark(nullptr)));
     xEventGroupSetBits(events_, kExited);
 }
 

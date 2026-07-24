@@ -47,7 +47,8 @@ UdpSession::~UdpSession() { Revoke(); }
 bool UdpSession::Configure(const SessionGrant& grant) {
     std::lock_guard<std::mutex> lock(mutex_);
     RevokeLocked();
-    if (!grant.server.valid() || grant.media_epoch == 0 || grant.initial_generation == 0 ||
+    if (!grant.server.valid() || grant.media_epoch == 0 ||
+        grant.initial_downlink_generation == 0 ||
         !uplink_crypto_.SetKey(grant.uplink_key) ||
         !downlink_crypto_.SetKey(grant.downlink_key)) {
         RevokeLocked();
@@ -55,10 +56,10 @@ bool UdpSession::Configure(const SessionGrant& grant) {
     }
     grant_ = grant;
     send_sequence_ = 0;
-    generation_ = grant.initial_generation;
+    downlink_generation_ = grant.initial_downlink_generation;
     last_authenticated_receive_us_ = 0;
     replay_.Reset();
-    jitter_.Reset(generation_);
+    jitter_.Reset(downlink_generation_);
     stats_ = {};
     bound_source_ = {};
     ready_ = false;
@@ -79,7 +80,7 @@ void UdpSession::RevokeLocked() {
     configured_ = false;
     playback_active_ = false;
     bound_source_ = {};
-    jitter_.Reset(generation_);
+    jitter_.Reset(downlink_generation_);
     ClearFutureFrames();
     uplink_crypto_.ClearKey();
     downlink_crypto_.ClearKey();
@@ -91,16 +92,16 @@ void UdpSession::RevokeLocked() {
 
 bool UdpSession::FenceGeneration(uint32_t generation) {
     std::lock_guard<std::mutex> lock(mutex_);
-    if (revoked_ || generation < generation_) return false;
+    if (revoked_ || generation < downlink_generation_) return false;
     playback_active_ = false;
-    if (generation > generation_) {
-        generation_ = generation;
-        jitter_.Reset(generation_);
+    if (generation > downlink_generation_) {
+        downlink_generation_ = generation;
+        jitter_.Reset(downlink_generation_);
         for (auto& frame : future_frames_) {
-            if (frame.used && frame.generation < generation_) ClearFutureFrame(&frame);
+            if (frame.used && frame.generation < downlink_generation_) ClearFutureFrame(&frame);
         }
     } else {
-        jitter_.Reset(generation_);
+        jitter_.Reset(downlink_generation_);
         ClearFutureFrames();
     }
     return true;
@@ -108,14 +109,14 @@ bool UdpSession::FenceGeneration(uint32_t generation) {
 
 bool UdpSession::AdvanceGeneration(uint32_t generation) {
     std::lock_guard<std::mutex> lock(mutex_);
-    if (revoked_ || generation < generation_) return false;
-    if (generation > generation_) {
-        generation_ = generation;
-        jitter_.Reset(generation_);
+    if (revoked_ || generation < downlink_generation_) return false;
+    if (generation > downlink_generation_) {
+        downlink_generation_ = generation;
+        jitter_.Reset(downlink_generation_);
     }
     // playback generation 只能由 response.begin 激活；媒体包只能提前暂存。
     playback_active_ = true;
-    ReleaseFutureAudio(generation_);
+    ReleaseFutureAudio(downlink_generation_);
     return true;
 }
 
@@ -186,15 +187,15 @@ bool UdpSession::BuildProbe(uint8_t* output, size_t capacity, size_t* size) {
 
 bool UdpSession::BuildKeepalive(uint8_t* output, size_t capacity, size_t* size) {
     std::lock_guard<std::mutex> lock(mutex_);
-    return Build(wire::DatagramType::kKeepalive, nullptr, 0, 0, generation_,
+    return Build(wire::DatagramType::kKeepalive, nullptr, 0, 0, 0,
                  output, capacity, size);
 }
 
 bool UdpSession::BuildAudio(const uint8_t* opus, size_t opus_size, uint32_t timestamp,
-                            uint32_t generation, uint8_t* output, size_t capacity, size_t* size) {
+                            uint8_t* output, size_t capacity, size_t* size) {
     std::lock_guard<std::mutex> lock(mutex_);
-    return generation == generation_ && Build(
-        wire::DatagramType::kAudio, opus, opus_size, timestamp, generation,
+    return Build(
+        wire::DatagramType::kAudio, opus, opus_size, timestamp, 0,
         output, capacity, size);
 }
 
@@ -257,12 +258,13 @@ AdmissionResult UdpSession::Receive(const Endpoint& source, const uint8_t* datag
     if (!bound_source_.valid()) bound_source_ = source;
     replay_.Commit(view->header.sequence);
     last_authenticated_receive_us_ = now_us;
-    if (view->header.generation < generation_) {
+    const bool audio = view->header.type == wire::DatagramType::kAudio;
+    if (audio && view->header.generation < downlink_generation_) {
         SecureErase(&plaintext_);
         stats_.stale_generation++;
         return AdmissionResult::kStaleGeneration;
     }
-    if (view->header.generation > generation_) {
+    if (audio && view->header.generation > downlink_generation_) {
         const bool can_buffer = view->header.type == wire::DatagramType::kAudio && ready_;
         const bool buffered = can_buffer && BufferFutureAudio(view->header, now_us);
         SecureErase(&plaintext_);
@@ -277,7 +279,7 @@ AdmissionResult UdpSession::Receive(const Endpoint& source, const uint8_t* datag
             jitter_.BeginAt(view->header.sequence + 1);
         } else {
             const auto inserted = jitter_.InsertControl(
-                view->header.sequence, generation_, now_us, &stats_);
+                view->header.sequence, downlink_generation_, now_us, &stats_);
             if (inserted != JitterInsertResult::kAccepted) {
                 return AdmissionResult::kQueueFull;
             }
@@ -297,7 +299,7 @@ AdmissionResult UdpSession::Receive(const Endpoint& source, const uint8_t* datag
     if (view->header.type == wire::DatagramType::kKeepalive) {
         SecureErase(&plaintext_);
         const auto inserted = jitter_.InsertControl(
-            view->header.sequence, generation_, now_us, &stats_);
+            view->header.sequence, downlink_generation_, now_us, &stats_);
         if (inserted != JitterInsertResult::kAccepted) {
             return AdmissionResult::kQueueFull;
         }
@@ -323,9 +325,9 @@ bool UdpSession::ready() const {
     return ready_ && !revoked_;
 }
 
-uint32_t UdpSession::generation() const {
+uint32_t UdpSession::downlink_generation() const {
     std::lock_guard<std::mutex> lock(mutex_);
-    return generation_;
+    return downlink_generation_;
 }
 
 Stats UdpSession::stats() const {

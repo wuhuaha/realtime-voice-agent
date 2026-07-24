@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import base64
 import contextlib
-import json
 import logging
 import time
 from collections.abc import Awaitable, Callable
@@ -16,14 +15,15 @@ from fastapi import WebSocket
 from starlette.websockets import WebSocketDisconnect
 
 from realtime_worker.agent import AgentOutputSegment, AgentRunner
-from realtime_worker.audio import PCM_SAMPLES
+from realtime_worker.interruption import InterruptionContext, InterruptionCoordinator, LayeredInterruptionPolicy
 from realtime_worker.lifecycle import run_with_hard_deadline
 from realtime_worker.transport.udp_gateway import UdpMediaGateway, UdpMediaSession, UdpProbeTimeoutError
 from realtime_worker.voice.session import PlaybackRef
 
-from .binding import AgentControlPort, AudioInputPort, InboundAudioPacket, RvaWssBinding
+from .binding import AgentControlPort, AudioInputPort, ControlEffect, InboundAudioPacket, RvaWssBinding
 from .codec import FRAME_DURATION_MS, SAMPLE_RATE, SAMPLES_PER_PACKET, RvaOpusCodec
 from .protocol import UDP_PROFILE, WSS_PROFILE, RvaBindingError, RvaMessageTooLarge
+from .response import ResponseRecord
 
 logger = logging.getLogger(__name__)
 
@@ -35,7 +35,7 @@ Clock = Callable[[], float]
 class TextAwareRunner(Protocol):
     def set_text_sinks(
         self,
-        user_transcript: Callable[[str, bool], None],
+        user_transcript: Callable[[str, bool], bool],
         assistant_text: Callable[[str], None],
     ) -> None: ...
 
@@ -83,8 +83,8 @@ class RvaRuntimeLimits:
 
 @dataclass(slots=True)
 class _Outbound:
-    kind: Literal["control", "segment"]
-    payload: str | AgentOutputSegment
+    kind: Literal["control", "segment", "response_end"]
+    payload: str | AgentOutputSegment | int
     ack: asyncio.Future[None] | None = None
     assistant_text: str | None = None
 
@@ -165,9 +165,16 @@ class RvaWssConnection:
         limits: RvaRuntimeLimits | None = None,
         codec_factory: CodecFactory = RvaOpusCodec,
         clock: Clock = time.monotonic,
+        interruption_policy: LayeredInterruptionPolicy | None = None,
     ) -> None:
         self._websocket = websocket
         self._limits = limits or RvaRuntimeLimits()
+        self._interruption_policy = interruption_policy
+        self._interruption_coordinator = (
+            InterruptionCoordinator(interruption_policy, self._accept_interruption)
+            if interruption_policy is not None
+            else None
+        )
         self._runner_factory = runner_factory
         self._codec_factory = codec_factory
         self._clock = clock
@@ -204,6 +211,7 @@ class RvaWssConnection:
         self._active_producer_epoch: int | None = None
         self._generation_changed = asyncio.Event()
         self._activity_changed = asyncio.Event()
+        self._wire_lock = asyncio.Lock()
         self._last_activity = self._clock()
         self._last_udp_authenticated = 0
         self._input_pcm_sequence = 0
@@ -219,6 +227,9 @@ class RvaWssConnection:
         self._transcript_sequence = 0
         self._pending_assistant_text: str | None = None
         self._assistant_text_sent = ""
+        self._active_assistant_text = ""
+        self._playback_started_at: float | None = None
+        self._interrupt_candidate_started_at: float | None = None
         self._response_text_sequence = 0
         self.close_code: int | None = None
         self.close_reason: str | None = None
@@ -231,9 +242,10 @@ class RvaWssConnection:
         close_code, close_reason = 1_000, "normal"
         try:
             first = await self._receive_first_control()
-            opened = await self._binding.receive_control(first)
-            if opened is None:
+            opened_effect = await self._binding.receive_control(first)
+            if len(opened_effect.outbound) != 1:
                 raise RvaBindingError("expected_session_open")
+            opened = opened_effect.outbound[0]
             self._mark_activity()
             logger.info(
                 "rva_session_opened session=%s session_epoch=%s selected_media_profile=%s udp_enabled=%s",
@@ -243,7 +255,7 @@ class RvaWssConnection:
                 self._binding.selected_media_profile == UDP_PROFILE,
             )
             self._codec = await asyncio.to_thread(self._codec_factory)
-            self._runner = self._runner_factory(self._emit_segment, self._request_stop)
+            self._runner = self._runner_factory(self._emit_segment, self._request_response_end)
             configure_text_sinks = getattr(self._runner, "set_text_sinks", None)
             if callable(configure_text_sinks):
                 configure_text_sinks(self._emit_user_transcript, self._emit_assistant_text)
@@ -371,15 +383,11 @@ class RvaWssConnection:
             text = frame.get("text")
             binary = frame.get("bytes")
             if isinstance(text, str):
-                response = await self._binding.receive_control(text)
+                effect = await self._binding.receive_control(text)
                 self._mark_activity()
-                if response is not None:
-                    terminal = json.loads(response).get("type") == "session.close"
-                    ack = asyncio.get_running_loop().create_future() if terminal else None
-                    await self._enqueue(_Outbound("control", response, ack))
-                    if ack is not None:
-                        await ack
-                        return
+                await self._apply_control_effect(effect)
+                if effect.close_after_send:
+                    return
             elif isinstance(binary, bytes):
                 await self._binding.receive_media(binary)
                 self._wss_input_packets += 1
@@ -387,6 +395,37 @@ class RvaWssConnection:
                 self._mark_activity()
             else:
                 raise RvaBindingError("unsupported_websocket_frame")
+
+    async def _apply_control_effect(self, effect: ControlEffect) -> None:
+        if effect.interrupt is not None:
+            self._minimum_producer_epoch = max(
+                self._minimum_producer_epoch,
+                effect.interrupt.producer_epoch + 1,
+            )
+            self._generation_changed.set()
+        for event in effect.outbound:
+            await self._send_control_serialized(event)
+        runner = self._runner
+        if effect.playback_started is not None and runner is not None:
+            self._playback_started_at = self._clock()
+            self._interrupt_candidate_started_at = None
+            await runner.playback_started(time.time())
+        if effect.playback_ended is not None and runner is not None:
+            fact = effect.playback_ended
+            await runner.playback_finished(
+                fact.played_samples / SAMPLE_RATE,
+                fact.outcome != "completed",
+            )
+            self._playback_started_at = None
+            self._interrupt_candidate_started_at = None
+            self._active_assistant_text = ""
+        if effect.interrupt is not None:
+            task = asyncio.create_task(
+                self._interrupt_runner(effect.interrupt),
+                name=f"rva-interrupt-{self._binding_id}",
+            )
+            self._aux_tasks.add(task)
+            task.add_done_callback(self._on_aux_done)
 
     async def _input_loop(self) -> None:
         while True:
@@ -419,91 +458,114 @@ class RvaWssConnection:
             item = await self._output.get()
             if item.kind != "control" or not isinstance(item.payload, str):
                 raise RvaRuntimeError("non-control item entered control queue")
-            await self._websocket.send_text(item.payload)
+            async with self._wire_lock:
+                await self._websocket.send_text(item.payload)
             if item.ack is not None and not item.ack.done():
                 item.ack.set_result(None)
 
     async def _segment_loop(self) -> None:
         while True:
             item = await self._segments.get()
-            if item.kind != "segment" or not isinstance(item.payload, AgentOutputSegment):
-                raise RvaRuntimeError("non-segment item entered media queue")
-            await self._send_segment(item.payload, item.assistant_text)
+            if item.kind == "segment" and isinstance(item.payload, AgentOutputSegment):
+                await self._send_segment(item.payload, item.assistant_text)
+            elif item.kind == "response_end" and isinstance(item.payload, int):
+                await self._finish_response(item.payload)
+            else:
+                raise RvaRuntimeError("invalid item entered media queue")
 
     async def _send_segment(self, segment: AgentOutputSegment, assistant_text: str | None) -> None:
         if self._closed or segment.producer_epoch < self._minimum_producer_epoch or not segment.frames:
+            logger.info(
+                "rva_segment_skipped session=%s closed=%s segment_epoch=%d minimum_epoch=%d frames=%d",
+                self._binding_id,
+                self._closed,
+                segment.producer_epoch,
+                self._minimum_producer_epoch,
+                len(segment.frames),
+            )
             return
+        active = self._binding.active_response
+        if active is None:
+            self._response_sequence += 1
+            response_id = f"resp-{self._response_sequence:08d}"
+        else:
+            response_id = active.response_id
+        record, begin = await self._binding.response_begin(
+            response_id=response_id,
+            producer_epoch=segment.producer_epoch,
+        )
+        if begin is not None:
+            await self._send_control_serialized(begin)
+            self._assistant_text_sent = ""
+            self._active_assistant_text = ""
+            self._response_text_sequence = 0
         self._active_producer_epoch = segment.producer_epoch
-        self._response_sequence += 1
-        response_id = f"resp-{self._response_sequence:08d}"
-        target, begin = await self._binding.response_begin(response_id=response_id)
-        await self._send_control_serialized(begin)
-        runner = self._runner
-        if runner is None:
-            raise RvaRuntimeError("agent runner is unavailable")
         self._pending_assistant_text = self._pending_assistant_text or assistant_text
-        self._assistant_text_sent = ""
-        self._response_text_sequence = 0
-        await self._send_pending_assistant_text(response_id, target)
-        playback_started_at = self._clock()
-        await runner.playback_started(playback_started_at)
-        played_samples = 0
+        self._active_assistant_text = self._pending_assistant_text or self._active_assistant_text
+        await self._send_pending_assistant_text(record)
+        segment_started_at = self._clock()
         interrupted = False
-        try:
-            for packet_index, offset in enumerate(range(0, len(segment.frames), 3)):
-                if segment.producer_epoch < self._minimum_producer_epoch or target != self._binding.active_playback:
+        interrupt_reason = "none"
+        for packet_index, offset in enumerate(range(0, len(segment.frames), 3)):
+            if segment.producer_epoch < self._minimum_producer_epoch or self._binding.active_response is not record:
+                interrupted = True
+                interrupt_reason = "producer_epoch_or_inactive_response"
+                break
+            await self._send_pending_assistant_text(record)
+            frames = segment.frames[offset : offset + 3]
+            codec = self._codec
+            if codec is None:
+                raise RvaRuntimeError("codec is unavailable")
+            payload = await asyncio.to_thread(codec.encode_60ms, frames)
+            if packet_index >= self._limits.playback_prebuffer_packets:
+                deadline = segment_started_at + (
+                    packet_index - self._limits.playback_prebuffer_packets + 1
+                ) * (FRAME_DURATION_MS / 1_000)
+                if not await self._wait_playback_deadline(deadline, record):
                     interrupted = True
+                    interrupt_reason = "response_generation_changed"
                     break
-                await self._send_pending_assistant_text(response_id, target)
-                frames = segment.frames[offset : offset + 3]
-                codec = self._codec
-                if codec is None:
-                    raise RvaRuntimeError("codec is unavailable")
-                payload = await asyncio.to_thread(codec.encode_60ms, frames)
-                if packet_index >= self._limits.playback_prebuffer_packets:
-                    deadline = playback_started_at + (
-                        packet_index - self._limits.playback_prebuffer_packets + 1
-                    ) * (FRAME_DURATION_MS / 1_000)
-                    if not await self._wait_playback_deadline(deadline, target):
-                        interrupted = True
-                        break
+            try:
                 if self._binding.selected_media_profile == UDP_PROFILE:
                     udp_session = self._udp_session
                     if udp_session is None:
                         raise RvaRuntimeError("UDP media session is unavailable")
-                    await udp_session.send_audio(
+                    sequence = await udp_session.send_audio(
                         payload,
                         timestamp=self._downlink_timestamp,
-                        generation=target.generation,
+                        generation=record.target.generation,
                     )
+                    self._binding.note_downlink_media(record, sequence)
                 else:
-                    try:
-                        media = self._binding.serialize_audio(
-                            payload,
-                            timestamp=self._downlink_timestamp,
-                            target=target,
-                        )
-                    except RvaBindingError as exc:
-                        if exc.code == "stale_generation":
-                            interrupted = True
-                            break
-                        raise
-                    await self._websocket.send_bytes(media)
-                self._downlink_packets += 1
-                self._downlink_timestamp = (self._downlink_timestamp + SAMPLES_PER_PACKET) & 0xFFFFFFFF
-                played_samples += min(3, len(frames)) * PCM_SAMPLES
-            await self._send_pending_assistant_text(response_id, target)
-            if not interrupted and target == self._binding.active_playback:
-                end = await self._binding.response_end(response_id=response_id, target=target)
-                await self._send_control_serialized(end)
-        finally:
-            if self._active_producer_epoch == segment.producer_epoch:
-                self._active_producer_epoch = None
-            await runner.playback_finished(played_samples / SAMPLE_RATE, interrupted)
+                    media = self._binding.serialize_audio(
+                        payload,
+                        timestamp=self._downlink_timestamp,
+                        record=record,
+                    )
+                    async with self._wire_lock:
+                        await self._websocket.send_bytes(media)
+            except RvaBindingError as exc:
+                if exc.code == "stale_generation":
+                    interrupted = True
+                    interrupt_reason = "stale_generation"
+                    break
+                raise
+            self._downlink_packets += 1
+            self._downlink_timestamp = (self._downlink_timestamp + SAMPLES_PER_PACKET) & 0xFFFFFFFF
+        await self._send_pending_assistant_text(record)
+        if interrupted:
+            logger.info(
+                "rva_segment_fenced session=%s response_id=%s reason=%s segment_epoch=%d minimum_epoch=%d",
+                self._binding_id,
+                record.response_id,
+                interrupt_reason,
+                segment.producer_epoch,
+                self._minimum_producer_epoch,
+            )
 
-    async def _send_pending_assistant_text(self, response_id: str, target: PlaybackRef) -> None:
+    async def _send_pending_assistant_text(self, record: ResponseRecord) -> None:
         current = self._pending_assistant_text
-        if not current or target != self._binding.active_playback:
+        if not current or self._binding.active_response is not record:
             return
         if current.startswith(self._assistant_text_sent):
             delta = current[len(self._assistant_text_sent) :]
@@ -514,27 +576,34 @@ class RvaWssConnection:
         if not delta:
             return
         event = self._binding.response_text(
-            response_id=response_id,
-            target=target,
+            record=record,
             sequence=self._response_text_sequence,
             text=delta,
         )
         self._response_text_sequence += 1
         await self._send_control_serialized(event)
 
-    async def _wait_playback_deadline(self, deadline: float, target: PlaybackRef) -> bool:
+    async def _wait_playback_deadline(self, deadline: float, record: ResponseRecord) -> bool:
         remaining = deadline - self._clock()
         if remaining <= 0:
-            return target == self._binding.active_playback
+            return self._binding.active_response is record
         self._generation_changed.clear()
         try:
             await asyncio.wait_for(self._generation_changed.wait(), timeout=remaining)
         except TimeoutError:
-            return target == self._binding.active_playback
+            return self._binding.active_response is record
         return False
 
     async def _emit_segment(self, segment: AgentOutputSegment) -> None:
         if self._closed or segment.producer_epoch < self._minimum_producer_epoch or not segment.frames:
+            logger.info(
+                "rva_emit_segment_dropped session=%s closed=%s segment_epoch=%d minimum_epoch=%d frames=%d",
+                self._binding_id,
+                self._closed,
+                segment.producer_epoch,
+                self._minimum_producer_epoch,
+                len(segment.frames),
+            )
             return
         if len(segment.frames) > self._limits.max_segment_frames:
             error = RvaOverloadedError("agent output segment exceeds frame limit")
@@ -549,10 +618,12 @@ class RvaWssConnection:
             self._report_failure(exc)
             raise
 
-    def _emit_user_transcript(self, text: str, is_final: bool) -> None:
+    def _emit_user_transcript(self, text: str, is_final: bool) -> bool:
         if self._closed:
-            return
+            return False
+        overlapped_playback = self._playback_started_at is not None
         try:
+            self._submit_interruption_candidate(text, is_final)
             if self._active_utterance_id is None:
                 self._utterance_sequence += 1
                 self._active_utterance_id = f"utt-{self._utterance_sequence:08d}"
@@ -575,32 +646,73 @@ class RvaWssConnection:
             self._enqueue_nowait(_Outbound("control", event))
         except BaseException as exc:
             self._report_failure(exc)
+        return overlapped_playback
+
+    def _submit_interruption_candidate(self, text: str, is_final: bool) -> None:
+        coordinator = self._interruption_coordinator
+        record = self._binding.current_playback
+        if coordinator is None or record is None:
+            return
+        playback_started_at = self._playback_started_at
+        if playback_started_at is None:
+            return
+        if self._interrupt_candidate_started_at is None:
+            self._interrupt_candidate_started_at = self._clock()
+        now = self._clock()
+        coordinator.submit(
+            InterruptionContext(
+                transcript=text,
+                is_final=is_final,
+                playback_age_seconds=max(0.0, now - playback_started_at),
+                candidate_age_seconds=max(0.0, now - self._interrupt_candidate_started_at),
+                assistant_text=self._active_assistant_text,
+                response_id=record.response_id,
+                generation=record.target.generation,
+            )
+        )
+
+    async def _accept_interruption(self, context: InterruptionContext) -> None:
+        record = self._binding.current_playback
+        if (
+            record is None
+            or record.response_id != context.response_id
+            or record.target.generation != context.generation
+        ):
+            return
+        effect = await self._binding.cancel_active_response(cause="recognized_interrupt")
+        await self._apply_control_effect(effect)
 
     def _emit_assistant_text(self, text: str) -> None:
         if not self._closed and text:
             self._pending_assistant_text = text
 
-    def _request_stop(self, producer_epoch: int) -> None:
+    def _request_response_end(self, producer_epoch: int) -> None:
         if self._closed:
             return
-        self._minimum_producer_epoch = max(self._minimum_producer_epoch, producer_epoch)
-        self._generation_changed.set()
-        task = asyncio.create_task(self._finish_active_from_runner(), name=f"rva-stop-{self._binding_id}")
+        task = asyncio.create_task(
+            self._enqueue_segment(_Outbound("response_end", producer_epoch)),
+            name=f"rva-response-end-{self._binding_id}",
+        )
         self._aux_tasks.add(task)
         task.add_done_callback(self._on_aux_done)
 
-    async def _finish_active_from_runner(self) -> None:
-        target = self._binding.active_playback
-        if target is None:
+    async def _finish_response(self, producer_epoch: int) -> None:
+        record = self._binding.active_response
+        if record is None or record.producer_epoch != producer_epoch:
             return
-        response_id = f"resp-{self._response_sequence:08d}"
         try:
-            event = await self._binding.response_end(response_id=response_id, target=target, failed=True)
+            await self._send_pending_assistant_text(record)
+            event = await self._binding.response_end(record=record)
         except RvaBindingError as exc:
             if exc.code != "stale_generation":
                 raise
             return
-        await self._enqueue(_Outbound("control", event))
+        await self._send_control_serialized(event)
+        if self._active_producer_epoch == producer_epoch:
+            self._active_producer_epoch = None
+
+    async def _interrupt_runner(self, record: ResponseRecord) -> None:
+        await self._agent_port.interrupt(record.target)
 
     def _on_aux_done(self, task: asyncio.Task[None]) -> None:
         self._aux_tasks.discard(task)
@@ -724,6 +836,8 @@ class RvaWssConnection:
                 )
         self._tasks.clear()
         self._aux_tasks.clear()
+        if self._interruption_coordinator is not None:
+            await self._interruption_coordinator.close()
         with contextlib.suppress(Exception):
             await self._binding.close()
         if self._udp_session is not None:

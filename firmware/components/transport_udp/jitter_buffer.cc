@@ -84,6 +84,7 @@ PlayoutFrame JitterBuffer::Pop(int64_t now_us, Stats* stats) {
             continue;
         }
         PlayoutFrame output{.kind = PlayoutKind::kAudio,
+                            .sequence = expected->sequence,
                             .timestamp = expected->timestamp,
                             .generation = expected->generation,
                             .arrived_us = expected->arrived_us,
@@ -113,9 +114,10 @@ PlayoutFrame JitterBuffer::Pop(int64_t now_us, Stats* stats) {
     const uint32_t timestamp = first->timestamp >= missing * kSamplesPerFrame
                                    ? first->timestamp - missing * kSamplesPerFrame
                                    : 0;
-    expected_++;
+    const uint32_t missing_sequence = expected_++;
     if (stats) stats->lost++;
     return {.kind = PlayoutKind::kPlc,
+            .sequence = missing_sequence,
             .timestamp = timestamp,
             .generation = generation_,
             .arrived_us = first->arrived_us};

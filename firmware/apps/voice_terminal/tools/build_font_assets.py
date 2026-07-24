@@ -69,7 +69,10 @@ def download(
                 if received == 0 and content_length is not None and int(content_length) != expected_size:
                     raise ValueError(f"{label} Content-Length mismatch")
                 while True:
-                    chunk = response.read(1024 * 1024)
+                    # Read at most one byte beyond the declared size so an
+                    # untrusted response cannot force an oversized allocation.
+                    remaining = expected_size - received
+                    chunk = response.read(min(1024 * 1024, remaining + 1))
                     if not chunk:
                         break
                     received += len(chunk)

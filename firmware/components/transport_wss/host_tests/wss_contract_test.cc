@@ -86,7 +86,7 @@ void TestStrictControlParserAndEncoders() {
     const std::string opened_json =
         R"({"type":"session.opened","request_id":"open-001","session_id":"session-001",)"
         R"("session_epoch":"epoch-007","media_id":"0123456789abcdef","media_epoch":7,)"
-        R"("selected_media_profile":"wss-opus-v2","audio":{"codec":"opus","sample_rate_hz":16000,)"
+        R"("selected_media_profile":"wss-opus-v3","audio":{"codec":"opus","sample_rate_hz":16000,)"
         R"("channels":1,"frame_duration_ms":60},"heartbeat_interval_ms":15000,"idle_timeout_ms":45000,)"
         R"("max_control_message_bytes":32768})";
     ServerMessage message;
@@ -96,13 +96,13 @@ void TestStrictControlParserAndEncoders() {
     const auto& opened = std::get<SessionOpened>(message);
     assert(opened.session.session_epoch == "epoch-007");
     assert(opened.media_epoch == 7);
-    assert(opened.selected_media_profile == "wss-opus-v2");
+    assert(opened.selected_media_profile == "wss-opus-v3");
     assert(!opened.udp_grant.has_value());
 
     const std::string opened_udp_json =
         R"({"type":"session.opened","request_id":"open-002","session_id":"session-002",)"
         R"("session_epoch":"epoch-008","media_id":"fedcba9876543210","media_epoch":8,)"
-        R"("selected_media_profile":"udp-opus-gcm-v1","audio":{"codec":"opus","sample_rate_hz":16000,)"
+        R"("selected_media_profile":"udp-opus-gcm-v2","audio":{"codec":"opus","sample_rate_hz":16000,)"
         R"("channels":1,"frame_duration_ms":60},"heartbeat_interval_ms":15000,"idle_timeout_ms":45000,)"
         R"("max_control_message_bytes":32768,"udp_grant":{"host":"voice.example.test","port":8443,)"
         R"("expires_at_ms":1780000000000,"uplink_key_b64":"AAAAAAAAAAAAAAAAAAAAAA==",)"
@@ -112,7 +112,7 @@ void TestStrictControlParserAndEncoders() {
                reinterpret_cast<const uint8_t*>(opened_udp_json.data()), opened_udp_json.size(), &message) ==
            ControlError::kOk);
     const auto& opened_udp = std::get<SessionOpened>(message);
-    assert(opened_udp.selected_media_profile == "udp-opus-gcm-v1");
+    assert(opened_udp.selected_media_profile == "udp-opus-gcm-v2");
     assert(opened_udp.udp_grant.has_value());
     assert(opened_udp.udp_grant->host == "voice.example.test");
     assert(opened_udp.udp_grant->port == 8443);
@@ -122,9 +122,9 @@ void TestStrictControlParserAndEncoders() {
     assert(opened_udp.udp_grant->downlink_key[0] == 0xff && opened_udp.udp_grant->downlink_key[15] == 0xff);
 
     const std::vector<std::string> rejected_opened_messages = {
-        R"({"type":"session.opened","request_id":"open-001","session_id":"session-001","session_epoch":"epoch-007","media_id":"0123456789abcdef","media_epoch":7,"selected_media_profile":"udp-opus-gcm-v1","audio":{"codec":"opus","sample_rate_hz":16000,"channels":1,"frame_duration_ms":60},"heartbeat_interval_ms":15000,"idle_timeout_ms":45000,"max_control_message_bytes":32768})",
-        R"({"type":"session.opened","request_id":"open-001","session_id":"session-001","session_epoch":"epoch-007","media_id":"0123456789abcdef","media_epoch":7,"selected_media_profile":"wss-opus-v2","audio":{"codec":"opus","sample_rate_hz":16000,"channels":1,"frame_duration_ms":60},"heartbeat_interval_ms":15000,"idle_timeout_ms":45000,"max_control_message_bytes":32768,"udp_grant":{}})",
-        R"({"type":"session.opened","request_id":"open-002","session_id":"session-002","session_epoch":"epoch-008","media_id":"fedcba9876543210","media_epoch":8,"selected_media_profile":"udp-opus-gcm-v1","audio":{"codec":"opus","sample_rate_hz":16000,"channels":1,"frame_duration_ms":60},"heartbeat_interval_ms":15000,"idle_timeout_ms":45000,"max_control_message_bytes":32768,"udp_grant":{"host":"voice.example.test","port":8443,"expires_at_ms":1780000000000,"uplink_key_b64":"AAAAAAAAAAAAAAAAAAAAAB==","uplink_salt_b64":"AAAAAAAAAAA=","downlink_key_b64":"/////////////////////w==","downlink_salt_b64":"//////////8=","probe_timeout_ms":1500}})",
+        R"({"type":"session.opened","request_id":"open-001","session_id":"session-001","session_epoch":"epoch-007","media_id":"0123456789abcdef","media_epoch":7,"selected_media_profile":"udp-opus-gcm-v2","audio":{"codec":"opus","sample_rate_hz":16000,"channels":1,"frame_duration_ms":60},"heartbeat_interval_ms":15000,"idle_timeout_ms":45000,"max_control_message_bytes":32768})",
+        R"({"type":"session.opened","request_id":"open-001","session_id":"session-001","session_epoch":"epoch-007","media_id":"0123456789abcdef","media_epoch":7,"selected_media_profile":"wss-opus-v3","audio":{"codec":"opus","sample_rate_hz":16000,"channels":1,"frame_duration_ms":60},"heartbeat_interval_ms":15000,"idle_timeout_ms":45000,"max_control_message_bytes":32768,"udp_grant":{}})",
+        R"({"type":"session.opened","request_id":"open-002","session_id":"session-002","session_epoch":"epoch-008","media_id":"fedcba9876543210","media_epoch":8,"selected_media_profile":"udp-opus-gcm-v2","audio":{"codec":"opus","sample_rate_hz":16000,"channels":1,"frame_duration_ms":60},"heartbeat_interval_ms":15000,"idle_timeout_ms":45000,"max_control_message_bytes":32768,"udp_grant":{"host":"voice.example.test","port":8443,"expires_at_ms":1780000000000,"uplink_key_b64":"AAAAAAAAAAAAAAAAAAAAAB==","uplink_salt_b64":"AAAAAAAAAAA=","downlink_key_b64":"/////////////////////w==","downlink_salt_b64":"//////////8=","probe_timeout_ms":1500}})",
     };
     for (const std::string& rejected : rejected_opened_messages) {
         assert(rva::protocol::ParseServerMessage(
@@ -142,9 +142,14 @@ void TestStrictControlParserAndEncoders() {
         R"({"type":"response.text","session_id":"session-001","session_epoch":"epoch-007",)"
         R"("response_id":"resp-1","generation":3,"sequence":0,"text":"hi"})",
         R"({"type":"response.end","session_id":"session-001","session_epoch":"epoch-007",)"
-        R"("response_id":"resp-1","generation":3,"reason":"completed"})",
-        R"({"type":"response.cancelled","session_id":"session-001","session_epoch":"epoch-007",)"
-        R"("target":{"response_id":"resp-1","generation":3},"reason":"cancelled"})",
+        R"("response_id":"resp-1","generation":3,"outcome":"completed","final_media_sequence":1})",
+        R"({"type":"response.end","session_id":"session-001","session_epoch":"epoch-007",)"
+        R"("response_id":"resp-1","generation":3,"outcome":"cancelled"})",
+        R"({"type":"response.end","session_id":"session-001","session_epoch":"epoch-007",)"
+        R"("response_id":"resp-1","generation":3,"outcome":"failed","error_code":"provider_timeout"})",
+        R"({"type":"playback.stop","session_id":"session-001","session_epoch":"epoch-007",)"
+        R"("target":{"response_id":"resp-1","generation":3},"fence_generation":4,)"
+        R"("cause":"recognized_interrupt"})",
         R"({"type":"session.error","session_id":"session-001","session_epoch":"epoch-007",)"
         R"("code":"provider_timeout","retryable":true,"message":"timeout"})",
         R"({"type":"session.close","session_id":"session-001","session_epoch":"epoch-007",)"
@@ -178,26 +183,53 @@ void TestStrictControlParserAndEncoders() {
     assert(rva::protocol::ParseServerMessage(oversized.data(), oversized.size(), &message) ==
            ControlError::kOversize);
 
+    const std::vector<std::string> rejected_v2_messages = {
+        R"({"type":"response.end","session_id":"session-001","session_epoch":"epoch-007","response_id":"resp-1","generation":3,"outcome":"completed"})",
+        R"({"type":"response.end","session_id":"session-001","session_epoch":"epoch-007","response_id":"resp-1","generation":3,"outcome":"cancelled","final_media_sequence":1})",
+        R"({"type":"response.end","session_id":"session-001","session_epoch":"epoch-007","response_id":"resp-1","generation":3,"outcome":"failed","error_code":"Bad-Code"})",
+        R"({"type":"playback.stop","session_id":"session-001","session_epoch":"epoch-007","target":{"response_id":"resp-1","generation":3},"fence_generation":3,"cause":"recognized_interrupt"})",
+        R"({"type":"response.cancelled","session_id":"session-001","session_epoch":"epoch-007","target":{"response_id":"resp-1","generation":3},"reason":"cancelled"})",
+    };
+    for (const std::string& rejected : rejected_v2_messages) {
+        assert(rva::protocol::ParseServerMessage(
+                   reinterpret_cast<const uint8_t*>(rejected.data()), rejected.size(), &message) !=
+               ControlError::kOk);
+    }
+
     rva::protocol::SessionOpen open;
     open.request_id = "open-001";
     open.device_id = "esp32s3-test";
-    open.supported_media_profiles = {"wss-opus-v2"};
-    open.preferred_media_profile = "wss-opus-v2";
+    open.supported_media_profiles = {"wss-opus-v3"};
+    open.preferred_media_profile = "wss-opus-v3";
     open.capabilities = {true, true, true, true, true};
     std::string encoded;
     assert(rva::protocol::EncodeSessionOpen(open, &encoded) == ControlError::kOk);
     cJSON* root = cJSON_ParseWithLength(encoded.data(), encoded.size());
     assert(root != nullptr);
     assert(std::strcmp(cJSON_GetStringValue(cJSON_GetObjectItem(root, "type")), "session.open") == 0);
+    assert(cJSON_GetNumberValue(cJSON_GetObjectItem(root, "protocol_version")) == 2);
     cJSON_Delete(root);
 
-    assert(rva::protocol::EncodeResponseCancel(
-               {"session-001", "epoch-007"}, {"resp-1", 3}, "barge_in", &encoded) == ControlError::kOk);
+    assert(rva::protocol::EncodeResponseCancelRequest(
+               {{"session-001", "epoch-007"}, "cancel-001", {"resp-1", 3}},
+               &encoded) == ControlError::kOk);
     root = cJSON_ParseWithLength(encoded.data(), encoded.size());
     assert(root != nullptr);
     const cJSON* target = cJSON_GetObjectItem(root, "target");
     assert(cJSON_GetNumberValue(cJSON_GetObjectItem(target, "generation")) == 3);
+    assert(std::strcmp(cJSON_GetStringValue(cJSON_GetObjectItem(root, "cause")), "user_request") == 0);
     cJSON_Delete(root);
+
+    assert(rva::protocol::EncodePlaybackStarted(
+               {{"session-001", "epoch-007"}, {"resp-1", 3}, 0}, &encoded) == ControlError::kOk);
+    assert(rva::protocol::EncodePlaybackEnded(
+               {{"session-001", "epoch-007"}, {"resp-1", 3},
+                rva::protocol::PlaybackEndedOutcome::kCompleted, 2880, 1},
+               &encoded) == ControlError::kOk);
+    assert(rva::protocol::EncodePlaybackEnded(
+               {{"session-001", "epoch-007"}, {"resp-1", 3},
+                rva::protocol::PlaybackEndedOutcome::kStopped, 0, 1},
+               &encoded) == ControlError::kMissingOrInvalidField);
 
     rva::protocol::SessionClose close;
     close.session = {"session-001", "epoch-007"};
@@ -274,16 +306,30 @@ void TestSessionIdentityGenerationAndSequenceFences() {
     assert(session.AcceptMedia(media.data(), media.size(), &parsed) == AdmissionResult::kStaleMediaIdentity);
 
     std::string cancel;
-    assert(session.EncodeCancel("user_request", &cancel) == ControlError::kOk);
+    assert(session.EncodeCancelRequest("cancel-001", &cancel) == ControlError::kOk);
+    rva::protocol::PlaybackStop stop;
+    stop.session = opened.session;
+    stop.target = {"resp-1", 3};
+    stop.fence_generation = 4;
+    stop.cause = "recognized_interrupt";
+    assert(session.Accept(stop) == AdmissionResult::kAccepted);
+    assert(session.Accept(stop) == AdmissionResult::kAccepted);
+    stop.fence_generation = 5;
+    assert(session.Accept(stop) == AdmissionResult::kPlaybackStopConflict);
+    stop.fence_generation = 4;
+    stop.cause = "session_close";
+    assert(session.Accept(stop) == AdmissionResult::kPlaybackStopConflict);
+    stop.cause = "recognized_interrupt";
+    assert(session.playback_fence() == 4);
     ResponseEvent cancelled = begin;
-    cancelled.type = ServerMessageType::kResponseCancelled;
-    cancelled.reason = "cancelled";
+    cancelled.type = ServerMessageType::kResponseEnd;
+    cancelled.outcome = rva::protocol::ResponseOutcome::kCancelled;
     assert(session.Accept(cancelled) == AdmissionResult::kAccepted);
     assert(session.Accept(cancelled) == AdmissionResult::kResponseAlreadyTerminal);
     media = MakeMediaFrame(opened.media_id, opened.media_epoch, 1, 3);
     assert(session.AcceptMedia(media.data(), media.size(), &parsed) == AdmissionResult::kStaleGeneration);
 
-    begin.generation = 2;
+    begin.generation = 4;
     assert(session.Accept(begin) == AdmissionResult::kStaleGeneration);
     rva::protocol::SessionClose close;
     close.session = opened.session;

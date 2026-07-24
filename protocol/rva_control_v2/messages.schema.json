@@ -1,0 +1,377 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://realtime-voice-agent.local/protocol/rva-control-v2/messages.schema.json",
+  "title": "Realtime Voice Agent Control Protocol v2",
+  "oneOf": [
+    { "$ref": "#/$defs/sessionOpen" },
+    { "$ref": "#/$defs/sessionOpened" },
+    { "$ref": "#/$defs/transcriptDelta" },
+    { "$ref": "#/$defs/transcriptFinal" },
+    { "$ref": "#/$defs/responseBegin" },
+    { "$ref": "#/$defs/responseText" },
+    { "$ref": "#/$defs/responseEnd" },
+    { "$ref": "#/$defs/playbackStop" },
+    { "$ref": "#/$defs/playbackStarted" },
+    { "$ref": "#/$defs/playbackEnded" },
+    { "$ref": "#/$defs/responseCancelRequest" },
+    { "$ref": "#/$defs/sessionError" },
+    { "$ref": "#/$defs/sessionClose" }
+  ],
+  "$defs": {
+    "id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9._:-]+$"
+    },
+    "sessionEpoch": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9._:-]+$"
+    },
+    "mediaEpoch": { "type": "integer", "minimum": 1, "maximum": 4294967295 },
+    "mediaId": { "type": "string", "pattern": "^[0-9a-f]{16}$" },
+    "generation": { "type": "integer", "minimum": 1, "maximum": 4294967295 },
+    "sequence": { "type": "integer", "minimum": 0, "maximum": 4294967295 },
+    "playedSamples": { "type": "integer", "minimum": 0, "maximum": 18446744073709551615 },
+    "errorCode": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64,
+      "pattern": "^[a-z0-9_]+$"
+    },
+    "deltaText": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 4096,
+      "pattern": "^[^\\u0000]*$"
+    },
+    "finalText": {
+      "type": "string",
+      "maxLength": 16384,
+      "pattern": "^[^\\u0000]*$"
+    },
+    "errorMessage": {
+      "type": "string",
+      "maxLength": 512,
+      "pattern": "^[^\\u0000]*$"
+    },
+    "audio": {
+      "type": "object",
+      "required": ["codec", "sample_rate_hz", "channels", "frame_duration_ms"],
+      "properties": {
+        "codec": { "const": "opus" },
+        "sample_rate_hz": { "const": 16000 },
+        "channels": { "const": 1 },
+        "frame_duration_ms": { "const": 60 }
+      },
+      "additionalProperties": false
+    },
+    "capabilities": {
+      "type": "object",
+      "properties": {
+        "aec": { "type": "boolean" },
+        "vad": { "type": "boolean" },
+        "wake_word": { "type": "boolean" },
+        "display": { "type": "boolean" },
+        "touch": { "type": "boolean" }
+      },
+      "additionalProperties": false
+    },
+    "udpGrant": {
+      "type": "object",
+      "required": [
+        "host",
+        "port",
+        "expires_at_ms",
+        "uplink_key_b64",
+        "uplink_salt_b64",
+        "downlink_key_b64",
+        "downlink_salt_b64",
+        "probe_timeout_ms"
+      ],
+      "properties": {
+        "host": { "type": "string", "minLength": 1, "maxLength": 253 },
+        "port": { "type": "integer", "minimum": 1, "maximum": 65535 },
+        "expires_at_ms": { "type": "integer", "minimum": 1 },
+        "uplink_key_b64": { "type": "string", "pattern": "^[A-Za-z0-9+/]{22}==$" },
+        "uplink_salt_b64": { "type": "string", "pattern": "^[A-Za-z0-9+/]{11}=$" },
+        "downlink_key_b64": { "type": "string", "pattern": "^[A-Za-z0-9+/]{22}==$" },
+        "downlink_salt_b64": { "type": "string", "pattern": "^[A-Za-z0-9+/]{11}=$" },
+        "probe_timeout_ms": { "type": "integer", "minimum": 100, "maximum": 10000 }
+      },
+      "additionalProperties": false
+    },
+    "playbackTarget": {
+      "type": "object",
+      "required": ["response_id", "generation"],
+      "properties": {
+        "response_id": { "$ref": "#/$defs/id" },
+        "generation": { "$ref": "#/$defs/generation" }
+      },
+      "additionalProperties": false
+    },
+    "sessionOpen": {
+      "type": "object",
+      "required": [
+        "type",
+        "protocol_version",
+        "request_id",
+        "device_id",
+        "supported_media_profiles",
+        "preferred_media_profile",
+        "audio",
+        "capabilities"
+      ],
+      "properties": {
+        "type": { "const": "session.open" },
+        "protocol_version": { "const": 2 },
+        "request_id": { "$ref": "#/$defs/id" },
+        "device_id": { "$ref": "#/$defs/id" },
+        "supported_media_profiles": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 2,
+          "uniqueItems": true,
+          "items": { "enum": ["wss-opus-v3", "udp-opus-gcm-v2"] }
+        },
+        "preferred_media_profile": { "enum": ["wss-opus-v3", "udp-opus-gcm-v2"] },
+        "audio": { "$ref": "#/$defs/audio" },
+        "capabilities": { "$ref": "#/$defs/capabilities" }
+      },
+      "additionalProperties": false
+    },
+    "sessionOpened": {
+      "type": "object",
+      "required": [
+        "type",
+        "request_id",
+        "session_id",
+        "session_epoch",
+        "media_id",
+        "media_epoch",
+        "selected_media_profile",
+        "audio",
+        "heartbeat_interval_ms",
+        "idle_timeout_ms",
+        "max_control_message_bytes"
+      ],
+      "properties": {
+        "type": { "const": "session.opened" },
+        "request_id": { "$ref": "#/$defs/id" },
+        "session_id": { "$ref": "#/$defs/id" },
+        "session_epoch": { "$ref": "#/$defs/sessionEpoch" },
+        "media_id": { "$ref": "#/$defs/mediaId" },
+        "media_epoch": { "$ref": "#/$defs/mediaEpoch" },
+        "selected_media_profile": { "enum": ["wss-opus-v3", "udp-opus-gcm-v2"] },
+        "audio": { "$ref": "#/$defs/audio" },
+        "heartbeat_interval_ms": { "type": "integer", "minimum": 5000, "maximum": 60000 },
+        "idle_timeout_ms": { "type": "integer", "minimum": 15000, "maximum": 180000 },
+        "max_control_message_bytes": { "const": 32768 },
+        "udp_grant": { "$ref": "#/$defs/udpGrant" }
+      },
+      "allOf": [
+        {
+          "if": {
+            "required": ["selected_media_profile"],
+            "properties": { "selected_media_profile": { "const": "udp-opus-gcm-v2" } }
+          },
+          "then": { "required": ["udp_grant"] },
+          "else": { "not": { "required": ["udp_grant"] } }
+        }
+      ],
+      "additionalProperties": false
+    },
+    "transcriptDelta": {
+      "type": "object",
+      "required": ["type", "session_id", "session_epoch", "utterance_id", "sequence", "text"],
+      "properties": {
+        "type": { "const": "transcript.delta" },
+        "session_id": { "$ref": "#/$defs/id" },
+        "session_epoch": { "$ref": "#/$defs/sessionEpoch" },
+        "utterance_id": { "$ref": "#/$defs/id" },
+        "sequence": { "$ref": "#/$defs/sequence" },
+        "text": { "$ref": "#/$defs/deltaText" }
+      },
+      "additionalProperties": false
+    },
+    "transcriptFinal": {
+      "type": "object",
+      "required": ["type", "session_id", "session_epoch", "utterance_id", "sequence", "text"],
+      "properties": {
+        "type": { "const": "transcript.final" },
+        "session_id": { "$ref": "#/$defs/id" },
+        "session_epoch": { "$ref": "#/$defs/sessionEpoch" },
+        "utterance_id": { "$ref": "#/$defs/id" },
+        "sequence": { "$ref": "#/$defs/sequence" },
+        "text": { "$ref": "#/$defs/finalText" }
+      },
+      "additionalProperties": false
+    },
+    "responseBegin": {
+      "type": "object",
+      "required": ["type", "session_id", "session_epoch", "response_id", "generation"],
+      "properties": {
+        "type": { "const": "response.begin" },
+        "session_id": { "$ref": "#/$defs/id" },
+        "session_epoch": { "$ref": "#/$defs/sessionEpoch" },
+        "response_id": { "$ref": "#/$defs/id" },
+        "generation": { "$ref": "#/$defs/generation" }
+      },
+      "additionalProperties": false
+    },
+    "responseText": {
+      "type": "object",
+      "required": ["type", "session_id", "session_epoch", "response_id", "generation", "sequence", "text"],
+      "properties": {
+        "type": { "const": "response.text" },
+        "session_id": { "$ref": "#/$defs/id" },
+        "session_epoch": { "$ref": "#/$defs/sessionEpoch" },
+        "response_id": { "$ref": "#/$defs/id" },
+        "generation": { "$ref": "#/$defs/generation" },
+        "sequence": { "$ref": "#/$defs/sequence" },
+        "text": { "$ref": "#/$defs/deltaText" }
+      },
+      "additionalProperties": false
+    },
+    "responseEnd": {
+      "type": "object",
+      "required": ["type", "session_id", "session_epoch", "response_id", "generation", "outcome"],
+      "properties": {
+        "type": { "const": "response.end" },
+        "session_id": { "$ref": "#/$defs/id" },
+        "session_epoch": { "$ref": "#/$defs/sessionEpoch" },
+        "response_id": { "$ref": "#/$defs/id" },
+        "generation": { "$ref": "#/$defs/generation" },
+        "outcome": { "enum": ["completed", "cancelled", "failed"] },
+        "final_media_sequence": { "$ref": "#/$defs/sequence" },
+        "error_code": { "$ref": "#/$defs/errorCode" }
+      },
+      "oneOf": [
+        {
+          "required": ["final_media_sequence"],
+          "properties": { "outcome": { "const": "completed" } },
+          "not": { "required": ["error_code"] }
+        },
+        {
+          "required": ["error_code"],
+          "properties": { "outcome": { "const": "failed" } },
+          "not": { "required": ["final_media_sequence"] }
+        },
+        {
+          "properties": { "outcome": { "const": "cancelled" } },
+          "not": {
+            "anyOf": [
+              { "required": ["final_media_sequence"] },
+              { "required": ["error_code"] }
+            ]
+          }
+        }
+      ],
+      "additionalProperties": false
+    },
+    "playbackStop": {
+      "type": "object",
+      "required": ["type", "session_id", "session_epoch", "target", "fence_generation", "cause"],
+      "properties": {
+        "type": { "const": "playback.stop" },
+        "session_id": { "$ref": "#/$defs/id" },
+        "session_epoch": { "$ref": "#/$defs/sessionEpoch" },
+        "target": { "$ref": "#/$defs/playbackTarget" },
+        "fence_generation": { "$ref": "#/$defs/generation" },
+        "cause": {
+          "enum": ["explicit_user_request", "recognized_interrupt", "session_close", "response_failed"]
+        }
+      },
+      "additionalProperties": false
+    },
+    "playbackStarted": {
+      "type": "object",
+      "required": ["type", "session_id", "session_epoch", "target", "first_media_sequence"],
+      "properties": {
+        "type": { "const": "playback.started" },
+        "session_id": { "$ref": "#/$defs/id" },
+        "session_epoch": { "$ref": "#/$defs/sessionEpoch" },
+        "target": { "$ref": "#/$defs/playbackTarget" },
+        "first_media_sequence": { "$ref": "#/$defs/sequence" }
+      },
+      "additionalProperties": false
+    },
+    "playbackEnded": {
+      "type": "object",
+      "required": ["type", "session_id", "session_epoch", "target", "outcome", "played_samples"],
+      "properties": {
+        "type": { "const": "playback.ended" },
+        "session_id": { "$ref": "#/$defs/id" },
+        "session_epoch": { "$ref": "#/$defs/sessionEpoch" },
+        "target": { "$ref": "#/$defs/playbackTarget" },
+        "outcome": { "enum": ["completed", "stopped", "failed"] },
+        "played_samples": { "$ref": "#/$defs/playedSamples" },
+        "last_media_sequence": { "$ref": "#/$defs/sequence" }
+      },
+      "allOf": [
+        {
+          "if": {
+            "required": ["outcome"],
+            "properties": { "outcome": { "const": "completed" } }
+          },
+          "then": { "required": ["last_media_sequence"] }
+        },
+        {
+          "if": {
+            "required": ["played_samples"],
+            "properties": { "played_samples": { "const": 0 } }
+          },
+          "then": { "not": { "required": ["last_media_sequence"] } }
+        }
+      ],
+      "additionalProperties": false
+    },
+    "responseCancelRequest": {
+      "type": "object",
+      "required": ["type", "session_id", "session_epoch", "request_id", "target", "cause"],
+      "properties": {
+        "type": { "const": "response.cancel.request" },
+        "session_id": { "$ref": "#/$defs/id" },
+        "session_epoch": { "$ref": "#/$defs/sessionEpoch" },
+        "request_id": { "$ref": "#/$defs/id" },
+        "target": { "$ref": "#/$defs/playbackTarget" },
+        "cause": { "const": "user_request" }
+      },
+      "additionalProperties": false
+    },
+    "sessionError": {
+      "type": "object",
+      "required": ["type", "session_id", "session_epoch", "code", "retryable", "message"],
+      "properties": {
+        "type": { "const": "session.error" },
+        "session_id": { "$ref": "#/$defs/id" },
+        "session_epoch": { "$ref": "#/$defs/sessionEpoch" },
+        "code": { "$ref": "#/$defs/errorCode" },
+        "retryable": { "type": "boolean" },
+        "message": { "$ref": "#/$defs/errorMessage" }
+      },
+      "additionalProperties": false
+    },
+    "sessionClose": {
+      "type": "object",
+      "required": ["type", "session_id", "session_epoch", "reason", "initiated_by"],
+      "properties": {
+        "type": { "const": "session.close" },
+        "session_id": { "$ref": "#/$defs/id" },
+        "session_epoch": { "$ref": "#/$defs/sessionEpoch" },
+        "reason": {
+          "enum": ["normal", "idle_timeout", "network_change", "protocol_error", "server_shutdown"]
+        },
+        "initiated_by": { "enum": ["device", "server"] },
+        "detail": {
+          "type": "string",
+          "maxLength": 256,
+          "pattern": "^[^\\u0000]*$"
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

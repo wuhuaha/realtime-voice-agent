@@ -17,11 +17,11 @@ from voice_testkit import MutableClock
 def heartbeat(worker_id: str, active: int, *, maximum: int = 5, draining: bool = False) -> WorkerHeartbeat:
     return WorkerHeartbeat(
         worker_id=worker_id,
-        public_wss_url=f"ws://{worker_id}.test/v1/voice",
+        public_wss_url=f"ws://{worker_id}.test/v2/voice",
         active_sessions=active,
         max_sessions=maximum,
         draining=draining,
-        profiles=("wss-opus-v2", "udp-opus-gcm-v1"),
+        profiles=("wss-opus-v3", "udp-opus-gcm-v2"),
     )
 
 
@@ -63,19 +63,14 @@ async def test_bootstrap_selects_endpoint_for_requested_control_binding() -> Non
     await service.heartbeat(
         WorkerHeartbeat(
             worker_id="worker-a",
-            public_wss_url="ws://worker-a.test/v1/xiaozhi",
+            public_wss_url="ws://worker-a.test/v2/voice",
             active_sessions=0,
-            profiles=("wss-opus-v1", "wss-opus-v2", "udp-opus-gcm-v1"),
+            profiles=("wss-opus-v3", "udp-opus-gcm-v2"),
             bindings=(
                 BindingAdvertisement(
-                    control_protocol="xiaozhi-control-v1",
-                    public_wss_url="ws://worker-a.test/v1/xiaozhi",
-                    profiles=("wss-opus-v1", "udp-opus-gcm-v1"),
-                ),
-                BindingAdvertisement(
-                    control_protocol="rva-control-v1",
-                    public_wss_url="ws://worker-a.test/v1/voice",
-                    profiles=("wss-opus-v2", "udp-opus-gcm-v1"),
+                    control_protocol="rva-control-v2",
+                    public_wss_url="ws://worker-a.test/v2/voice",
+                    profiles=("wss-opus-v3", "udp-opus-gcm-v2"),
                 ),
             ),
         )
@@ -84,8 +79,8 @@ async def test_bootstrap_selects_endpoint_for_requested_control_binding() -> Non
     opened = await service.bootstrap(
         BootstrapRequest(
             device_id="device-rva",
-            control_protocol="rva-control-v1",
-            supported_profiles=("wss-opus-v2", "udp-opus-gcm-v1"),
+            control_protocol="rva-control-v2",
+            supported_profiles=("wss-opus-v3", "udp-opus-gcm-v2"),
         )
     )
     claims = codec.verify(
@@ -94,10 +89,10 @@ async def test_bootstrap_selects_endpoint_for_requested_control_binding() -> Non
         device_id="device-rva",
     )
 
-    assert opened.worker_wss_url == "ws://worker-a.test/v1/voice"
-    assert opened.control_protocol == "rva-control-v1"
-    assert opened.allowed_profiles == ("wss-opus-v2", "udp-opus-gcm-v1")
-    assert claims.control_protocol == "rva-control-v1"
+    assert opened.worker_wss_url == "ws://worker-a.test/v2/voice"
+    assert opened.control_protocol == "rva-control-v2"
+    assert opened.allowed_profiles == ("wss-opus-v3", "udp-opus-gcm-v2")
+    assert claims.control_protocol == "rva-control-v2"
 
 
 @pytest.mark.asyncio

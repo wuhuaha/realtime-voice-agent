@@ -40,10 +40,6 @@ class CancelDisposition(StrEnum):
     SESSION_CLOSED = "session_closed"
 
 
-class PlaybackInterruptPort(Protocol):
-    async def interrupt(self, target: PlaybackRef) -> None: ...
-
-
 class AsyncClosePort(Protocol):
     async def close(self) -> None: ...
 
@@ -61,7 +57,6 @@ class VoiceSessionState:
 
     def __init__(
         self,
-        interrupt_port: PlaybackInterruptPort,
         *,
         close_ports: Iterable[AsyncClosePort] = (),
         connection_epoch: str | None = None,
@@ -72,7 +67,6 @@ class VoiceSessionState:
             raise ValueError("connection_epoch must not be empty")
         if close_stage_timeout_seconds <= 0:
             raise ValueError("close_stage_timeout_seconds must be positive")
-        self._interrupt_port = interrupt_port
         self._close_ports = tuple(close_ports)
         self._close_stage_timeout_seconds = close_stage_timeout_seconds
         self._generation = 0
@@ -132,10 +126,10 @@ class VoiceSessionState:
             if target != self._active_playback:
                 return CancelDisposition.STALE_TARGET
 
-            # Fence producer callbacks before awaiting a potentially slow interrupt.
+            # This transition is intentionally provider-free. The caller sends the
+            # exact wire fence first and performs any slow provider interrupt later.
             self._generation += 1
             self._active_playback = None
-            await self._interrupt_port.interrupt(target)
             return CancelDisposition.APPLIED
 
     async def close(self) -> None:

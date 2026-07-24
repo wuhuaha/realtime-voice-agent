@@ -6,12 +6,11 @@ from urllib.parse import quote, urlsplit
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 Identifier = Annotated[str, Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,95}$")]
-ControlProtocol = Literal["xiaozhi-control-v1", "rva-control-v1"]
-TransportProfile = Literal["wss-opus-v1", "wss-opus-v2", "udp-opus-gcm-v1"]
+ControlProtocol = Literal["rva-control-v2"]
+TransportProfile = Literal["wss-opus-v3", "udp-opus-gcm-v2"]
 
 _CONTROL_TRANSPORT_PROFILES: dict[ControlProtocol, frozenset[TransportProfile]] = {
-    "xiaozhi-control-v1": frozenset({"wss-opus-v1", "udp-opus-gcm-v1"}),
-    "rva-control-v1": frozenset({"wss-opus-v2", "udp-opus-gcm-v1"}),
+    "rva-control-v2": frozenset({"wss-opus-v3", "udp-opus-gcm-v2"}),
 }
 
 
@@ -50,7 +49,7 @@ class BindingAdvertisement(ContractModel):
     @model_validator(mode="after")
     def canonical_endpoint(self) -> BindingAdvertisement:
         parsed = urlsplit(self.public_wss_url)
-        expected_path = "/v1/voice" if self.control_protocol == "rva-control-v1" else "/v1/xiaozhi"
+        expected_path = "/v2/voice"
         if (
             parsed.scheme not in {"ws", "wss"}
             or parsed.hostname is None
@@ -72,7 +71,7 @@ class WorkerHeartbeat(ContractModel):
     max_sessions: int = Field(default=5, ge=1, le=1024)
     draining: bool = False
     healthy: bool = True
-    profiles: tuple[TransportProfile, ...] = ("wss-opus-v2",)
+    profiles: tuple[TransportProfile, ...] = ("wss-opus-v3",)
     bindings: tuple[BindingAdvertisement, ...] = ()
     active_leases: tuple[LeaseRenewal, ...] = ()
     released_leases: tuple[LeaseRenewal, ...] = Field(default=(), max_length=64)
@@ -101,6 +100,8 @@ class WorkerHeartbeat(ContractModel):
             advertised_profiles = {profile for binding in self.bindings for profile in binding.profiles}
             if advertised_profiles != set(self.profiles):
                 raise ValueError("worker profiles must equal the union of binding profiles")
+        else:
+            self.resolved_bindings()
         return self
 
     def resolved_bindings(self) -> tuple[BindingAdvertisement, ...]:
@@ -108,7 +109,7 @@ class WorkerHeartbeat(ContractModel):
             return self.bindings
         return (
             BindingAdvertisement(
-                control_protocol="rva-control-v1",
+                control_protocol="rva-control-v2",
                 public_wss_url=self.public_wss_url,
                 profiles=self.profiles,
             ),
@@ -160,7 +161,7 @@ class ConnectGrantClaims(ContractModel):
     session_epoch: Identifier
     fencing_token: int = Field(ge=1)
     profiles: tuple[TransportProfile, ...]
-    control_protocol: ControlProtocol = "rva-control-v1"
+    control_protocol: ControlProtocol = "rva-control-v2"
     iat: float
     exp: float
     jti: Identifier
@@ -181,8 +182,8 @@ class ConnectGrantClaims(ContractModel):
 class BootstrapRequest(ContractModel):
     tenant_id: Identifier = "default"
     device_id: Identifier
-    supported_profiles: tuple[TransportProfile, ...] = ("wss-opus-v2",)
-    control_protocol: ControlProtocol = "rva-control-v1"
+    supported_profiles: tuple[TransportProfile, ...] = ("wss-opus-v3",)
+    control_protocol: ControlProtocol = "rva-control-v2"
 
 
 class BootstrapResponse(ContractModel):

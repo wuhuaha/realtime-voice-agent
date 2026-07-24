@@ -16,7 +16,7 @@
 #include "audio_pipeline/audio_pipeline.h"
 #include "native_runtime/director_bootstrap.h"
 #include "native_runtime/opus_codec.h"
-#include "native_runtime/response_interrupt_gate.h"
+#include "native_runtime/playback_state.h"
 #include "native_runtime/udp_socket_port.h"
 #include "transport_udp/gcm_crypto.h"
 #include "transport_udp/udp_runtime.h"
@@ -82,8 +82,28 @@ public:
 private:
     struct MediaPacket final {
         uint16_t size = 0;
+        uint32_t sequence = 0;
         uint32_t generation = 0;
         std::array<uint8_t, protocol::kWssMaxPayloadBytes> bytes{};
+    };
+
+    enum class PlaybackCommandType : uint8_t { kBegin, kComplete, kStop };
+
+    struct PlaybackCommand final {
+        PlaybackCommandType type = PlaybackCommandType::kBegin;
+        std::array<char, protocol::kMaxIdBytes + 1> response_id{};
+        uint32_t generation = 0;
+        uint32_t value = 0;
+    };
+
+    struct QueuedPlaybackFact final {
+        PlaybackFactType type = PlaybackFactType::kStarted;
+        std::array<char, protocol::kMaxIdBytes + 1> response_id{};
+        uint32_t generation = 0;
+        protocol::PlaybackEndedOutcome outcome = protocol::PlaybackEndedOutcome::kCompleted;
+        uint64_t played_samples = 0;
+        uint32_t media_sequence = 0;
+        bool has_media_sequence = false;
     };
 
     struct WebsocketTeardownContext final {
@@ -103,8 +123,13 @@ private:
     void RunPlayback();
     void HandleControl(const std::vector<uint8_t>& frame);
     void HandleMedia(const std::vector<uint8_t>& frame);
-    bool CancelActiveResponseOnSpeech();
-    bool CompleteResponseDrainIfDue(int64_t now_us);
+    bool EnqueuePlaybackCommand(
+        PlaybackCommandType type,
+        const protocol::ResponseTarget& target,
+        uint32_t value);
+    bool ProcessPlaybackCommands();
+    bool PublishPlaybackFact(const PlaybackFact& fact);
+    bool DrainPlaybackFacts();
     bool SendSessionOpen();
     bool ConfigureUdp(const protocol::SessionOpened& opened);
     bool StartMediaRuntime();
@@ -137,6 +162,8 @@ private:
     wss::FrameAssembler assembler_;
     voice::core::SessionGate core_gate_;
     QueueHandle_t playback_queue_ = nullptr;
+    QueueHandle_t playback_command_queue_ = nullptr;
+    QueueHandle_t playback_fact_queue_ = nullptr;
     EventGroupHandle_t task_events_ = nullptr;
     TaskHandle_t supervisor_task_ = nullptr;
     TaskHandle_t capture_task_ = nullptr;
@@ -144,8 +171,7 @@ private:
     TaskHandle_t playback_task_ = nullptr;
     EventBits_t expected_task_bits_ = 0;
     std::mutex identity_mutex_;
-    std::mutex playback_mutex_;
-    ResponseInterruptGate response_gate_;
+    PlaybackState playback_state_;
     protocol::SessionOpened opened_{};
     std::string device_id_;
     std::string open_request_id_;
@@ -163,7 +189,6 @@ private:
     std::atomic<int64_t> udp_heartbeat_interval_us_{0};
     std::atomic<int64_t> udp_liveness_timeout_us_{0};
     std::atomic<int64_t> udp_next_keepalive_us_{0};
-    std::atomic<int64_t> response_end_deadline_us_{0};
     std::atomic<bool> fallback_to_wss_{false};
     std::atomic<uint32_t> wss_playback_queue_dropped_{0};
     FailClosedHook fail_closed_hook_ = nullptr;

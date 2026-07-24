@@ -455,9 +455,9 @@ void RunApplication() {
         vTaskDelay(pdMS_TO_TICKS(3000));
     }
     const bool clock_synchronized =
-        rva::runtime::SynchronizeSystemClock(CONFIG_RVA_SNTP_SERVER, 10000);
+        rva::runtime::SynchronizeSystemClock(CONFIG_RVA_SNTP_SERVER, 30000);
     if (!clock_synchronized) {
-        ESP_LOGW(kTag, "Clock synchronization failed; TLS or UDP grant validation may be unavailable");
+        ESP_LOGW(kTag, "Clock synchronization failed; TLS or local UDP grant expiry validation may be unavailable");
     }
     const std::string device_id = rva::runtime::DeviceIdFromStationMac();
     if (device_id.empty()) {
@@ -481,10 +481,8 @@ void RunApplication() {
     rva::board::lichuang_s3::LichuangAudioCodec codec(i2c, pca9557, {.output_volume = 80});
     rva::audio::AudioPipeline pipeline(codec.capture(), frontend, codec.playback());
     rva::runtime::DirectorBootstrap director;
-    const bool udp_available = clock_synchronized;
-    rva::runtime::MediaPreference preferred_media = udp_available
-                                                       ? rva::runtime::MediaPreference::kUdp
-                                                       : rva::runtime::MediaPreference::kWss;
+    const bool udp_available = true;
+    rva::runtime::MediaPreference preferred_media = rva::runtime::MediaPreference::kUdp;
     const bool ui_controls_session = kMicButtonControlsSession && !kAutoStartConversation;
     ESP_LOGI(kTag,
              "conversation lifecycle: auto_start=%d mic_button_controls_session=%d effective_ui_controls=%d",

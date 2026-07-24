@@ -3,6 +3,7 @@ idf_component_register(
         "config_adapters.cc"
         "director_bootstrap.cc"
         "opus_codec.cc"
+        "playback_state.cc"
         "udp_socket_port.cc"
         "voice_runtime.cc"
     INCLUDE_DIRS "include"

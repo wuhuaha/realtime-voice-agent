@@ -23,6 +23,7 @@ from .agent import create_runner
 from .auth import AuthContext, VerifiedAuth, WorkerAuthenticator, device_ref, resolve_device_id
 from .bindings.rva import RvaRuntimeLimits, RvaWssConnection
 from .config import Settings
+from .interruption import InterruptionPolicyConfig, LayeredInterruptionPolicy
 from .lifecycle import run_with_hard_deadline
 from .transport import UdpMediaGateway
 
@@ -80,9 +81,9 @@ class RvaSessionRegistry:
     async def run(self, websocket: WebSocket, auth: AuthContext, token: str) -> None:
         principal = (auth.tenant_id, auth.device_id)
         session_epoch = auth.session_epoch or f"lab-{secrets.token_hex(16)}"
-        enabled_profiles = {"wss-opus-v2"}
+        enabled_profiles = {"wss-opus-v3"}
         if self._settings.rva_udp_enabled and self._udp_gateway is not None:
-            enabled_profiles.add("udp-opus-gcm-v1")
+            enabled_profiles.add("udp-opus-gcm-v2")
         try:
             connection = RvaWssConnection(
                 websocket,
@@ -105,6 +106,7 @@ class RvaSessionRegistry:
                     agent_close_stage_timeout_seconds=self._settings.agent_close_stage_timeout_seconds,
                     playback_prebuffer_packets=self._settings.rva_playback_prebuffer_packets,
                 ),
+                interruption_policy=_create_interruption_policy(self._settings),
             )
             async with self._lock:
                 self._connections[principal] = (connection, auth)
@@ -406,48 +408,33 @@ class WorkerHeartbeatLoop:
         if self._registry is not None:
             await self._registry.revoke_expired_leases(self._clock())
         udp_ready = self._udp_gateway is not None and self._udp_gateway.is_ready
-        udp_required = self._settings.rva_udp_enabled or (
-            self._settings.legacy_xiaozhi_enabled and self._settings.xiaozhi_udp_enabled
-        )
+        udp_required = self._settings.rva_udp_enabled
         udp_unavailable = udp_required and not udp_ready
         bindings: list[BindingAdvertisement] = []
         profiles: list[str] = []
-        if self._settings.legacy_xiaozhi_enabled:
-            xiaozhi_profiles: tuple[str, ...] = ("wss-opus-v1",)
-            if self._settings.xiaozhi_udp_enabled and udp_ready:
-                xiaozhi_profiles = ("wss-opus-v1", "udp-opus-gcm-v1")
-            bindings.append(
-                BindingAdvertisement(
-                    control_protocol="xiaozhi-control-v1",
-                    public_wss_url=self._settings.worker_public_ws_url,
-                    profiles=xiaozhi_profiles,
-                )
-            )
-            profiles.extend(xiaozhi_profiles)
         if self._settings.rva_enabled:
-            rva_profiles: tuple[str, ...] = ("wss-opus-v2",)
+            rva_profiles: tuple[str, ...] = ("wss-opus-v3",)
             if self._settings.rva_udp_enabled and udp_ready:
-                rva_profiles = ("wss-opus-v2", "udp-opus-gcm-v1")
+                rva_profiles = ("wss-opus-v3", "udp-opus-gcm-v2")
             bindings.append(
                 BindingAdvertisement(
-                    control_protocol="rva-control-v1",
+                    control_protocol="rva-control-v2",
                     public_wss_url=self._settings.rva_public_ws_url,
                     profiles=rva_profiles,
                 )
             )
             profiles.extend(rva_profiles)
         pending_releases = self._registry.pending_lease_releases() if self._registry is not None else ()
+        provider_route_ready = (
+            self._provider_readiness.healthy or not self._settings.provider_readiness_required
+        )
         payload = WorkerHeartbeat(
             worker_id=self._settings.worker_id,
-            public_wss_url=(
-                self._settings.rva_public_ws_url
-                if self._settings.rva_enabled
-                else self._settings.worker_public_ws_url
-            ),
+            public_wss_url=self._settings.rva_public_ws_url,
             active_sessions=self._admission.active_count,
             max_sessions=self._settings.max_sessions,
             draining=self._admission.draining,
-            healthy=self._provider_readiness.healthy and not udp_unavailable,
+            healthy=provider_route_ready and not udp_unavailable,
             profiles=tuple(dict.fromkeys(profiles)),
             bindings=tuple(bindings),
             active_leases=self._registry.active_lease_renewals() if self._registry is not None else (),
@@ -503,18 +490,11 @@ def create_app(
             queue_size=settings.udp_queue_datagrams,
             reorder_wait_seconds=settings.udp_reorder_wait_ms / 1000,
         )
-        if (settings.legacy_xiaozhi_enabled and settings.xiaozhi_udp_enabled) or settings.rva_udp_enabled
+        if settings.rva_udp_enabled
         else None
     )
-    xiaozhi_registry = None
-    if settings.legacy_xiaozhi_enabled:
-        from .bindings.xiaozhi import XiaozhiSessionRegistry
-
-        xiaozhi_registry = XiaozhiSessionRegistry(settings, admission, udp_gateway=udp_gateway)
     rva_registry = RvaSessionRegistry(settings, admission, udp_gateway=udp_gateway)
-    lease_registry = CombinedLeaseRegistry(
-        *(registry for registry in (xiaozhi_registry, rva_registry) if registry is not None)
-    )
+    lease_registry = CombinedLeaseRegistry(rva_registry)
     provider_readiness = ProviderReadiness(settings)
     heartbeat = WorkerHeartbeatLoop(
         settings,
@@ -536,11 +516,8 @@ def create_app(
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         app.state.admission = admission
-        app.state.xiaozhi_session_registry = xiaozhi_registry
         app.state.rva_session_registry = rva_registry
         app.state.udp_media_gateway = udp_gateway
-        # Temporary compatibility for diagnostics that used the legacy state name.
-        app.state.xiaozhi_udp_gateway = udp_gateway
         app.state.worker_heartbeat = heartbeat
         if udp_gateway is not None:
             await udp_gateway.start()
@@ -564,10 +541,7 @@ def create_app(
                 return True
 
             async def close_registries() -> None:
-                registries = [rva_registry.close()]
-                if xiaozhi_registry is not None:
-                    registries.append(xiaozhi_registry.close())
-                await asyncio.gather(*registries)
+                await rva_registry.close()
 
             async def drain_sessions_and_release_leases() -> None:
                 loop = asyncio.get_running_loop()
@@ -635,15 +609,10 @@ def create_app(
     @app.get("/health/ready")
     async def ready() -> JSONResponse:
         udp_ready = udp_gateway is None or udp_gateway.is_ready
-        required_udp_ready = (
-            not settings.legacy_xiaozhi_enabled
-            or settings.xiaozhi_transport_policy != "force_udp_for_test"
-            or udp_ready
-        ) and (not settings.rva_udp_enabled or udp_ready)
+        required_udp_ready = not settings.rva_udp_enabled or udp_ready
         coordination_ready = not settings.director_url or heartbeat.last_success
-        ready_value = (
-            not admission.draining and required_udp_ready and provider_readiness.healthy and coordination_ready
-        )
+        provider_route_ready = provider_readiness.healthy or not settings.provider_readiness_required
+        ready_value = not admission.draining and required_udp_ready and provider_route_ready and coordination_ready
         return JSONResponse(
             status_code=status.HTTP_200_OK if ready_value else status.HTTP_503_SERVICE_UNAVAILABLE,
             content={
@@ -655,14 +624,11 @@ def create_app(
                 "runner": settings.runner,
                 "provider_network_checked": provider_readiness.checked,
                 "provider_network_ready": provider_readiness.healthy,
+                "provider_network_required": settings.provider_readiness_required,
                 "coordination_ready": coordination_ready,
                 "rva_enabled": settings.rva_enabled,
                 "rva_udp_enabled": settings.rva_udp_enabled,
                 "rva_udp_ready": udp_ready if settings.rva_udp_enabled else False,
-                "legacy_xiaozhi_enabled": settings.legacy_xiaozhi_enabled,
-                "xiaozhi_udp_enabled": settings.legacy_xiaozhi_enabled and settings.xiaozhi_udp_enabled,
-                "xiaozhi_udp_ready": udp_ready if settings.legacy_xiaozhi_enabled else False,
-                "xiaozhi_transport_policy": settings.xiaozhi_transport_policy,
             },
         )
 
@@ -679,94 +645,23 @@ def create_app(
             await heartbeat.send_once()
         return {"draining": True}
 
-    if xiaozhi_registry is not None:
-        from .bindings.xiaozhi import resolve_xiaozhi_device_id
-
-        @app.websocket("/v1/xiaozhi")
-        async def xiaozhi(websocket: WebSocket) -> None:
-            device_id = resolve_xiaozhi_device_id(
-                websocket.headers.get("device-id"),
-                websocket.headers.get("client-id"),
-            )
-            verified = authenticator.verify(
-                websocket.headers.get("authorization"),
-                device_id,
-                control_protocol="xiaozhi-control-v1",
-            )
-            if verified is None:
-                _log_websocket_rejected(
-                    settings,
-                    binding="xiaozhi-control-v1",
-                    reason="invalid_credentials",
-                    device_id=device_id,
-                )
-                await websocket.close(code=status.WS_1008_POLICY_VIOLATION, reason="invalid_credentials")
-                return
-            if websocket.headers.get("protocol-version") != "1":
-                _log_websocket_rejected(
-                    settings,
-                    binding="xiaozhi-control-v1",
-                    reason="unsupported_protocol_version",
-                    auth=verified.context,
-                )
-                await websocket.close(code=status.WS_1008_POLICY_VIOLATION, reason="invalid_credentials")
-                return
-            reservation = await xiaozhi_registry.reserve(verified.context)
-            if reservation is None:
-                _log_websocket_rejected(
-                    settings,
-                    binding="xiaozhi-control-v1",
-                    reason="session_overloaded",
-                    auth=verified.context,
-                )
-                await websocket.close(code=1_013, reason="session_overloaded")
-                return
-            try:
-                grant_consumed = await consume_director_grant(verified)
-            except BaseException:
-                await xiaozhi_registry.abort_startup(verified.context, reservation)
-                raise
-            if not grant_consumed:
-                await xiaozhi_registry.release_reservation(reservation)
-                _log_websocket_rejected(
-                    settings,
-                    binding="xiaozhi-control-v1",
-                    reason="grant_rejected",
-                    auth=verified.context,
-                )
-                await websocket.close(code=status.WS_1008_POLICY_VIOLATION, reason="grant_rejected")
-                return
-            try:
-                await websocket.accept()
-            except BaseException:
-                _log_websocket_rejected(
-                    settings,
-                    binding="xiaozhi-control-v1",
-                    reason="accept_failed",
-                    auth=verified.context,
-                )
-                await xiaozhi_registry.abort_startup(verified.context, reservation)
-                raise
-            _log_websocket_accepted(settings, binding="xiaozhi-control-v1", auth=verified.context)
-            await xiaozhi_registry.run(websocket, verified.context, reservation)
-
     if settings.rva_enabled:
 
-        @app.websocket("/v1/voice")
+        @app.websocket("/v2/voice")
         async def rva_voice(websocket: WebSocket) -> None:
             device_id = resolve_device_id(websocket.headers.get("device-id"), websocket.headers.get("client-id"))
             verified = authenticator.verify(
                 websocket.headers.get("authorization"),
                 device_id,
-                control_protocol="rva-control-v1",
+                control_protocol="rva-control-v2",
             )
-            enabled_profiles = {"wss-opus-v2"}
+            enabled_profiles = {"wss-opus-v3"}
             if settings.rva_udp_enabled:
-                enabled_profiles.add("udp-opus-gcm-v1")
+                enabled_profiles.add("udp-opus-gcm-v2")
             if verified is None:
                 _log_websocket_rejected(
                     settings,
-                    binding="rva-control-v1",
+                    binding="rva-control-v2",
                     reason="invalid_credentials",
                     device_id=device_id,
                 )
@@ -775,7 +670,7 @@ def create_app(
             if not enabled_profiles.intersection(verified.context.allowed_profiles):
                 _log_websocket_rejected(
                     settings,
-                    binding="rva-control-v1",
+                    binding="rva-control-v2",
                     reason="no_compatible_profile",
                     auth=verified.context,
                 )
@@ -785,7 +680,7 @@ def create_app(
             if reservation is None:
                 _log_websocket_rejected(
                     settings,
-                    binding="rva-control-v1",
+                    binding="rva-control-v2",
                     reason="session_overloaded",
                     auth=verified.context,
                 )
@@ -800,7 +695,7 @@ def create_app(
                 await rva_registry.release_reservation(reservation)
                 _log_websocket_rejected(
                     settings,
-                    binding="rva-control-v1",
+                    binding="rva-control-v2",
                     reason="grant_rejected",
                     auth=verified.context,
                 )
@@ -811,16 +706,22 @@ def create_app(
             except BaseException:
                 _log_websocket_rejected(
                     settings,
-                    binding="rva-control-v1",
+                    binding="rva-control-v2",
                     reason="accept_failed",
                     auth=verified.context,
                 )
                 await rva_registry.abort_startup(verified.context, reservation)
                 raise
-            _log_websocket_accepted(settings, binding="rva-control-v1", auth=verified.context)
+            _log_websocket_accepted(settings, binding="rva-control-v2", auth=verified.context)
             await rva_registry.run(websocket, verified.context, reservation)
 
     return app
+
+
+def _create_interruption_policy(settings: Settings) -> LayeredInterruptionPolicy:
+    return LayeredInterruptionPolicy(
+        InterruptionPolicyConfig(enabled=settings.interruption_policy_enabled)
+    )
 
 
 def _safe_reason(value: object) -> str | None:

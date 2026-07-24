@@ -1,4 +1,4 @@
-from .binding import AgentControlPort, AudioInputPort, InboundAudioPacket, RvaWssBinding
+from .binding import AgentControlPort, AudioInputPort, ControlEffect, InboundAudioPacket, RvaWssBinding
 from .codec import RvaOpusCodec
 from .protocol import (
     CONTROL_MAX_BYTES,
@@ -20,6 +20,7 @@ __all__ = [
     "AgentControlPort",
     "AudioInputPort",
     "CONTROL_MAX_BYTES",
+    "ControlEffect",
     "InboundAudioPacket",
     "MEDIA_FLAG_AUDIO",
     "MEDIA_HEADER_BYTES",

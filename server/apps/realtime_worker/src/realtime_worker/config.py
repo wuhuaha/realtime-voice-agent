@@ -24,7 +24,6 @@ class Settings(BaseSettings):
         default="development",
         validation_alias=AliasChoices("VOICE_ENV", "VOICE_ENVIRONMENT"),
     )
-    worker_public_ws_url: str = "ws://127.0.0.1:8081/v1/xiaozhi"
     bind_host: str = Field("127.0.0.1", validation_alias=AliasChoices("VOICE_WORKER_BIND_HOST", "VOICE_BIND_HOST"))
     bind_port: int = Field(
         8081,
@@ -56,31 +55,21 @@ class Settings(BaseSettings):
     agent_close_stage_timeout_seconds: float = Field(default=2.0, gt=0, le=10)
     websocket_ping_interval_seconds: float = Field(default=10.0, gt=0, le=60)
     websocket_ping_timeout_seconds: float = Field(default=5.0, gt=0, le=60)
-    xiaozhi_handshake_timeout_seconds: float = Field(default=8.0, gt=0, le=10)
-    xiaozhi_media_queue_frames: int = Field(default=12, ge=4, le=12)
-    xiaozhi_max_opus_bytes: int = Field(default=4096, ge=1275, le=16 * 1024)
-    xiaozhi_queue_timeout_seconds: float = Field(default=0.24, gt=0, le=1)
-    xiaozhi_audio_diagnostics: bool = False
-    xiaozhi_audio_diagnostics_interval_packets: int = Field(default=50, ge=1, le=10_000)
-    legacy_xiaozhi_enabled: bool = False
-    xiaozhi_transport_policy: Literal["auto", "prefer_device", "force_wss", "force_udp_for_test"] = "force_wss"
-    xiaozhi_udp_enabled: bool = False
     udp_bind_host: str = Field(
         default="0.0.0.0",
-        validation_alias=AliasChoices("udp_bind_host", "VOICE_UDP_BIND_HOST", "VOICE_XIAOZHI_UDP_BIND_HOST"),
+        validation_alias=AliasChoices("udp_bind_host", "VOICE_UDP_BIND_HOST"),
     )
     udp_bind_port: int = Field(
         default=8092,
         ge=0,
         le=65535,
-        validation_alias=AliasChoices("udp_bind_port", "VOICE_UDP_BIND_PORT", "VOICE_XIAOZHI_UDP_BIND_PORT"),
+        validation_alias=AliasChoices("udp_bind_port", "VOICE_UDP_BIND_PORT"),
     )
     udp_advertise_host: str = Field(
         default="",
         validation_alias=AliasChoices(
             "udp_advertise_host",
             "VOICE_UDP_ADVERTISE_HOST",
-            "VOICE_XIAOZHI_UDP_ADVERTISE_HOST",
         ),
     )
     udp_advertise_port: int = Field(
@@ -90,7 +79,6 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices(
             "udp_advertise_port",
             "VOICE_UDP_ADVERTISE_PORT",
-            "VOICE_XIAOZHI_UDP_ADVERTISE_PORT",
         ),
     )
     udp_probe_timeout_seconds: float = Field(
@@ -100,7 +88,6 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices(
             "udp_probe_timeout_seconds",
             "VOICE_UDP_PROBE_TIMEOUT_SECONDS",
-            "VOICE_XIAOZHI_UDP_PROBE_TIMEOUT_SECONDS",
         ),
     )
     udp_session_lifetime_seconds: int = Field(
@@ -110,7 +97,6 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices(
             "udp_session_lifetime_seconds",
             "VOICE_UDP_SESSION_LIFETIME_SECONDS",
-            "VOICE_XIAOZHI_UDP_SESSION_LIFETIME_SECONDS",
         ),
     )
     udp_queue_datagrams: int = Field(
@@ -120,7 +106,6 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices(
             "udp_queue_datagrams",
             "VOICE_UDP_QUEUE_DATAGRAMS",
-            "VOICE_XIAOZHI_UDP_QUEUE_DATAGRAMS",
         ),
     )
     udp_reorder_wait_ms: int = Field(
@@ -130,12 +115,11 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices(
             "udp_reorder_wait_ms",
             "VOICE_UDP_REORDER_WAIT_MS",
-            "VOICE_XIAOZHI_UDP_REORDER_WAIT_MS",
         ),
     )
     rva_enabled: bool = True
     rva_udp_enabled: bool = False
-    rva_public_ws_url: str = "ws://127.0.0.1:8081/v1/voice"
+    rva_public_ws_url: str = "ws://127.0.0.1:8081/v2/voice"
     rva_input_queue_packets: int = Field(default=8, ge=1, le=64)
     rva_output_queue_items: int = Field(default=12, ge=4, le=64)
     rva_queue_timeout_seconds: float = Field(default=0.2, gt=0, le=1)
@@ -143,10 +127,16 @@ class Settings(BaseSettings):
     rva_runner_timeout_seconds: float = Field(default=5.0, gt=0, le=30)
     rva_close_timeout_seconds: float = Field(default=5.0, gt=0, le=30)
     rva_playback_prebuffer_packets: int = Field(default=4, ge=0, le=8)
+    provider_readiness_required: bool = Field(
+        default=False,
+        validation_alias=AliasChoices("VOICE_PROVIDER_READINESS_REQUIRED", "PROVIDER_READINESS_REQUIRED"),
+    )
 
     runner: Literal["deterministic", "livekit"] = "deterministic"
     agent_profile: str = "default"
     vad_activation_threshold: float = Field(default=0.6, ge=0.1, le=0.9)
+    agent_interruption_min_duration_seconds: float = Field(default=1.2, ge=0.1, le=3.0)
+    interruption_policy_enabled: bool = True
     deepseek_api_key: SecretStr | None = Field(
         default=None,
         validation_alias=AliasChoices("VOICE_LLM_API_KEY", "VOICE_DEEPSEEK_API_KEY"),
@@ -227,31 +217,20 @@ class Settings(BaseSettings):
             raise ValueError("VOICE_HEARTBEAT_ENABLED must be true when VOICE_DIRECTOR_URL is configured")
         if self.environment == "production" and not self.director_url:
             raise ValueError("production requires VOICE_DIRECTOR_URL")
-        if not self.rva_enabled and not self.legacy_xiaozhi_enabled:
-            raise ValueError("at least one control binding must be enabled")
-        if self.legacy_xiaozhi_enabled:
-            public_ws_url = urlsplit(self.worker_public_ws_url)
-            if public_ws_url.scheme not in {"ws", "wss"} or not public_ws_url.hostname:
-                raise ValueError("VOICE_WORKER_PUBLIC_WS_URL must be an absolute ws:// or wss:// URL")
-            if public_ws_url.path != "/v1/xiaozhi" or public_ws_url.query or public_ws_url.fragment:
-                raise ValueError("VOICE_WORKER_PUBLIC_WS_URL must use the canonical /v1/xiaozhi path")
-            if self.environment == "production" and public_ws_url.scheme != "wss":
-                raise ValueError("production requires VOICE_WORKER_PUBLIC_WS_URL to use wss://")
+        if self.environment == "production" and not self.provider_readiness_required:
+            raise ValueError("production requires VOICE_PROVIDER_READINESS_REQUIRED=true")
+        if not self.rva_enabled:
+            raise ValueError("VOICE_RVA_ENABLED must remain true for the v2 worker")
         if self.rva_enabled:
             rva_public_ws_url = urlsplit(self.rva_public_ws_url)
             if rva_public_ws_url.scheme not in {"ws", "wss"} or not rva_public_ws_url.hostname:
                 raise ValueError("VOICE_RVA_PUBLIC_WS_URL must be an absolute ws:// or wss:// URL")
-            if rva_public_ws_url.path != "/v1/voice" or rva_public_ws_url.query or rva_public_ws_url.fragment:
-                raise ValueError("VOICE_RVA_PUBLIC_WS_URL must use the canonical /v1/voice path")
+            if rva_public_ws_url.path != "/v2/voice" or rva_public_ws_url.query or rva_public_ws_url.fragment:
+                raise ValueError("VOICE_RVA_PUBLIC_WS_URL must use the canonical /v2/voice path")
             if self.environment == "production" and rva_public_ws_url.scheme != "wss":
                 raise ValueError("production requires VOICE_RVA_PUBLIC_WS_URL to use wss://")
-        if self.xiaozhi_udp_enabled and not self.legacy_xiaozhi_enabled:
-            raise ValueError("VOICE_XIAOZHI_UDP_ENABLED requires VOICE_LEGACY_XIAOZHI_ENABLED=true")
-        udp_enabled = (self.legacy_xiaozhi_enabled and self.xiaozhi_udp_enabled) or self.rva_udp_enabled
-        if udp_enabled and not self.udp_advertise_host:
+        if self.rva_udp_enabled and not self.udp_advertise_host:
             raise ValueError("VOICE_UDP_ADVERTISE_HOST is required when UDP is enabled")
-        if self.xiaozhi_transport_policy == "force_udp_for_test" and not self.xiaozhi_udp_enabled:
-            raise ValueError("force_udp_for_test requires VOICE_XIAOZHI_UDP_ENABLED=true")
         if self.runner != "livekit":
             return
         self.require_worker()

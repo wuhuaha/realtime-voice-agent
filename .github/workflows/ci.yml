@@ -16,10 +16,7 @@ jobs:
         with:
           enable-cache: true
       - run: uv sync --locked --dev
-      - run: >-
-          uv run ruff check scripts tests firmware/tools
-          firmware/targets/lichuang-dev/scripts
-          firmware/targets/lichuang-dev/tests
+      - run: uv run ruff check scripts tests firmware/tools
       - run: uv run pytest
       - run: uv run python scripts/verify_repository.py
       - run: uv run python scripts/check_secrets.py
@@ -178,26 +175,3 @@ jobs:
           idf.py -B build-ci size
           test -s build-ci/rva_voice_terminal.bin
       # Build/size proves toolchain reproducibility only; target-board HIL remains a release gate.
-
-  legacy-firmware-rollback-contracts:
-    runs-on: windows-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v6
-        with:
-          enable-cache: true
-      - run: uv sync --locked --dev
-      - name: Parse rollback PowerShell scripts
-        shell: pwsh
-        run: |
-          $errors = @()
-          Get-ChildItem firmware/targets/lichuang-dev -Recurse -Filter *.ps1 | ForEach-Object {
-            [void][Management.Automation.Language.Parser]::ParseFile($_.FullName, [ref]$null, [ref]$errors)
-          }
-          if ($errors.Count -gt 0) { $errors | Format-List; exit 1 }
-      - name: Verify optional Xiaozhi rollback inputs
-        shell: pwsh
-        run: ./firmware/targets/lichuang-dev/scripts/materialize-upstream.ps1 -VerifyInputsOnly
-      - name: Verify ignored rollback configuration handling
-        shell: pwsh
-        run: ./firmware/targets/lichuang-dev/scripts/test-assert-generated-config-contract.ps1

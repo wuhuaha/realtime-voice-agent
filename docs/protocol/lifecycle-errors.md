@@ -1,7 +1,7 @@
 # Session 生命周期与错误语义
 
 状态：accepted
-更新日期：2026-07-22
+更新日期：2026-07-23
 
 ## 1. 状态机
 
@@ -27,7 +27,7 @@ stateDiagram-v2
 | Phase | 必须有界 | 超时结果 |
 | --- | --- | --- |
 | bootstrap/grant | HTTP client deadline | 不创建 Worker session，退避后重试 |
-| WSS connect/hello | connect + handshake timeout | close，best-effort release 当前精确 lease，fresh bootstrap |
+| WSS connect/session.open | connect + handshake timeout | close，best-effort release 当前精确 lease，fresh bootstrap |
 | UDP probe | grant `probe_timeout_ms` | close整个 session，fresh bootstrap |
 | Agent startup | session start timeout | close `runtime_failure` |
 | media queue put | 小于可接受 media age | drop/live-edge 或 `media_overloaded` |
@@ -36,7 +36,8 @@ stateDiagram-v2
 
 ## 3. WebSocket close 映射
 
-Core v1 不定义额外 error JSON；使用标准 close code 和有限 ASCII reason：
+`rva-control-v2` 的 `session.error` 只报告有界、分类后的 session 错误；连接 terminal 仍使用标准 close code 和有限
+ASCII reason：
 
 | Code | Reason 类别 | 示例 |
 | ---: | --- | --- |
@@ -69,7 +70,7 @@ reason 必须稳定且有限。
 - `session_epoch/fencing_token` 防止跨 Worker/route 的旧 owner。
 - `connection_generation` 防止 ESP32 旧 callback 使用新 WebSocket owner。
 - UDP `media_epoch + sequence + AEAD` 防止旧 session/replay datagram。
-- playback `generation` 防止 abort 后旧 TTS 恢复。
+- Server-owned playback `generation + fence_generation` 防止 stop 后旧 TTS 恢复；uplink generation 固定 0。
 
 四层 fence 各自解决不同生命周期，不得互相替代。
 
@@ -87,6 +88,7 @@ Start` 表示新 session，不允许在已 teardown 的 WebSocket owner 或旧 g
 
 ## 7. 验证
 
-必须覆盖 malformed/duplicate/oversize/wrong-session、expired/replayed grant、UDP auth/replay/source、abort race、
-disconnect during handshake、double close、drain deadline 和 cancellation storm。软件、真实进程、设备和声学
+必须覆盖 malformed/duplicate/oversize/wrong-session、expired/replayed grant、UDP auth/replay/source、exact-target
+stop/fence race、cancel request idempotency、disconnect during handshake、double close、drain deadline 和 cancellation
+storm。软件、真实进程、设备和声学
 证据分级记录在 [Release readiness](../quality/release-readiness.md)，旧 artifact 不升级为当前版本证据。

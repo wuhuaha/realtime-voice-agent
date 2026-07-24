@@ -116,6 +116,19 @@ ConfigResult DeviceConfig::ParseEndpoint(const std::string& url, EndpointSnapsho
 
     const size_t authority_start = scheme_end + 3;
     const size_t authority_end = url.find_first_of("/?", authority_start);
+    if (authority_end == std::string::npos || url[authority_end] == '?') {
+        return ConfigResult::kInvalidArgument;
+    }
+    const size_t query = url.find('?', authority_end);
+    if (query != std::string::npos) {
+        return ConfigResult::kInvalidArgument;
+    }
+    const std::string_view path = std::string_view(url).substr(authority_end);
+    const bool websocket = scheme == "ws" || scheme == "wss";
+    if ((websocket && path != "/v2/voice") ||
+        (!websocket && path != "/v1/session/bootstrap")) {
+        return ConfigResult::kInvalidArgument;
+    }
     const std::string_view authority = std::string_view(url).substr(
         authority_start,
         authority_end == std::string::npos ? std::string::npos : authority_end - authority_start);
@@ -220,7 +233,11 @@ ConfigResult DeviceConfig::ResolveEndpoint(
                     }
                 }
             }
-            return ConfigResult::kOk;
+            if (!snapshot->token.empty() || provisioned.empty()) {
+                return ConfigResult::kOk;
+            }
+            // 换网或换 Director 后，NVS 可能仍保存着旧 endpoint。旧 origin 无法绑定当前
+            // provisioned token 时，不应阻塞默认配置启动；继续尝试编译期 provisioned endpoint。
         }
     }
 

@@ -53,14 +53,15 @@ def test_run_local_assigns_unique_worker_and_udp_ports() -> None:
     assert "$WorkerBasePort + $index" in content
     assert "$UdpBasePort + $index" in content
     assert "VOICE_WORKER_ID" in content
-    assert "VOICE_WORKER_PUBLIC_WS_URL" in content
     assert "VOICE_UDP_BIND_PORT" in content
     assert "VOICE_UDP_ADVERTISE_PORT" in content
     assert "VOICE_RVA_PUBLIC_WS_URL" in content
     assert "-WindowStyle Hidden" in content
     assert "server-processes.json" in content
     assert "VOICE_WORKER_BIND_HOST = $WorkerBindHost" in content
-    assert "VOICE_WORKER_PUBLIC_WS_URL" in content
+    assert "$publicRvaUriBuilder = [UriBuilder]$PublicRvaUri" in content
+    assert "$publicRvaUriBuilder.Port = $workerPort" in content
+    assert "$workerOverrides.VOICE_RVA_PUBLIC_WS_URL = $publicRvaUriBuilder.Uri.AbsoluteUri" in content
     assert "Wait-LocalHealth" in content
     assert "[int]$TimeoutSeconds = 60" in content
     assert "Write-Utf8NoBom" in content

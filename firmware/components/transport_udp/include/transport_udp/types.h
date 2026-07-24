@@ -8,7 +8,7 @@
 
 namespace rva::udp {
 
-namespace wire = voice::contracts::udp_v1;
+namespace wire = voice::contracts::udp_v2;
 
 inline constexpr size_t kAes128KeyBytes = 16;
 using Aes128Key = std::array<uint8_t, kAes128KeyBytes>;
@@ -37,7 +37,7 @@ struct SessionGrant final {
     Endpoint server;
     wire::MediaId media_id{};
     uint32_t media_epoch = 0;
-    uint32_t initial_generation = 1;
+    uint32_t initial_downlink_generation = 1;
     Aes128Key uplink_key{};
     Aes128Key downlink_key{};
     wire::DirectionalSalt uplink_salt{};

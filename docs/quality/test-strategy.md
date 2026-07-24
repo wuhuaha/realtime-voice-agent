@@ -1,7 +1,7 @@
 # 测试策略
 
 状态：accepted
-更新日期：2026-07-22
+更新日期：2026-07-23
 
 ## 1. 证据词汇
 
@@ -46,8 +46,6 @@
 - Provider fake server 的 streaming、metadata、timeout、429/5xx 和 malformed response。
 - 默认 [native target](../../firmware/apps/voice_terminal/README.md) 验证 composition/source/config/secret contract；artifact identity
   绑定 source revision、ESP-IDF/target、sdkconfig input、partition table、font/generated asset 与 component lock digest。
-- 仅显式启用 [legacy compatibility target](../../firmware/targets/lichuang-dev/README.md) 时验证 pinned source、overlay digest/
-  round-trip、generated config 和 secret boundary。
 
 ### Integration
 
@@ -66,13 +64,11 @@
 
 - 显式启用的 FunASR、LLM、TTS smoke；记录 provider/model/region/config 和 redacted request id。
 - 不进入默认 CI，不输出 API key、原始 provider body 或用户音频。
-- 兼容实现的 provider 闭环只作 baseline；当前支持的端云组合必须重跑。
 
 ### Firmware build/HIL
 
 - 默认 native target 固定 ESP-IDF、target、source revision、sdkconfig input、partition table、font/generated asset 与
   component lock identity；native artifact 不以 compatibility overlay digest 标识。
-- legacy compatibility target 仅显式运行，固定 pinned source 与 overlay digest，并通过 overlay round-trip。
 - clean build、size、artifact SHA-256。
 - 确认目标设备与串口并获得授权后才 flash；记录 flash 命令、boot log 和 artifact identity。
 - WSS/UDP、UI/NVS、AEC、字幕、打断、音量、网络切换、Server restart 分项验收。
@@ -112,8 +108,7 @@ double-talk 和连续 20 轮。采集误唤醒、漏检、ASR CER/人工转写�
 
 1. Ruff/pytest/repository/contract 全部通过，无 skipped 被写成 passed。
 2. Director memory 与 Redis adapter 测试分开，生产水平扩展必须有 Redis 证据。
-3. 默认 native target 的 clean build/size、composition/source/config/secret contract 与完整 artifact identity 通过；显式
-   legacy compatibility target 另行通过 overlay digest/round-trip 门禁，不能替代 native 证据。
+3. 默认 native target 的 clean build/size、composition/source/config/secret contract 与完整 artifact identity 通过。
 4. 最终 artifact WSS baseline 完成真机 real-provider 闭环。
 5. UDP 只有通过 HIL、安全、弱网和长稳才可进入 `auto`；否则保持显式 challenger。
 6. 20 轮、30 分钟、网络切换、Server restart 和 AEC/double-talk 完成或有批准 waiver。

@@ -1,6 +1,6 @@
 # 本地开发
 
-更新日期：2026-07-21
+更新日期：2026-07-23
 
 ## 1. 前置条件
 
@@ -13,7 +13,7 @@
 
 ```powershell
 Copy-Item .env.example .env
-./scripts/bootstrap.ps1 -SkipFirmware
+./scripts/bootstrap.ps1
 ./scripts/verify.ps1
 ```
 
@@ -54,8 +54,6 @@ idf.py size
 Wi-Fi、Director URL 和 bootstrap token 使用 local Kconfig/build input，不进入 tracked defaults。配置改变后重新
 configure/build，不能复用不匹配的 `sdkconfig`。烧录需要明确目标端口；记录 source identity、artifact digest、
 board、IDF、命令和观察范围。
-
-`firmware/targets/lichuang-dev` 只用于显式 compatibility/rollback，不接受 native 新功能，也不参与默认验证或发布。
 
 ## 5. 最小开发顺序
 

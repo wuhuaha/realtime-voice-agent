@@ -1,6 +1,0 @@
-{
-  "Authorization": "Bearer <XIAOZHI_LAB_TOKEN>",
-  "Protocol-Version": "1",
-  "Device-Id": "<physical-wifi-mac>",
-  "Client-Id": "<board-uuid>"
-}

@@ -7,7 +7,7 @@ namespace {
 
 constexpr uint8_t kMagic0 = 0x56;
 constexpr uint8_t kMagic1 = 0x41;
-constexpr uint8_t kWireVersion = 1;
+constexpr uint8_t kWireVersion = 2;
 constexpr uint8_t kKnownFlags = 0x01 | 0x02 | 0x04;
 
 uint32_t ReadU32(const uint8_t* value) {
@@ -32,8 +32,10 @@ MediaError Validate(const MediaHeader& header, MediaDirection direction) {
     if (header.media_epoch == 0) {
         return MediaError::kInvalidIdentity;
     }
+    const bool audio = header.flags == 0x01;
     if ((direction == MediaDirection::kUplink && header.generation != 0) ||
-        (direction == MediaDirection::kDownlink && header.generation == 0)) {
+        (direction == MediaDirection::kDownlink &&
+         (audio ? header.generation == 0 : header.generation != 0))) {
         return MediaError::kInvalidGeneration;
     }
     if (header.payload_length > kWssMaxPayloadBytes) {

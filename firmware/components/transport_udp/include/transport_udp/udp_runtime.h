@@ -42,8 +42,7 @@ public:
     bool Start();
     bool SendProbe();
     bool SendKeepalive();
-    bool SendAudio(const uint8_t* opus, size_t opus_size,
-                   uint32_t timestamp, uint32_t generation);
+    bool SendAudio(const uint8_t* opus, size_t opus_size, uint32_t timestamp);
     bool FenceGeneration(uint32_t generation);
     bool AdvanceGeneration(uint32_t generation);
     bool PollPlayout(PlayoutFrame* frame);

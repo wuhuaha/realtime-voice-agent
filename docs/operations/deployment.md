@@ -1,7 +1,7 @@
 # 部署指南
 
 状态：目标生产拓扑；执行前须满足 release gate
-更新日期：2026-07-22
+更新日期：2026-07-24
 
 ## 0. Linux 单机交付基线
 
@@ -116,8 +116,8 @@ Director 可多副本无会话媒体状态；Worker 是 stateful realtime unit�
 
 ### Worker
 
-- 唯一 `VOICE_WORKER_ID` 和可达 `VOICE_WORKER_PUBLIC_WS_URL`。
-- 生产 `VOICE_WORKER_PUBLIC_WS_URL` 必须为 `wss://`；`ws://` 只允许受控开发环境。
+- 唯一 `VOICE_WORKER_ID` 和可达 `VOICE_RVA_PUBLIC_WS_URL`。
+- 生产 `VOICE_RVA_PUBLIC_WS_URL` 必须为 `wss://` 且 path 为 `/v2/voice`；`ws://` 只允许受控开发环境。
 - `VOICE_WORKER_MAX_SESSIONS` 默认 `5`，部署可覆盖；不是测量 SLO。
 - `VOICE_DIRECTOR_URL`、heartbeat enabled/interval 和相同 signing/internal secret version。
 - `VOICE_SHUTDOWN_DRAIN_TIMEOUT_SECONDS` 控制关停总预算，默认 10 秒；部署 orchestrator 的 termination grace period
@@ -176,12 +176,15 @@ Active turn 不迁移。设备在关闭后 fresh bootstrap，新 Worker 使用�
 
 ## 8. 回滚
 
-保留前一 Server image、protocol/profile allow-list、firmware artifact identity 和数据库/Redis key version。Server
-回滚不得改变已发布 v1 wire；必要时先 drain 新 Worker，再恢复旧 Worker。Firmware 回滚必须验证 NVS 兼容，
-不得擦除用户配置作为默认回滚步骤。
+保留前一 Server image、protocol/profile allow-list、firmware artifact identity 和数据库/Redis key version。回滚只能
+恢复彼此匹配并通过门禁的 v2 Server/Firmware artifact；不得用 v1 wire 或仅单边回滚制造不兼容组合。必要时先 drain
+新 Worker，再恢复旧 Worker。Firmware 回滚必须验证 NVS 兼容，不得擦除用户配置作为默认回滚步骤。
 
 ## 9. 当前发布状态
 
 当前版本尚未通过正式 release gate。目标环境必须提供 HTTPS/WSS、受信域名/证书、secret manager、入口限流、
 Redis durability/HA 策略和可观测性；临时主机地址、端口和本地 `.env` 不进入 Product 文档或 Git。精确门禁见
 [Release readiness](../quality/release-readiness.md)。
+
+设备 HIL 与持续联调应始终使用稳定的公网 bootstrap origin，并通过 provisioning/受控配置绑定 credential；不得随
+开发者本机网络变化反复重编固件。真实域名、主机 inventory、网络凭据和 token 只保存在受控部署资产中。

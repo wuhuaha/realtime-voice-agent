@@ -1,0 +1,47 @@
+{
+  "profile": "udp-opus-gcm-v2",
+  "wire_version": 2,
+  "notice": "Public deterministic test material only. Never use these keys or salts in deployment.",
+  "vectors": [
+    {
+      "id": "reject-bad-magic",
+      "reject_stage": "parser",
+      "datagram_hex": "554102010123456789abcdef1020304000000001000003c00000000000000003bdfd8e52602900f9790d756806e4cab14fde8d"
+    },
+    {
+      "id": "reject-wire-version-1",
+      "reject_stage": "parser",
+      "datagram_hex": "564101010123456789abcdef1020304000000001000003c00000000000000003bdfd8e52602900f9790d756806e4cab14fde8d"
+    },
+    {
+      "id": "reject-payload-length-mismatch",
+      "reject_stage": "parser",
+      "datagram_hex": "564102010123456789abcdef1020304000000001000003c00000000000000004bdfd8e52602900f9790d756806e4cab14fde8d"
+    },
+    {
+      "id": "reject-zero-media-epoch",
+      "reject_stage": "parser",
+      "datagram_hex": "564102010123456789abcdef0000000000000001000003c00000000000000003bdfd8e52602900f9790d756806e4cab14fde8d"
+    },
+    {
+      "id": "reject-aad-generation-tamper",
+      "reject_stage": "authentication",
+      "datagram_hex": "564102010123456789abcdef1020304000000001000003c00000000200000003bdfd8e52602900f9790d756806e4cab14fde8d"
+    },
+    {
+      "id": "reject-tag-tamper",
+      "reject_stage": "authentication",
+      "datagram_hex": "564102010123456789abcdef1020304000000001000003c00000000000000003bdfd8e52602900f9790d756806e4cab14fde8c"
+    },
+    {
+      "id": "reject-authenticated-uplink-nonzero-generation",
+      "reject_stage": "generation",
+      "datagram_hex": "564102010123456789abcdef1020304000000001000003c00000000100000003bdfd8e079d8aa4ac6454aede1322536cb534ce"
+    },
+    {
+      "id": "reject-authenticated-probe-ack-nonzero-generation",
+      "reject_stage": "generation",
+      "datagram_hex": "564102040123456789abcdef1020304000000000000000000000000100000000c6c006c55f33513f6a3f3e9325764f92"
+    }
+  ]
+}

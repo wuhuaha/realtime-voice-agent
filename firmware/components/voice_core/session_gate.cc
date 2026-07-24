@@ -6,10 +6,9 @@ namespace {
 
 bool OwnerMatchesProfile(contracts::TransportProfile profile, MediaOwner owner) {
     switch (profile) {
-        case contracts::TransportProfile::kWssOpusV1:
-        case contracts::TransportProfile::kWssOpusV2:
+        case contracts::TransportProfile::kWssOpusV3:
             return owner == MediaOwner::kWss;
-        case contracts::TransportProfile::kUdpOpusGcmV1:
+        case contracts::TransportProfile::kUdpOpusGcmV2:
             return owner == MediaOwner::kUdp;
     }
     return false;

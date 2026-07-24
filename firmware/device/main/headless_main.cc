@@ -34,7 +34,7 @@ extern "C" void app_main() {
     voice::core::SessionGate gate;
     assert(gate.BeginFreshSession(1));
     assert(gate.CommitMedia(
-        voice::contracts::TransportProfile::kWssOpusV1,
+        voice::contracts::TransportProfile::kWssOpusV3,
         voice::core::MediaOwner::kWss));
     assert(gate.AdvancePlaybackGeneration(1));
     assert(gate.BeginClose());
@@ -44,14 +44,14 @@ extern "C" void app_main() {
     voice::core::Session session(ports, ports, ports);
     assert(session.BeginFreshSession(1));
     const auto owner = session.CommitHello(
-        1, voice::contracts::TransportProfile::kUdpOpusGcmV1,
+        1, voice::contracts::TransportProfile::kUdpOpusGcmV2,
         voice::core::MediaOwner::kUdp);
     assert(owner);
     assert(session.SendControl(*owner, "{}"));
     assert(session.RequestClose(*owner));
     assert(session.FinishClose(1));
 
-    namespace udp = voice::contracts::udp_v1;
+    namespace udp = voice::contracts::udp_v2;
     udp::Header header;
     header.type = udp::DatagramType::kKeepalive;
     header.media_epoch = 1;

@@ -1,6 +1,6 @@
 # 凭据管理
 
-更新日期：2026-07-20
+更新日期：2026-07-23
 
 ## 1. 原则
 
@@ -40,8 +40,7 @@ gateway/endpoint policy，不能把未被 Settings 消费的自造变量当作�
 生成配置头、sdkconfig、binary 可能含部署 secret，均视为敏感 artifact，不提交或公开分发。设备 NVS token 按
 WebSocket origin 绑定；endpoint origin 变化时清除旧 token。
 
-`firmware/targets/lichuang-dev/.env.local` 中的 `XIAOZHI_*` 字段只服务显式 compatibility/rollback 构建，不是
-native 配置接口，也不得被主线脚本或文档示例消费。
+Current firmware 不提供 legacy compatibility 配置入口；任何历史字段不得被主线脚本、文档示例或运行时消费。
 
 ## 4. Runtime 短期材料
 
@@ -60,8 +59,7 @@ Copy-Item .env.example .env
 ```
 
 Firmware 开发值通过 `menuconfig` 或 ignored `sdkconfig.local` 注入。填值后运行 repository/secret checks。不得使用
-`git add .`；提交前检查 staged diff 和 staged secret scan。Compatibility target 的本地模板只在执行回滚演练时
-按其 README 单独创建。
+`git add .`；提交前检查 staged diff 和 staged secret scan。
 
 ## 6. 轮换
 

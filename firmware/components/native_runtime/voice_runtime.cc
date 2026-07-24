@@ -42,7 +42,13 @@ constexpr uint32_t kPlaybackTaskStackBytes = 20 * 1024;
 constexpr uint32_t kWebsocketTeardownStackBytes = 6 * 1024;
 constexpr uint32_t kWebsocketCloseTimeoutMs = 1000;
 constexpr uint32_t kWebsocketTeardownTimeoutMs = 1500;
-constexpr int64_t kResponseDrainGraceUs = 180000;
+// UDP media keeps the control WebSocket mostly idle while audio is flowing on
+// the datagram path. A 10 s transport timeout is too close to normal Chinese
+// TTS durations and caused the ESP client to disconnect near the end of long
+// replies, which then made the auto-start loop reopen the session. Keep this
+// comfortably above the server heartbeat/idle contract.
+constexpr int kWebsocketNetworkTimeoutMs = 60000;
+constexpr int kWebsocketPingIntervalSec = 10;
 constexpr size_t kDecodedSamplesPerFrame = 960;
 constexpr size_t kNominalResampledSamplesPerFrame = 1440;
 constexpr size_t kMaximumResampledSamplesPerFrame = 4096;
@@ -79,11 +85,10 @@ bool VoiceRuntime::Start(
     udp_heartbeat_interval_us_ = 0;
     udp_liveness_timeout_us_ = 0;
     udp_next_keepalive_us_ = 0;
-    response_end_deadline_us_ = 0;
     fallback_to_wss_ = false;
     wss_playback_queue_dropped_ = 0;
     media_started_ = false;
-    response_gate_.Reset();
+    playback_state_.Reset();
     expected_session_epoch_ = grant.session_epoch;
     std::array<char, 24> request{};
     std::snprintf(request.data(), request.size(), "open-%08lx", static_cast<unsigned long>(esp_random()));
@@ -101,8 +106,8 @@ bool VoiceRuntime::Start(
     websocket.uri = grant.worker_wss_url.c_str();
     websocket.headers = authorization_headers_.c_str();
     websocket.disable_auto_reconnect = true;
-    websocket.network_timeout_ms = 10000;
-    websocket.ping_interval_sec = 15;
+    websocket.network_timeout_ms = kWebsocketNetworkTimeoutMs;
+    websocket.ping_interval_sec = kWebsocketPingIntervalSec;
     websocket.buffer_size = 2048;
     if (grant.worker_wss_url.rfind("wss://", 0) == 0) websocket.crt_bundle_attach = esp_crt_bundle_attach;
     esp_websocket_client_handle_t handle = esp_websocket_client_init(&websocket);
@@ -359,6 +364,11 @@ void VoiceRuntime::RunSupervisor() {
     uint32_t observed_udp_media_age_dropped = 0;
     uint32_t observed_wss_queue_dropped = 0;
     while (running_) {
+        if (!DrainPlaybackFacts()) {
+            events_.OnFailure("playback_fact_send");
+            running_ = false;
+            continue;
+        }
         const uint32_t dropped_events = owner_->dropped_events();
         if (dropped_events != observed_dropped_events) {
             observed_dropped_events = dropped_events;
@@ -438,6 +448,9 @@ void VoiceRuntime::RunSupervisor() {
             if (event.type == wss::ClientEventType::kBinaryFragment) HandleMedia(frame);
         }
     }
+    if (!DrainPlaybackFacts()) {
+        events_.OnFailure("playback_fact_send");
+    }
     ESP_LOGI(kLogTag, "supervisor task minimum free stack: %lu bytes",
              static_cast<unsigned long>(uxTaskGetStackHighWaterMark(nullptr)));
     MarkTaskStopped(kSupervisorStopped);
@@ -454,7 +467,7 @@ void VoiceRuntime::HandleControl(const std::vector<uint8_t>& frame) {
     if (const auto* opened = std::get_if<protocol::SessionOpened>(&message)) {
         const auto core_profile = voice::contracts::ParseTransportProfile(opened->selected_media_profile);
         const voice::core::MediaOwner selected_owner =
-            opened->selected_media_profile == "udp-opus-gcm-v1"
+            opened->selected_media_profile == "udp-opus-gcm-v2"
                 ? voice::core::MediaOwner::kUdp
                 : voice::core::MediaOwner::kWss;
         if (opened->session.session_epoch != expected_session_epoch_ ||
@@ -506,51 +519,43 @@ void VoiceRuntime::HandleControl(const std::vector<uint8_t>& frame) {
         running_ = false;
     } else if (const auto* transcript = std::get_if<protocol::Transcript>(&message)) {
         events_.OnTranscript(transcript->text.c_str(), transcript->final);
-        if (transcript->final && !response_gate_.active()) {
+        if (transcript->final && !playback_enabled_.load()) {
             events_.OnConversationPhase(ConversationPhase::kThinking);
         }
     } else if (const auto* response = std::get_if<protocol::ResponseEvent>(&message)) {
-        if (response->type == protocol::ServerMessageType::kResponseBegin &&
-            !core_gate_.AdvancePlaybackGeneration(response->generation)) {
-            events_.OnFailure("playback_generation");
-            running_ = false;
-        } else if (response->type == protocol::ServerMessageType::kResponseBegin) {
-            std::lock_guard<std::mutex> lock(playback_mutex_);
-            if (udp_runtime_ != nullptr && !udp_runtime_->AdvanceGeneration(response->generation)) {
-                events_.OnFailure("udp_generation");
+        const protocol::ResponseTarget target{
+            response->response_id,
+            response->generation,
+        };
+        if (response->type == protocol::ServerMessageType::kResponseBegin) {
+            if (!core_gate_.AdvancePlaybackGeneration(response->generation) ||
+                !EnqueuePlaybackCommand(PlaybackCommandType::kBegin, target, 0)) {
+                events_.OnFailure("playback_generation");
                 running_ = false;
             } else {
-                playback_generation_ = response->generation;
-            }
-            if (running_) {
-                response_end_deadline_us_ = 0;
-                response_gate_.Begin(response->response_id, response->generation);
-                playback_enabled_ = true;
                 events_.OnConversationPhase(ConversationPhase::kSpeaking);
             }
-        } else if (response->type == protocol::ServerMessageType::kResponseCancelled) {
-            std::lock_guard<std::mutex> lock(playback_mutex_);
-            if (playback_queue_ != nullptr) xQueueReset(playback_queue_);
-            if (response->generation == UINT32_MAX ||
-                (udp_runtime_ != nullptr && !udp_runtime_->FenceGeneration(response->generation + 1))) {
-                events_.OnFailure("cancel_generation");
+        } else if (response->type == protocol::ServerMessageType::kResponseEnd &&
+                   response->outcome == protocol::ResponseOutcome::kCompleted) {
+            if (!response->final_media_sequence.has_value() ||
+                !EnqueuePlaybackCommand(
+                    PlaybackCommandType::kComplete,
+                    target,
+                    *response->final_media_sequence)) {
+                events_.OnFailure("playback_completion");
                 running_ = false;
-            } else {
-                playback_generation_ = response->generation + 1;
             }
-            playback_enabled_ = false;
-            response_end_deadline_us_ = 0;
-            response_gate_.End();
-        }
-        if (response->type == protocol::ServerMessageType::kResponseEnd) {
-            std::lock_guard<std::mutex> lock(playback_mutex_);
-            response_gate_.End();
-            response_end_deadline_us_ = esp_timer_get_time() + kResponseDrainGraceUs;
-        } else if (response->type == protocol::ServerMessageType::kResponseCancelled) {
-            events_.OnConversationPhase(ConversationPhase::kListening);
         }
         if (response->type == protocol::ServerMessageType::kResponseText) {
             events_.OnResponseText(response->text.c_str());
+        }
+    } else if (const auto* stop = std::get_if<protocol::PlaybackStop>(&message)) {
+        if (!EnqueuePlaybackCommand(
+                PlaybackCommandType::kStop,
+                stop->target,
+                stop->fence_generation)) {
+            events_.OnFailure("playback_stop_queue");
+            running_ = false;
         }
     } else if (std::holds_alternative<protocol::SessionClose>(message)) {
         running_ = false;
@@ -577,6 +582,7 @@ void VoiceRuntime::HandleMedia(const std::vector<uint8_t>& frame) {
     }
     MediaPacket packet;
     packet.size = static_cast<uint16_t>(header.payload_length);
+    packet.sequence = header.sequence;
     packet.generation = header.generation;
     std::memcpy(packet.bytes.data(), frame.data() + protocol::kMediaHeaderBytes, packet.size);
     if (xQueueSend(playback_queue_, &packet, 0) != pdTRUE) {
@@ -591,13 +597,139 @@ void VoiceRuntime::HandleMedia(const std::vector<uint8_t>& frame) {
     }
 }
 
+bool VoiceRuntime::EnqueuePlaybackCommand(
+    PlaybackCommandType type,
+    const protocol::ResponseTarget& target,
+    uint32_t value) {
+    if (playback_command_queue_ == nullptr || target.response_id.empty() ||
+        target.response_id.size() > protocol::kMaxIdBytes || target.generation == 0) {
+        return false;
+    }
+    PlaybackCommand command{
+        .type = type,
+        .generation = target.generation,
+        .value = value,
+    };
+    std::memcpy(
+        command.response_id.data(), target.response_id.data(), target.response_id.size());
+    return xQueueSend(playback_command_queue_, &command, pdMS_TO_TICKS(20)) == pdTRUE;
+}
+
+bool VoiceRuntime::ProcessPlaybackCommands() {
+    if (playback_command_queue_ == nullptr) return false;
+    PlaybackCommand command;
+    while (xQueueReceive(playback_command_queue_, &command, 0) == pdTRUE) {
+        const protocol::ResponseTarget target{
+            command.response_id.data(),
+            command.generation,
+        };
+        std::optional<PlaybackFact> fact;
+        if (command.type == PlaybackCommandType::kBegin) {
+            if (!playback_state_.Begin(target) ||
+                (udp_runtime_ != nullptr &&
+                 !udp_runtime_->AdvanceGeneration(target.generation))) {
+                return false;
+            }
+            playback_generation_ = target.generation;
+            playback_enabled_ = true;
+        } else if (command.type == PlaybackCommandType::kComplete) {
+            if (!playback_state_.SetFinalMediaSequence(target, command.value, &fact)) {
+                return false;
+            }
+        } else {
+            if (!playback_state_.Stop(target, command.value, &fact)) return false;
+            if (playback_queue_ != nullptr) xQueueReset(playback_queue_);
+            if (udp_runtime_ != nullptr &&
+                !udp_runtime_->FenceGeneration(command.value)) {
+                return false;
+            }
+            playback_generation_ = command.value;
+            playback_enabled_ = false;
+        }
+        if (fact.has_value()) {
+            if (fact->type == PlaybackFactType::kEnded) {
+                playback_enabled_ = false;
+                events_.OnConversationPhase(ConversationPhase::kListening);
+            }
+            if (!PublishPlaybackFact(*fact)) return false;
+        }
+    }
+    return true;
+}
+
+bool VoiceRuntime::PublishPlaybackFact(const PlaybackFact& fact) {
+    if (playback_fact_queue_ == nullptr || fact.target.response_id.empty() ||
+        fact.target.response_id.size() > protocol::kMaxIdBytes) {
+        return false;
+    }
+    QueuedPlaybackFact queued{
+        .type = fact.type,
+        .generation = fact.target.generation,
+        .outcome = fact.outcome,
+        .played_samples = fact.played_samples,
+    };
+    std::memcpy(
+        queued.response_id.data(), fact.target.response_id.data(),
+        fact.target.response_id.size());
+    if (fact.type == PlaybackFactType::kStarted) {
+        queued.media_sequence = fact.first_media_sequence;
+        queued.has_media_sequence = true;
+    } else if (fact.last_media_sequence.has_value()) {
+        queued.media_sequence = *fact.last_media_sequence;
+        queued.has_media_sequence = true;
+    }
+    return xQueueSend(playback_fact_queue_, &queued, 0) == pdTRUE;
+}
+
+bool VoiceRuntime::DrainPlaybackFacts() {
+    if (playback_fact_queue_ == nullptr) return true;
+    QueuedPlaybackFact queued;
+    while (xQueueReceive(playback_fact_queue_, &queued, 0) == pdTRUE) {
+        protocol::SessionIdentity session_identity;
+        {
+            std::lock_guard<std::mutex> lock(identity_mutex_);
+            session_identity = opened_.session;
+        }
+        const protocol::ResponseTarget target{
+            queued.response_id.data(),
+            queued.generation,
+        };
+        std::string json;
+        protocol::ControlError encoded = protocol::ControlError::kMissingOrInvalidField;
+        if (queued.type == PlaybackFactType::kStarted) {
+            encoded = protocol::EncodePlaybackStarted(
+                {.session = session_identity,
+                 .target = target,
+                 .first_media_sequence = queued.media_sequence},
+                &json);
+        } else {
+            protocol::PlaybackEnded ended{
+                .session = session_identity,
+                .target = target,
+                .outcome = queued.outcome,
+                .played_samples = queued.played_samples,
+                .last_media_sequence = std::nullopt,
+            };
+            if (queued.has_media_sequence) {
+                ended.last_media_sequence = queued.media_sequence;
+            }
+            encoded = protocol::EncodePlaybackEnded(ended, &json);
+        }
+        if (encoded != protocol::ControlError::kOk || owner_ == nullptr ||
+            !owner_->SendText(json, 250)) {
+            return false;
+        }
+    }
+    return true;
+}
+
 bool VoiceRuntime::SendSessionOpen() {
     protocol::SessionOpen open;
     open.request_id = open_request_id_;
     open.device_id = device_id_;
-    open.supported_media_profiles = {"wss-opus-v2", "udp-opus-gcm-v1"};
+    open.supported_media_profiles = {"wss-opus-v3", "udp-opus-gcm-v2"};
     open.preferred_media_profile =
-        preferred_media_ == MediaPreference::kUdp ? "udp-opus-gcm-v1" : "wss-opus-v2";
+        preferred_media_ == MediaPreference::kUdp ? "udp-opus-gcm-v2" : "wss-opus-v3";
     open.capabilities = {
         config_.aec,
         config_.vad,
@@ -619,14 +751,21 @@ bool VoiceRuntime::ConfigureUdp(const protocol::SessionOpened& opened) {
     const auto now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
                             now.time_since_epoch())
                             .count();
-    if (now_ms < 1577836800000LL || static_cast<uint64_t>(now_ms) >= control.expires_at_ms) {
+    const bool clock_valid = now_ms >= 1577836800000LL;
+    if (clock_valid && static_cast<uint64_t>(now_ms) >= control.expires_at_ms) {
         ESP_LOGW(kLogTag,
-                 "udp configure failed: invalid clock or expired grant now_ms=%lld expires_at_ms=%llu",
+                 "udp configure failed: expired grant now_ms=%lld expires_at_ms=%llu",
                  static_cast<long long>(now_ms),
                  static_cast<unsigned long long>(control.expires_at_ms));
         return false;
     }
-    const uint64_t remaining_ms = control.expires_at_ms - static_cast<uint64_t>(now_ms);
+    if (!clock_valid) {
+        ESP_LOGW(kLogTag,
+                 "udp configure continuing without local expiry deadline: invalid clock now_ms=%lld expires_at_ms=%llu",
+                 static_cast<long long>(now_ms),
+                 static_cast<unsigned long long>(control.expires_at_ms));
+    }
+    const uint64_t remaining_ms = clock_valid ? control.expires_at_ms - static_cast<uint64_t>(now_ms) : 0;
 
     auto uplink = std::make_unique<udp::MbedTlsGcm>();
     auto downlink = std::make_unique<udp::MbedTlsGcm>();
@@ -640,7 +779,7 @@ bool VoiceRuntime::ConfigureUdp(const protocol::SessionOpened& opened) {
     }
     grant.media_id = opened.media_id;
     grant.media_epoch = opened.media_epoch;
-    grant.initial_generation = playback_generation_;
+    grant.initial_downlink_generation = playback_generation_;
     grant.uplink_key = control.uplink_key;
     grant.downlink_key = control.downlink_key;
     grant.uplink_salt = control.uplink_salt;
@@ -691,9 +830,11 @@ bool VoiceRuntime::ConfigureUdp(const protocol::SessionOpened& opened) {
     const int64_t now_us = esp_timer_get_time();
     const uint64_t maximum_remaining_ms =
         static_cast<uint64_t>((std::numeric_limits<int64_t>::max() - now_us) / 1000);
-    udp_expiry_deadline_us_ = remaining_ms > maximum_remaining_ms
-                                  ? std::numeric_limits<int64_t>::max()
-                                  : now_us + static_cast<int64_t>(remaining_ms) * 1000;
+    udp_expiry_deadline_us_ = !clock_valid
+                                  ? 0
+                                  : (remaining_ms > maximum_remaining_ms
+                                         ? std::numeric_limits<int64_t>::max()
+                                         : now_us + static_cast<int64_t>(remaining_ms) * 1000);
     return true;
 }
 
@@ -702,11 +843,17 @@ bool VoiceRuntime::StartMediaRuntime() {
     if (task_events_ == nullptr) return false;
     playback_queue_ = xQueueCreateWithCaps(
         6, sizeof(MediaPacket), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    if (playback_queue_ == nullptr || !codec_.Start() ||
+    playback_command_queue_ = xQueueCreateWithCaps(
+        8, sizeof(PlaybackCommand), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    playback_fact_queue_ = xQueueCreateWithCaps(
+        4, sizeof(QueuedPlaybackFact), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (playback_queue_ == nullptr || playback_command_queue_ == nullptr ||
+        playback_fact_queue_ == nullptr || !codec_.Start() ||
         !pipeline_.Start().ok() || !StartPlaybackResampler()) {
         ESP_LOGE(kLogTag,
-                 "media start failed: queue=%d internal_free=%lu largest=%lu psram_free=%lu",
-                 playback_queue_ != nullptr,
+                 "media start failed: queues=%d/%d/%d internal_free=%lu largest=%lu psram_free=%lu",
+                 playback_queue_ != nullptr, playback_command_queue_ != nullptr,
+                 playback_fact_queue_ != nullptr,
                  static_cast<unsigned long>(heap_caps_get_free_size(MALLOC_CAP_INTERNAL)),
                  static_cast<unsigned long>(heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL)),
                  static_cast<unsigned long>(heap_caps_get_free_size(MALLOC_CAP_SPIRAM)));
@@ -772,6 +919,14 @@ void VoiceRuntime::StopMediaRuntime() {
         vQueueDeleteWithCaps(playback_queue_);
         playback_queue_ = nullptr;
     }
+    if (playback_command_queue_ != nullptr) {
+        vQueueDeleteWithCaps(playback_command_queue_);
+        playback_command_queue_ = nullptr;
+    }
+    if (playback_fact_queue_ != nullptr) {
+        vQueueDeleteWithCaps(playback_fact_queue_);
+        playback_fact_queue_ = nullptr;
+    }
 }
 
 void VoiceRuntime::RunCapture() {
@@ -789,6 +944,10 @@ void VoiceRuntime::RunCapture() {
             const audio::PortResult fed = pipeline_.FeedFrontend(
                 {capture.samples, capture.sample_count, capture.sample_rate_hz, capture.channel_count});
             consecutive_failures = fed == audio::PortResult::kOk ? 0 : consecutive_failures + 1;
+            // AFE/AEC can consume a full time slice when near real-time load. Give
+            // idle, Wi-Fi and TCP/IP maintenance tasks a bounded chance to run
+            // after each captured frame instead of relying on driver blocking.
+            vTaskDelay(1);
         } else {
             consecutive_failures++;
         }
@@ -818,11 +977,6 @@ void VoiceRuntime::RunUplink() {
             continue;
         }
         consecutive_failures = 0;
-        if (frontend_.ConsumeSpeechStarted() && !CancelActiveResponseOnSpeech()) {
-            events_.OnFailure("barge_in_cancel");
-            running_ = false;
-            continue;
-        }
         size_t offset = 0;
         while (offset < output.sample_count && running_) {
             if (accumulated_samples == accumulated.size() && !session_opened_) {
@@ -849,13 +1003,14 @@ void VoiceRuntime::RunUplink() {
             const uint32_t timestamp = uplink_timestamp_;
             uplink_timestamp_ += 960;
             if (opus_size == 0) {
+                events_.OnFailure("opus_empty_frame");
+                running_ = false;
                 accumulated_samples = 0;
                 continue;
             }
             if (media_owner_ == voice::core::MediaOwner::kUdp) {
                 if (udp_runtime_ == nullptr ||
-                    !udp_runtime_->SendAudio(
-                        opus.data(), opus_size, timestamp, playback_generation_)) {
+                    !udp_runtime_->SendAudio(opus.data(), opus_size, timestamp)) {
                     events_.OnFailure("udp_uplink_send");
                     fallback_to_wss_ = true;
                     running_ = false;
@@ -888,6 +1043,9 @@ void VoiceRuntime::RunUplink() {
                 }
             }
             accumulated_samples = 0;
+            // Opus encode + UDP/WSS send can complete without blocking on good
+            // networks, which otherwise lets this priority-6 task starve idle.
+            vTaskDelay(1);
         }
     }
     ESP_LOGI(kLogTag, "uplink task minimum free stack: %lu bytes",
@@ -896,59 +1054,15 @@ void VoiceRuntime::RunUplink() {
     vTaskDeleteWithCaps(nullptr);
 }
 
-bool VoiceRuntime::CancelActiveResponseOnSpeech() {
-    protocol::SessionIdentity session_identity;
-    protocol::CancelTarget target;
-    // 先标记再发送；发送失败会重连，避免不确定重试导致同一代重复取消。
-    {
-        std::lock_guard<std::mutex> lock(playback_mutex_);
-        if (response_gate_.PrepareCancel(&target)) {
-            const uint32_t generation = playback_generation_.load();
-            if (playback_queue_ != nullptr) xQueueReset(playback_queue_);
-            if (udp_runtime_ != nullptr && !udp_runtime_->FenceGeneration(generation)) return false;
-            playback_enabled_ = false;
-            // The remote cancel is sent after releasing the playback lock.
-        } else if (response_end_deadline_us_.load() > 0) {
-            const uint32_t generation = playback_generation_.load();
-            if (playback_queue_ != nullptr) xQueueReset(playback_queue_);
-            if (udp_runtime_ != nullptr && !udp_runtime_->FenceGeneration(generation)) {
-                return false;
-            }
-            playback_enabled_ = false;
-            response_end_deadline_us_ = 0;
-            events_.OnConversationPhase(ConversationPhase::kListening);
-            return true;
-        } else {
-            return true;
-        }
-    }
-    {
-        std::lock_guard<std::mutex> lock(identity_mutex_);
-        session_identity = opened_.session;
-    }
-    std::string json;
-    return protocol::EncodeResponseCancel(session_identity, target, "barge_in", &json) ==
-               protocol::ControlError::kOk &&
-           owner_ != nullptr && owner_->SendText(json, 250);
-}
-
-bool VoiceRuntime::CompleteResponseDrainIfDue(int64_t now_us) {
-    std::lock_guard<std::mutex> lock(playback_mutex_);
-    const int64_t deadline_us = response_end_deadline_us_.load();
-    if (deadline_us <= 0 || now_us < deadline_us) return true;
-
-    const uint32_t generation = playback_generation_.load();
-    if (playback_queue_ != nullptr) xQueueReset(playback_queue_);
-    if (udp_runtime_ != nullptr && !udp_runtime_->FenceGeneration(generation)) return false;
-    playback_enabled_ = false;
-    response_end_deadline_us_ = 0;
-    response_gate_.End();
-    events_.OnConversationPhase(ConversationPhase::kListening);
-    return true;
-}
-
 void VoiceRuntime::RunPlayback() {
     MediaPacket packet;
+    const auto fail_active_playback = [this]() {
+        std::optional<PlaybackFact> fact;
+        if (playback_state_.Fail(&fact) && fact.has_value()) {
+            playback_enabled_ = false;
+            PublishPlaybackFact(*fact);
+        }
+    };
     if (playback_pcm_ == nullptr || playback_resampled_ == nullptr ||
         playback_resampled_capacity_ == 0) {
         events_.OnFailure("playback_buffer");
@@ -958,8 +1072,9 @@ void VoiceRuntime::RunPlayback() {
         return;
     }
     while (running_) {
-        if (!CompleteResponseDrainIfDue(esp_timer_get_time())) {
-            events_.OnFailure("drain_generation");
+        if (!ProcessPlaybackCommands()) {
+            fail_active_playback();
+            events_.OnFailure("playback_command");
             running_ = false;
             break;
         }
@@ -970,9 +1085,18 @@ void VoiceRuntime::RunPlayback() {
                 vTaskDelay(pdMS_TO_TICKS(5));
                 continue;
             }
-        } else if (xQueueReceive(playback_queue_, &packet, pdMS_TO_TICKS(100)) != pdTRUE) {
+        } else if (xQueueReceive(playback_queue_, &packet, pdMS_TO_TICKS(10)) != pdTRUE) {
             continue;
         }
+        if (!ProcessPlaybackCommands()) {
+            fail_active_playback();
+            events_.OnFailure("playback_command");
+            running_ = false;
+            break;
+        }
+        const uint32_t frame_generation = using_udp ? udp_frame.generation : packet.generation;
+        const uint32_t frame_sequence = using_udp ? udp_frame.sequence : packet.sequence;
+        if (!playback_state_.CanPlay(frame_generation)) continue;
         size_t samples = 0;
         const bool decoded = using_udp && udp_frame.kind == udp::PlayoutKind::kPlc
                                  ? codec_.DecodePlc60Ms(
@@ -982,10 +1106,13 @@ void VoiceRuntime::RunPlayback() {
                                        using_udp ? udp_frame.payload_size : packet.size,
                                        playback_pcm_.get(), kDecodedSamplesPerFrame, &samples);
         if (!decoded || samples == 0) {
+            fail_active_playback();
             events_.OnFailure("opus_decode");
-            continue;
+            running_ = false;
+            break;
         }
         if (samples != kDecodedSamplesPerFrame || playback_resampler_ == nullptr) {
+            fail_active_playback();
             events_.OnFailure("playback_frame_size");
             running_ = false;
             break;
@@ -995,27 +1122,60 @@ void VoiceRuntime::RunPlayback() {
                 playback_resampler_, playback_pcm_.get(), static_cast<uint32_t>(samples),
                 playback_resampled_.get(), &resampled_samples) != ESP_AE_ERR_OK ||
             resampled_samples != kNominalResampledSamplesPerFrame) {
+            fail_active_playback();
             events_.OnFailure("playback_resample");
             running_ = false;
             break;
         }
-        const uint32_t frame_generation = using_udp ? udp_frame.generation : packet.generation;
         constexpr size_t kInterruptibleSamples = 240;  // 10 ms at 24 kHz.
         const size_t total_resampled_samples = static_cast<size_t>(resampled_samples);
         size_t offset = 0;
         while (offset < total_resampled_samples && running_) {
-            if (!playback_enabled_ || frame_generation != playback_generation_) break;
+            if (!ProcessPlaybackCommands()) {
+                fail_active_playback();
+                events_.OnFailure("playback_command");
+                running_ = false;
+                break;
+            }
+            // This is the final generation gate before the bounded I2S write.
+            if (!playback_state_.CanPlay(frame_generation)) break;
             const size_t count =
                 std::min(kInterruptibleSamples, total_resampled_samples - offset);
             if (pipeline_.WritePlayback(
                     {playback_resampled_.get() + offset, count, 24000, 1}, 20) !=
                 audio::PortResult::kOk) {
+                fail_active_playback();
                 events_.OnFailure("playback_write");
                 running_ = false;
                 break;
             }
             offset += count;
+            std::optional<PlaybackFact> fact;
+            if (!playback_state_.RecordWritten(frame_sequence, count, &fact) ||
+                (fact.has_value() && !PublishPlaybackFact(*fact))) {
+                fail_active_playback();
+                events_.OnFailure("playback_fact_queue");
+                running_ = false;
+                break;
+            }
         }
+        if (running_ && offset == total_resampled_samples &&
+            playback_state_.CanPlay(frame_generation)) {
+            std::optional<PlaybackFact> fact;
+            if (!playback_state_.FinishFrame(frame_sequence, &fact) ||
+                (fact.has_value() && !PublishPlaybackFact(*fact))) {
+                fail_active_playback();
+                events_.OnFailure("playback_completion");
+                running_ = false;
+            } else if (fact.has_value()) {
+                playback_enabled_ = false;
+                events_.OnConversationPhase(ConversationPhase::kListening);
+            }
+        }
+        // Continuous UDP downlink may keep the queue non-empty. Yield once per
+        // decoded 60 ms frame to avoid watchdog starvation while preserving
+        // interruptible 10 ms writes inside the frame.
+        vTaskDelay(1);
     }
     ESP_LOGI(kLogTag, "playback task minimum free stack: %lu bytes",
              static_cast<unsigned long>(uxTaskGetStackHighWaterMark(nullptr)));

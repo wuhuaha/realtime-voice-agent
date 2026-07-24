@@ -1,6 +1,6 @@
 # 故障排查
 
-更新日期：2026-07-22
+更新日期：2026-07-24
 
 ## 1. 排查原则
 
@@ -51,17 +51,18 @@ replacement，不能向 v1 drain API 发送 `false`。
 - `Device-Id` 与 grant `device_id` 一致，Worker ID 与 grant audience 一致。
 - 系统时钟没有导致 `iat/exp` 错误。
 - Grant 未重复使用；Worker 通过 Director 在 shared coordination store 原子消费 `jti`，重复使用应被拒绝。
-- `Protocol-Version: 1` 存在。
+- `Authorization: Bearer <grant>` 存在，且 `Device-Id`（或兼容入口的 `Client-Id`）与 grant 绑定的设备一致。
 
 不得把完整 bearer 放入日志或命令历史。
 
-## 5. Hello/控制失败
+## 5. `session.open` / 控制失败
 
-- Client 首条应用消息是 hello。
-- `audio_params` 为 Opus/16 kHz/mono/60 ms。
-- `transport_profiles` 唯一且与 grant allowed profiles 相交。
+- Client 首条且唯一的 open 消息是 `session.open(protocol_version=2)`；不得发送 Xiaozhi `hello` 或 v1 消息。
+- `audio` 为 Opus/16 kHz/mono/60 ms，DTX on、FEC off。
+- `supported_media_profiles` 只包含 `wss-opus-v3`/`udp-opus-gcm-v2`，且与 grant allowed profiles 有交集；
+  `preferred_media_profile` 必须属于该集合。
 - JSON 无 duplicate/unknown field，frame 未超过 hard limit。
-- 后续消息 `session_id` 匹配。
+- 后续消息的 `session_id + session_epoch` 必须匹配 `session.opened` 建立的 identity。
 
 Close `1002` 看 protocol category，`1009` 看消息大小，`1013` 看 admission/queue。
 
@@ -83,7 +84,7 @@ Opus 解码 PCM peak/RMS，再检查 grant、transport admission 与 provider en
 
 ## 7. UDP 无音频
 
-- Server hello确实 commit `udp-opus-gcm-v1` 并包含 grant。
+- `session.opened` 确实 commit `udp-opus-gcm-v2` 并包含 grant。
 - UDP advertise host/port 从设备网络可达，防火墙/NAT 放行。
 - PROBE 在 timeout 内到达，GCM auth 成功后才绑定 source并返回 PROBE_ACK。
 - `media_id/epoch/direction key/salt/nonce/AAD` 与 fixture 规则一致。
@@ -111,7 +112,8 @@ Opus 解码 PCM peak/RMS，再检查 grant、transport admission 与 provider en
 - Board config 的 reference channel 和 device AEC 只是前提，需确认实际 AFE `MR`、reference 非零、播放期间
   realtime capture。
 - 检查 speaker volume、麦克风距离、VAD threshold、播放 reference 时序和 generation。
-- Abort 后确认 generation递增、旧服务队列清空、设备拒绝旧播放。
+- `playback.stop` 后确认服务端 fence generation 单调推进、旧服务队列清空、设备拒绝旧播放；明确用户操作应发送
+  exact-target `response.cancel.request`，端侧 VAD 不得自行裁决打断。
 - 用近讲/double-talk固定话术，不能只在静音房间观察。
 
 最终 AEC/声学当前为 `not_run`，旧 baseline 不能替代。
@@ -141,7 +143,7 @@ Opus 解码 PCM peak/RMS，再检查 grant、transport admission 与 provider en
 故障记录至少包含环境、commit、artifact、redacted config shape、复现步骤、first failure、相关 metrics/log window、
 修复前后验证和仍为 `not_run` 的项目。
 
-当前分层对照基于 Server lifecycle repair `d2fa0ca`：launcher stop/start、bootstrap + grant、WSS hello/profile、
-UDP AES-GCM probe ACK/ready，以及 host synthetic real-provider media E2E 均通过。若 ESP32 无 ASR，应优先比较
-host synthetic 与设备解码 PCM，而不是重复修改已通过的 grant/probe 路径。Launcher stop 只终止 PID、启动时间
-与 executable identity 都匹配的记录进程；不匹配条目会保留并告警，禁止按复用 PID 误杀其他进程。
+任何历史 v1 artifact、commit 或 host synthetic 结果都不能作为当前 v2 闭环证据。若 ESP32 无 ASR，应使用同一
+Product commit 的 reference client 与设备解码 PCM 做分层对照，并分别记录 bootstrap、`session.opened`、media
+admission、provider 和 playout 证据；未执行的层级保持 `not_run`。Launcher stop 只终止 PID、启动时间与 executable
+identity 都匹配的记录进程；不匹配条目会保留并告警，禁止按复用 PID 误杀其他进程。
