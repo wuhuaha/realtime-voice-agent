@@ -137,13 +137,13 @@
   <a class="skip" href="#content">跳到正文</a>
   <header class="masthead">
     <div class="masthead-inner">
-      <div class="document-line"><span class="document-mark">RVA / ENGINEERING MANUAL</span><span>2026-07-21 · offline edition</span></div>
+      <div class="document-line"><span class="document-mark">RVA / ENGINEERING MANUAL</span><span>2026-07-24 · offline edition</span></div>
       <div class="hero">
         <div class="hero-copy">
           <span class="eyebrow">端侧、协议、服务端的一份共同地图</span>
           <h1>Realtime Voice Agent<br>端云开发手册</h1>
           <p class="lede">面向 ESP32、Server 和平台开发人员，说明 native ESP-IDF endpoint、RVA 控制协议、WSS/UDP 媒体和 LiveKit Agent runtime 的职责与调试路径。</p>
-          <div class="status-row"><span class="status accepted">SERVER VERIFIED</span><span class="status accepted">FIRMWARE BUILD PASSED</span><span class="status not-run">HIL NOT RUN</span></div>
+          <div class="status-row"><span class="status accepted">SERVER VERIFIED</span><span class="status accepted">FIRMWARE BUILD PASSED</span><span class="status not-run">FINAL HIL NOT RUN</span></div>
         </div>
         <div class="signal-board" aria-label="端云四条责任通道">
           <div class="signal-title">SIGNAL OWNERSHIP / 从设备动作到语音输出</div>
@@ -211,7 +211,8 @@ idf.py -p $env:RVA_ESPPORT flash monitor</code></pre>
       </section>
       <section id="quality"><div class="section-head"><span class="section-no">07 / QUALITY</span><h2>把快循环和发布证据分开</h2></div>
         <table><thead><tr><th>证据层</th><th>必须证明</th><th>不能替代</th></tr></thead><tbody><tr><td>contract_verified</td><td>schema、fixtures 与双端 parser 一致</td><td>真实网络和设备行为</td></tr><tr><td>build_passed</td><td>fresh 配置完成编译链接</td><td>外设、音频与网络可用</td></tr><tr><td>device_verified</td><td>当前固件完成 WSS/UDP、字幕、播放与打断闭环</td><td>声学和弱网指标</td></tr><tr><td>acoustic_verified</td><td>近讲、远讲、double-talk 与自回授受控</td><td>长时间稳定性</td></tr><tr><td>measured</td><td>20 轮、30 分钟、延迟、queue 与弱网 A/B 有原始证据</td><td>其他硬件和部署环境</td></tr></tbody></table>
-        <div class="notice">当前 v2 Firmware 已通过 ESP-IDF 5.5.2 构建、size、烧录和自动 Wi-Fi 建连观察；Server 完整 suite、稳定公网 bootstrap、真实 provider WSS/UDP、字幕、完整 TTS 播放和打断仍须按当前 Product commit 完成闭环。无缓存 clean checkout、声学、弱网和长稳也是独立门禁，不能由构建或历史 v1 证据替代。</div>
+        <div class="notice">当前 Server release 为 <code>314d673</code>：Ruff、repository verifier、secret scan、根测试 46 项以及 focused Opus/lifecycle tests 已通过；使用 <code>server/.venv</code> 复跑完整 Server suite 为 234 passed、3 skipped、0 failed。Windows 子进程退出确认用例此前曾偶发超时，本轮已通过并保留稳定性关注。该 release 已部署到公网验证环境，Director/Worker readiness 与 UDP ready 通过。Firmware 已通过 ESP-IDF 5.5.2 build 与 size，application 为 <code>0x214e60</code>、分区余量约 48%，但开发板不在现场，最终固件尚未烧录，WSS/UDP HIL 和至少 12 分钟长稳均未执行。</div>
+        <div class="split"><div class="panel"><h3>本轮已修复</h3><p>孤立 Opus 坏包只丢包，连续 8 包才关闭；会话 deadline 由单一 owner 回收 child；WSS media sequence 按方向、按 session 严格递增，不再在每个 response 重置。</p></div><div class="panel"><h3>实机仍须证明</h3><p>连续两条真实回复、完整 TTS、UDP fresh bootstrap、模式切换，以及无 <code>1002 protocol_error</code>、<code>wss_media_admission</code> 和 unhandled task 的长稳运行。</p></div></div>
       </section>
       <section id="compatibility"><div class="section-head"><span class="section-no">08 / COMPATIBILITY</span><h2>兼容代码不进入新功能依赖链</h2></div>
         <p class="section-intro">Native endpoint、<code>rva-control-v2</code> 和 <code>/v2/voice</code> 是当前唯一开发入口。历史 migration provenance 只用于来源追溯，不参与当前构建或运行。</p>

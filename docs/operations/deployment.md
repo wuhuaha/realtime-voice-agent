@@ -71,9 +71,10 @@ Worker readiness 包含 provider endpoint 的有界 DNS/TCP/TLS 网络连通探�
 Redis AOF 位于 Compose named volume `redis-data`。普通停止使用 `docker compose down`，不会删除该 volume；
 `docker compose down -v` 会删除 coordination 数据，只能在明确接受会话 lease/grant 状态丢失时使用。
 
-单 Worker 升级无法做到媒体会话无中断。先调用 drain、等待 active session 归零，再执行 `docker compose build` 和
-`docker compose up -d`。该基线的 `restart: unless-stopped` 是进程恢复策略，不是 HA；主机、磁盘、Redis 或唯一
-Worker 故障都会造成服务降级或中断。
+单 Worker 升级无法做到媒体会话无中断。先调用 drain、等待 active session 归零，再按第 5 节为 replacement 分配
+新的 `worker_id` 并部署；不得用相同 incarnation 直接 `docker compose up -d` 或 `systemctl restart`。该基线的
+`restart: unless-stopped` 是同一进程实例的恢复策略，不是 HA；主机、磁盘、Redis 或唯一 Worker 故障都会造成服务
+降级或中断。
 
 ## 1. 推荐拓扑
 
@@ -153,10 +154,22 @@ Readiness 只探测 provider endpoint 的网络连通性，不证明 provider AP
 2. 等待 active sessions 自然归零，或达到配置的 drain deadline。
 3. Deadline 到达后有界关闭：撤销 generation/UDP key、取消 Agent/provider task、关闭 transport；registry 关闭后
    在总预算内通过最多 32 次 draining heartbeat 分批确认 exact lease release。
-4. 停止旧 Worker，部署新版本，检查 readiness/heartbeat。
+4. 为 replacement 生成唯一 `worker_id`，部署新版本，检查实际 `EnvironmentFile`、readiness 和 heartbeat 均指向新
+   incarnation；不要只依据 systemd drop-in 中可能被覆盖的 `Environment=` 值。
 5. Canary 通过后保留 replacement Worker；drain 是单向状态，不对旧进程执行 undrain。
 
 Active turn 不迁移。设备在关闭后 fresh bootstrap，新 Worker 使用新 epoch/grant。
+
+同一个 `worker_id` 的 drain 标记会在 Redis 中保持到 heartbeat TTL 到期。单机使用相同 `worker_id` 原地替换时，
+不得直接 `systemctl restart`：旧进程关闭前会发布 `draining=true`，新进程随后会继承该状态并持续返回 readiness
+503。应为每个 replacement 生成唯一 incarnation ID，待其 ready 后再回收旧实例。仅在无法更换 ID 的恢复场景，
+才停止旧 Worker、等待超过 `worker_heartbeat_ttl_seconds` 并留出调度余量，再启动 replacement；启动后还必须从
+registry/readiness 确认 sticky drain 已消失。v1 drain API 只允许进入 drain，不提供 undrain。
+
+UDP grant 同时携带绝对安全边界 `expires_at_ms` 和相对调度值 `refresh_after_ms`。Endpoint 必须用 monotonic clock 在
+`refresh_after_ms` 到达时 normal close 并 fresh bootstrap；该轮换不依赖 SNTP，且不得复用旧 epoch、key、generation
+或 sequence。Server 仍以 `expires_at_ms` 拒绝过期 datagram。到期轮换属于预期生命周期，不得上报为
+`protocol_error`；部署验收必须跨越至少一次 refresh 边界并观察新 session 正常收发。
 
 ## 6. 扩缩容
 
@@ -185,6 +198,30 @@ Active turn 不迁移。设备在关闭后 fresh bootstrap，新 Worker 使用�
 当前版本尚未通过正式 release gate。目标环境必须提供 HTTPS/WSS、受信域名/证书、secret manager、入口限流、
 Redis durability/HA 策略和可观测性；临时主机地址、端口和本地 `.env` 不进入 Product 文档或 Git。精确门禁见
 [Release readiness](../quality/release-readiness.md)。
+
+Runbook 不保存某台主机的当前 release 快照。每次部署必须形成一条 release record，并在
+[Release readiness](../quality/release-readiness.md) 或受控发布系统中记录以下不可变身份：
+
+| 字段 | 要求 |
+| --- | --- |
+| `product_commit` | 完整 40 位 Product Git commit |
+| `archive` / `archive_sha256` | archive 名称及发布前计算的 SHA256；上传、下载和解包前后不得改变 |
+| `release_dir` | 包含 commit identity 的不可变绝对目录；不得原地覆盖已有 release |
+| `worker_id` | 每次 replacement 唯一的 incarnation，不复用旧 Worker ID |
+| `config_identity` | 实际生效 `EnvironmentFile`/secret version 的受控引用，不记录 secret 值 |
+| `server_image_digest` | 容器部署时使用实际 `image@sha256:<digest>`；源码部署记为不适用 |
+
+激活前先按发布记录校验 archive：
+
+```bash
+printf '%s  %s\n' "$RELEASE_ARCHIVE_SHA256" "$RELEASE_ARCHIVE" | sha256sum --check --strict -
+test ! -e "$RELEASE_DIR" || { echo "release directory already exists" >&2; exit 1; }
+```
+
+解包和依赖恢复完成后，以只读方式创建 release 目录；再核对 service manager 实际加载的 `EnvironmentFile`、
+`VOICE_WORKER_ID` 和 source/image identity。激活后必须同时检查 Director/Worker readiness、heartbeat 中的 Worker
+incarnation、UDP ready（启用时）和 real-provider canary。readiness 只证明基础服务状态，ESP32 媒体 HIL、长稳和
+声学门禁仍须独立执行并写入 release record；未完成时只能标记为验证环境。
 
 设备 HIL 与持续联调应始终使用稳定的公网 bootstrap origin，并通过 provisioning/受控配置绑定 credential；不得随
 开发者本机网络变化反复重编固件。真实域名、主机 inventory、网络凭据和 token 只保存在受控部署资产中。
