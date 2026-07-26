@@ -134,7 +134,7 @@ class Settings(BaseSettings):
 
     runner: Literal["deterministic", "livekit"] = "deterministic"
     agent_profile: str = "default"
-    vad_activation_threshold: float = Field(default=0.6, ge=0.1, le=0.9)
+    vad_activation_threshold: float = Field(default=0.35, ge=0.1, le=0.9)
     agent_interruption_min_duration_seconds: float = Field(default=1.2, ge=0.1, le=3.0)
     interruption_policy_enabled: bool = True
     deepseek_api_key: SecretStr | None = Field(

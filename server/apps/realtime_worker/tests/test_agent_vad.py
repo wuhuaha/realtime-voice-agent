@@ -26,7 +26,7 @@ class FakeSession:
 @pytest.mark.parametrize(
     ("settings_options", "expected_threshold"),
     [
-        ({}, 0.6),
+        ({}, 0.35),
         ({"vad_activation_threshold": 0.3}, 0.3),
     ],
 )
@@ -122,12 +122,12 @@ async def test_livekit_runner_exposes_interruption_controls_to_agent_session(
     assert captured_session_options["aec_warmup_duration"] is None
 
 
-def test_vad_activation_threshold_uses_conservative_default(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_vad_activation_threshold_uses_chinese_near_field_default(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("VOICE_VAD_ACTIVATION_THRESHOLD", raising=False)
 
     settings = Settings(_env_file=None)
 
-    assert settings.vad_activation_threshold == 0.6
+    assert settings.vad_activation_threshold == 0.35
 
 
 def test_vad_activation_threshold_accepts_explicit_environment_override(monkeypatch: pytest.MonkeyPatch) -> None:
