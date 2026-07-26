@@ -21,9 +21,10 @@ credential reprovision 流程重新绑定，不能仅在屏幕上修改地址。
 真实 host inventory、Wi-Fi credential、bootstrap token 和 provider secret 必须保存在 ignored/private 配置中，不进入
 本 README、tracked defaults 或任何 firmware artifact metadata。
 
-当前 bring-up 默认启用自动会话：Wi-Fi 就绪后直接 bootstrap 并开始交互。MIC session lifecycle control 默认关闭，
-按钮只保留视觉反馈；这是稳定基础链路期间的临时运行配置，不代表目标 UX 已取消。重新启用 MIC 控制后须验证
-start/stop、exact-target `response.cancel.request` 和 fresh bootstrap 全流程。
+当前 composition 默认使用用户触发的会话生命周期：待机时由独立 `idle_wake_runtime` 独占 capture/AFE 并运行
+WakeNet `Hi ESP`，唤醒命中或 MIC 点击后先有界停止 idle owner，再把音频资源交给 `VoiceRuntime`。会话期间端侧
+WakeNet 不运行，打断裁决仍由服务端负责；MIC 再次点击发送显式 stop/cancel。模型不可用时降级为 MIC 启动，不能
+让两个 runtime 同时持有 codec/AFE。
 
 ## 构建
 
@@ -64,8 +65,8 @@ glyph descriptor，因此必须启用 `CONFIG_LV_FONT_FMT_TXT_LARGE`。分区未
 
 ## 音频与 WSS 诊断边界
 
-- `model` 分区缺失只会关闭 NSNet 神经降噪；当前 composition 仍启用 AEC/VAD。日志行为不是声学通过证据，发布前
-  必须在有/无 model 分区两种状态分别验证近讲、播放中 double-talk、上行 PCM 与 ASR。
+- `model` 分区包含 WakeNet/NSNet 资产。分区缺失会关闭 idle WakeNet 和 NSNet 神经降噪；会话期 composition 仍启用
+  AEC/VAD。日志行为不是声学通过证据，发布前必须验证近讲、播放中 double-talk、上行 PCM 与 ASR。
 - Opus encode 的 task stack 不能按调用前 watermark 估算；内部峰值必须包含在内。当前 uplink task 依据实机首帧
   encode 后约 26 KiB 的使用量配置为 36 KiB，保留约 10 KiB 余量；后续调整必须继续以 HIL high-water 证据为准。
 - AEC 后音频按连续 60 ms cadence 进入启用 DTX 的 Opus encoder，本地 VAD 只保留观测用途，不门控上行、清理

@@ -5,6 +5,7 @@
 #include <esp_err.h>
 #include <esp_ae_rate_cvt.h>
 #include <esp_log.h>
+#include <esp_wn_models.h>
 #include <freertos/FreeRTOS.h>
 
 namespace rva::audio {
@@ -56,7 +57,22 @@ PortResult EspSrFrontend::Start() {
     afe_config_->vad_mode = VAD_MODE_0;
     afe_config_->vad_min_speech_ms = config_.vad_min_speech_ms;
     afe_config_->vad_min_noise_ms = config_.vad_min_noise_ms;
-    afe_config_->wakenet_init = false;
+    char* wakenet_model = nullptr;
+    if (config_.enable_wakenet && model_list_ != nullptr &&
+        config_.wakenet_model_name != nullptr && config_.wakenet_model_name[0] != '\0') {
+        wakenet_model = esp_srmodel_filter(
+            model_list_, ESP_WN_PREFIX, config_.wakenet_model_name);
+    }
+    afe_config_->wakenet_init = wakenet_model != nullptr;
+    afe_config_->wakenet_model_name = wakenet_model;
+    wakenet_available_.store(wakenet_model != nullptr);
+    wake_word_index_.store(0);
+    if (config_.enable_wakenet && wakenet_model == nullptr) {
+        ESP_LOGW(kLogTag, "WakeNet model unavailable: requested=%s",
+                 config_.wakenet_model_name == nullptr ? "<null>" : config_.wakenet_model_name);
+    } else if (wakenet_model != nullptr) {
+        ESP_LOGI(kLogTag, "WakeNet enabled: model=%s", wakenet_model);
+    }
     afe_config_->agc_init = false;
     afe_config_->memory_alloc_mode = AFE_MEMORY_ALLOC_MORE_PSRAM;
 
@@ -147,6 +163,8 @@ PortResult EspSrFrontend::Start() {
 PortResult EspSrFrontend::Stop() {
     started_.store(false);
     vad_speech_.store(false);
+    wakenet_available_.store(false);
+    wake_word_index_.store(0);
     {
         std::lock_guard<std::mutex> lock(resampler_mutex_);
         if (input_resampler_ != nullptr) {
@@ -225,6 +243,12 @@ PortResult EspSrFrontend::Fetch(MutablePcmView* output, uint32_t timeout_ms) {
         const bool speech = result->vad_state == VAD_SPEECH;
         vad_speech_.store(speech);
     }
+    if (wakenet_available_.load() && result->wakeup_state == WAKENET_DETECTED) {
+        const uint32_t index = result->wake_word_index > 0
+                                   ? static_cast<uint32_t>(result->wake_word_index)
+                                   : 1U;
+        wake_word_index_.store(index);
+    }
 
     const size_t samples = static_cast<size_t>(result->data_size) / sizeof(int16_t);
     if (samples > output->capacity_samples) {
@@ -235,6 +259,23 @@ PortResult EspSrFrontend::Fetch(MutablePcmView* output, uint32_t timeout_ms) {
     output->sample_rate_hz = kAfeSampleRateHz;
     output->channel_count = 1;
     return PortResult::kOk;
+}
+
+bool EspSrFrontend::ConsumeWakeDetection(uint32_t* wake_word_index) {
+    const uint32_t detected = wake_word_index_.exchange(0);
+    if (detected == 0) return false;
+    if (wake_word_index != nullptr) *wake_word_index = detected;
+    return true;
+}
+
+bool EspSrFrontend::SetWakeNetEnabled(bool enabled) {
+    if (started_.load() || instance_ != nullptr || interface_ != nullptr || afe_config_ != nullptr) {
+        return false;
+    }
+    config_.enable_wakenet = enabled;
+    wake_word_index_.store(0);
+    wakenet_available_.store(false);
+    return true;
 }
 
 size_t EspSrFrontend::feed_samples_per_channel() const {

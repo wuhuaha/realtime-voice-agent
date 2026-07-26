@@ -17,6 +17,8 @@ struct EspSrFrontendConfig final {
     bool enable_aec = true;
     bool enable_vad = false;
     bool enable_neural_noise_suppression = true;
+    bool enable_wakenet = false;
+    const char* wakenet_model_name = "wn9s_hiesp";
     int vad_min_speech_ms = 128;
     int vad_min_noise_ms = 100;
 };
@@ -43,6 +45,9 @@ public:
     [[nodiscard]] bool aec_enabled() const { return config_.enable_aec; }
     [[nodiscard]] bool vad_enabled() const { return config_.enable_vad; }
     [[nodiscard]] bool speech_active() const { return !config_.enable_vad || vad_speech_.load(); }
+    [[nodiscard]] bool wakenet_available() const { return wakenet_available_.load(); }
+    bool SetWakeNetEnabled(bool enabled);
+    bool ConsumeWakeDetection(uint32_t* wake_word_index = nullptr);
 
 private:
     srmodel_list_t* model_list_ = nullptr;
@@ -57,6 +62,8 @@ private:
     std::mutex resampler_mutex_;
     std::atomic<bool> started_{false};
     std::atomic<bool> vad_speech_{false};
+    std::atomic<bool> wakenet_available_{false};
+    std::atomic<uint32_t> wake_word_index_{0};
 };
 
 }  // namespace rva::audio

@@ -17,6 +17,7 @@
 #include "board_lichuang_s3/board_audio_control.h"
 #include "board_lichuang_s3/board_display.h"
 #include "device_config/device_config.h"
+#include "idle_wake_runtime/idle_wake_runtime.h"
 #include "native_runtime/config_adapters.h"
 #include "native_runtime/director_bootstrap.h"
 #include "native_runtime/voice_runtime.h"
@@ -26,10 +27,10 @@ namespace {
 
 constexpr char kTag[] = "rva_native";
 
-// Bring-up default is fail-open for the voice session: if a local sdkconfig has
-// not been regenerated after adding the Kconfig symbol, the board should still
-// auto-connect instead of silently returning to MIC-gated idle mode.
-#if !defined(CONFIG_RVA_AUTO_START_CONVERSATION) || CONFIG_RVA_AUTO_START_CONVERSATION
+// ESP-IDF omits disabled bool symbols from sdkconfig.h. Undefined therefore
+// means disabled; treating it as enabled makes an explicit Kconfig `n` unable
+// to restore the MIC-owned production lifecycle.
+#if defined(CONFIG_RVA_AUTO_START_CONVERSATION) && CONFIG_RVA_AUTO_START_CONVERSATION
 constexpr bool kAutoStartConversation = true;
 #else
 constexpr bool kAutoStartConversation = false;
@@ -454,8 +455,12 @@ void RunApplication() {
     while (!EnsureProvisioned(&device_config, &wifi, ui.get(), &service_endpoint)) {
         vTaskDelay(pdMS_TO_TICKS(3000));
     }
+    // HTTPS needs a valid wall clock before certificate verification. Plain
+    // HTTP can bootstrap immediately and uses refresh_after_ms for UDP grant
+    // rotation, so a blocked SNTP server must not delay voice startup by 30 s.
+    const uint32_t clock_sync_timeout_ms = service_endpoint.secure ? 30000 : 1000;
     const bool clock_synchronized =
-        rva::runtime::SynchronizeSystemClock(CONFIG_RVA_SNTP_SERVER, 30000);
+        rva::runtime::SynchronizeSystemClock(CONFIG_RVA_SNTP_SERVER, clock_sync_timeout_ms);
     if (!clock_synchronized) {
         ESP_LOGW(kTag, "Clock synchronization failed; TLS or local UDP grant expiry validation may be unavailable");
     }
@@ -480,6 +485,7 @@ void RunApplication() {
         });
     rva::board::lichuang_s3::LichuangAudioCodec codec(i2c, pca9557, {.output_volume = 80});
     rva::audio::AudioPipeline pipeline(codec.capture(), frontend, codec.playback());
+    rva::runtime::IdleWakeRuntime idle_wake(codec.capture(), frontend);
     rva::runtime::DirectorBootstrap director;
     const bool udp_available = true;
     rva::runtime::MediaPreference preferred_media = rva::runtime::MediaPreference::kUdp;
@@ -490,19 +496,87 @@ void RunApplication() {
              ui_controls_session ? 1 : 0);
     bool conversation_requested = kAutoStartConversation || ui == nullptr;
     bool configuration_requested = false;
+    bool wake_word_available = false;
+    bool wake_word_disabled = models == nullptr;
 
     while (true) {
+        if (!conversation_requested && !wake_word_disabled && !idle_wake.started()) {
+            const auto wake_result = idle_wake.Start();
+            if (wake_result == rva::runtime::IdleWakeStartResult::kStarted ||
+                wake_result == rva::runtime::IdleWakeStartResult::kAlreadyStarted) {
+                wake_word_available = true;
+            } else {
+                if (idle_wake.failed()) {
+                    ESP_LOGE(kTag, "Idle WakeNet failed to release audio after start failure; restarting");
+                    esp_restart();
+                    return;
+                }
+                wake_word_disabled = true;
+                wake_word_available = false;
+                ESP_LOGW(kTag, "Idle WakeNet unavailable result=%u; MIC remains enabled",
+                         static_cast<unsigned>(wake_result));
+            }
+        }
         while (!conversation_requested && ui != nullptr) {
             ProcessConversationUiEvents(
                 ui.get(), udp_available, ui_controls_session, false, &preferred_media, &conversation_requested,
                 &configuration_requested, nullptr);
+            uint32_t wake_word_index = 0;
+            if (idle_wake.ConsumeWakeDetection(&wake_word_index)) {
+                ESP_LOGI(kTag, "Wake word requested conversation start index=%lu",
+                         static_cast<unsigned long>(wake_word_index));
+                conversation_requested = true;
+                PostUi(ui.get(), {
+                    rva::ui::CommandKind::kSetConversation,
+                    static_cast<uint32_t>(rva::ui::ConversationState::kConnecting),
+                    {},
+                });
+            }
+            if (idle_wake.failed()) {
+                if (!idle_wake.Stop()) {
+                    ESP_LOGE(kTag, "Idle WakeNet failed to release audio ownership; restarting");
+                    esp_restart();
+                    return;
+                }
+                wake_word_disabled = true;
+                wake_word_available = false;
+                ESP_LOGW(kTag, "Idle WakeNet stopped after audio failure; MIC remains enabled");
+            }
+            if (configuration_requested) {
+                if (idle_wake.started() && !idle_wake.Stop()) {
+                    ESP_LOGE(kTag, "Idle WakeNet failed to stop before provisioning; restarting");
+                    esp_restart();
+                    return;
+                }
+                configuration_requested = false;
+                EnsureProvisioned(&device_config, &wifi, ui.get(), &service_endpoint, true);
+                break;
+            }
+            if (!conversation_requested) vTaskDelay(pdMS_TO_TICKS(50));
+        }
+        if (idle_wake.started() && !idle_wake.Stop()) {
+            ESP_LOGE(kTag, "Idle WakeNet failed to release audio ownership; restarting");
+            esp_restart();
+            return;
+        }
+        if (!conversation_requested) continue;
+        // A Wi-Fi driver reconnect budget is deliberately bounded. When it is
+        // exhausted, the application supervisor reloads the complete saved +
+        // provisioned plan so an AP outage or network change cannot leave the
+        // device permanently retrying Director over a dead station.
+        if (!wifi.WaitConnected(0) &&
+            !ConnectConfiguredWifi(&device_config, ProvisionedWifi(), &wifi)) {
+            runtime_events.OnFailure("wifi_reconnect");
+            WaitForRetryOrUi(
+                ui.get(), udp_available, ui_controls_session, &preferred_media,
+                &conversation_requested, &configuration_requested, 3000);
             if (configuration_requested) {
                 configuration_requested = false;
                 EnsureProvisioned(&device_config, &wifi, ui.get(), &service_endpoint, true);
             }
-            if (!conversation_requested) vTaskDelay(pdMS_TO_TICKS(50));
+            if (!kAutoStartConversation && ui != nullptr) conversation_requested = false;
+            continue;
         }
-        if (!conversation_requested) conversation_requested = true;
         PostUi(ui.get(), {
             rva::ui::CommandKind::kSetConnection,
             static_cast<uint32_t>(rva::ui::ConnectionState::kConnecting),
@@ -547,6 +621,7 @@ void RunApplication() {
             {
                 .aec = frontend.aec_enabled(),
                 .vad = frontend.vad_enabled(),
+                .wake_word = wake_word_available,
                 .display = ui != nullptr,
                 .touch = ui != nullptr,
             });

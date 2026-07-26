@@ -31,6 +31,7 @@ config RVA_AUTO_START_CONVERSATION
 config RVA_MIC_BUTTON_CONTROLS_SESSION
     bool "Allow MIC button to start or stop the voice session"
     default n
+    depends on !RVA_AUTO_START_CONVERSATION
     help
         When disabled the MIC button is visual-only and will not publish
         start/stop lifecycle events. Settings and provisioning controls remain

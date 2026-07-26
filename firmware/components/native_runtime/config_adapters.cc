@@ -226,6 +226,7 @@ void WifiStation::HandleEvent(esp_event_base_t base, int32_t id) {
         return;
     }
     if (base == WIFI_EVENT && id == WIFI_EVENT_STA_DISCONNECTED) {
+        xEventGroupClearBits(events_, kConnectedBit);
         std::lock_guard<std::mutex> lock(connection_mutex_);
         if (plan_.credentials().empty()) return;
         if (reconnect_after_disconnect_) {

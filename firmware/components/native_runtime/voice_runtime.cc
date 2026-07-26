@@ -360,7 +360,8 @@ bool VoiceRuntime::CloseWebsocketBounded(uint32_t timeout_ms) {
 
 void VoiceRuntime::RunSupervisor() {
     uint32_t observed_dropped_events = 0;
-    uint32_t observed_udp_queue_dropped = 0;
+    uint32_t observed_udp_handoff_dropped = 0;
+    uint32_t observed_udp_jitter_dropped = 0;
     uint32_t observed_udp_media_age_dropped = 0;
     uint32_t observed_wss_queue_dropped = 0;
     while (running_) {
@@ -381,8 +382,8 @@ void VoiceRuntime::RunSupervisor() {
             const int64_t expiry_deadline_us = udp_expiry_deadline_us_.load();
             const int64_t liveness_timeout_us = udp_liveness_timeout_us_.load();
             const int64_t last_receive_us = udp_runtime_->last_authenticated_receive_us();
-            const uint32_t queue_dropped =
-                udp_runtime_->playout_queue_dropped() + udp_runtime_->stats().queue_dropped;
+            const uint32_t handoff_dropped = udp_runtime_->playout_queue_dropped();
+            const uint32_t jitter_dropped = udp_runtime_->stats().queue_dropped;
             const uint32_t media_age_dropped = udp_runtime_->playout_media_age_dropped();
             const char* failure = nullptr;
             if (expiry_deadline_us > 0 && now_us >= expiry_deadline_us) {
@@ -393,10 +394,13 @@ void VoiceRuntime::RunSupervisor() {
             } else if (liveness_timeout_us > 0 && last_receive_us > 0 &&
                        now_us - last_receive_us >= liveness_timeout_us) {
                 failure = "udp_media_inactive";
-            } else if (queue_dropped != observed_udp_queue_dropped) {
-                observed_udp_queue_dropped = queue_dropped;
-                ESP_LOGW(kLogTag, "udp playout queue dropped=%lu",
-                         static_cast<unsigned long>(queue_dropped));
+            } else if (handoff_dropped != observed_udp_handoff_dropped ||
+                       jitter_dropped != observed_udp_jitter_dropped) {
+                observed_udp_handoff_dropped = handoff_dropped;
+                observed_udp_jitter_dropped = jitter_dropped;
+                ESP_LOGW(kLogTag, "udp playout dropped handoff=%lu jitter=%lu",
+                         static_cast<unsigned long>(handoff_dropped),
+                         static_cast<unsigned long>(jitter_dropped));
             } else if (media_age_dropped != observed_udp_media_age_dropped) {
                 observed_udp_media_age_dropped = media_age_dropped;
                 ESP_LOGW(kLogTag, "udp stale media dropped=%lu",
@@ -741,7 +745,7 @@ bool VoiceRuntime::SendSessionOpen() {
     open.capabilities = {
         config_.aec,
         config_.vad,
-        false,
+        config_.wake_word,
         config_.display,
         config_.touch,
     };
@@ -1087,7 +1091,10 @@ void VoiceRuntime::RunPlayback() {
         const bool using_udp = media_owner_ == voice::core::MediaOwner::kUdp;
         if (using_udp) {
             if (udp_runtime_ == nullptr || !udp_runtime_->PollPlayout(&udp_frame)) {
-                vTaskDelay(pdMS_TO_TICKS(5));
+                // CONFIG_FREERTOS_HZ is 100, so pdMS_TO_TICKS(5) truncates to
+                // zero and turns the listening path into a priority-6 busy loop.
+                // Block for one scheduler tick while no downlink frame is due.
+                vTaskDelay(1);
                 continue;
             }
         } else if (xQueueReceive(playback_queue_, &packet, pdMS_TO_TICKS(10)) != pdTRUE) {

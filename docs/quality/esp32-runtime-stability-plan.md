@@ -244,3 +244,10 @@ FEC disabled initially
   `asr_request_started`、`asr_provider_final`、`asr_final`、`llm_requested`、`tts_requested`、`tts_first_pcm`、
   `endpoint_playback_started` 和 `agent_audio_published`。一次 60 秒服务侧稳定观察保持 `active_sessions=1`，无新增
   `session_closed`。状态：`device_verified_basic_chain`；仍未完成长稳、真实听感和多轮打断验收。
+- 2026-07-26：恢复用户触发生命周期并接入独立 `idle_wake_runtime`。`wn9s_hiesp` 在 idle 阶段实机启动、命中，
+  feed/fetch task 完成有界退出后将 capture/AFE 交给 `VoiceRuntime`；唤醒后的 UDP 链路连续产生 FunASR final、LLM、
+  MiMo 与完整播放，用户确认 ASR/TTS 正常。会话期 WakeNet 关闭，端侧不参与打断裁决。
+- 2026-07-26：定位 UDP listening 阶段 task watchdog：`CONFIG_FREERTOS_HZ=100` 时
+  `pdMS_TO_TICKS(5)` 截断为 0，使 priority-6 playback task 在空队列上忙循环并饿死 CPU0 idle。改为明确阻塞一个
+  scheduler tick 后连续约 146 秒无 watchdog、断连或持续队列增长。当前 source 已删除端云一次性 PCM 诊断日志；
+  UDP drop 日志拆分为 jitter 与 handoff 计数，避免在没有归因证据时扩大队列和增加尾延迟。

@@ -33,6 +33,7 @@ enum class ConversationPhase : uint8_t { kListening, kThinking, kSpeaking };
 struct VoiceRuntimeConfig final {
     bool aec = false;
     bool vad = false;
+    bool wake_word = false;
     bool display = false;
     bool touch = false;
 };

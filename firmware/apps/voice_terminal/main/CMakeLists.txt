@@ -6,6 +6,7 @@ idf_component_register(
         board_lichuang_s3
         device_config
         espressif__esp-sr
+        idle_wake_runtime
         native_runtime
         ui_lvgl
         voice_contracts

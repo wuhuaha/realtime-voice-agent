@@ -1,7 +1,7 @@
 # Firmware 架构
 
 状态：accepted target architecture
-更新日期：2026-07-23
+更新日期：2026-07-26
 
 ## 1. 范围
 
@@ -15,6 +15,8 @@
 flowchart TD
     APP["voice_terminal composition"] --> UI["ui_lvgl optional"]
     APP --> RUNTIME["native_runtime"]
+    APP --> WAKE["idle_wake_runtime"]
+    WAKE --> AUDIO
     RUNTIME --> SESSION["voice_core / voice_protocol"]
     RUNTIME --> WSS["transport_wss"]
     RUNTIME --> UDP["transport_udp"]
@@ -40,6 +42,7 @@ flowchart TD
 | `voice_protocol` | RVA control、typed media header | socket ownership |
 | `transport_wss` | callback queue、fragment、send、supervisor close | audio decode/render |
 | `transport_udp` | AEAD、probe/source pin、replay、jitter/freshness | WSS control lifecycle |
+| `idle_wake_runtime` | idle 阶段 capture/AFE/WakeNet owner、有界 stop/join | 会话期 KWS、打断裁决 |
 | `native_runtime` | bootstrap、tasks、Opus、session composition | LVGL object ownership |
 | `ui_lvgl` | state reducer、text/status、touch commands | network/audio |
 
@@ -53,10 +56,10 @@ AEC reference 要求 playback 与 microphone 同时进入 ESP-SR `MR` 输入。C
 decode/playout 分 task 管理；每条 queue 有固定容量、超时、停止和 overflow 语义。音频热路径不写 Flash、不解析
 JSON、不执行重连或无界日志。
 
-`model` 分区缺失时，当前 composition 仍创建 ESP-SR AFE 并保留 AEC 与 VAD，只关闭依赖 NSNet model 的神经网络
-降噪；启动日志必须出现 `ESP-SR model partition unavailable; neural noise suppression disabled`。这是代码降级边界，
-不等于无 model 分区时的 AEC/VAD/ASR 声学效果已经通过，发布仍须分别验证有/无 model 分区的启动、近讲、播放中
-double-talk 和 ASR 结果。
+`model` 分区承载 WakeNet/NSNet。待机时 `idle_wake_runtime` 独占 capture/AFE，启用 `wn9s_hiesp`；唤醒命中后先
+停止并 join feed/fetch task，再停止 capture/AFE 和关闭 WakeNet，随后才允许 `VoiceRuntime` 启动会话音频。会话结束后
+重新建立 idle owner。模型分区缺失时降级为 MIC 启动，并关闭依赖模型的神经降噪；不能让 idle 与会话 runtime 同时
+持有 codec/AFE。该生命周期已完成单次实机交接，重复循环、异常停止和声学效果仍以 release readiness 为准。
 
 ## 5. Session 与 transport
 
@@ -88,9 +91,9 @@ Home UI 显示 AI、连接/对话状态、流式 ASR/response 和 `WSS`/`UDP` �
 listening/thinking/speaking 点击只产生显式用户 stop request，不与端侧 VAD 复用。中文字体作为
 Product-owned/generated asset 注入并由 native target 管理。
 
-上述 MIC 行为是目标 UX。当前 transport/audio bring-up 配置启用 `CONFIG_RVA_AUTO_START_CONVERSATION`，设备在 Wi-Fi
-就绪后自动建立会话；`CONFIG_RVA_MIC_BUTTON_CONTROLS_SESSION` 默认关闭，因此 MIC 点击只保留视觉反馈，不改变 session
-lifecycle。恢复 MIC 控制前必须先完成自动会话的 WSS/UDP、ASR、TTS 和重连稳定性门禁，并重新验证 explicit cancel。
+当前配置关闭 `CONFIG_RVA_AUTO_START_CONVERSATION` 并启用 `CONFIG_RVA_MIC_BUTTON_CONTROLS_SESSION`。设备联网后保持
+idle WakeNet；`Hi ESP` 或 Idle 状态 MIC 点击建立 fresh session，活跃状态 MIC 点击发出显式 stop/cancel。模式切换只在
+Idle 生效，单个 session 内不做 transport 热切换。
 
 Wi-Fi 与 endpoint 配置遵循：saved value 优先、失败可回到配置页、写入后重启可回读。Token 与 endpoint origin
 绑定；origin 改变不得转发旧 token。源码、tracked defaults、日志和 UI 不包含 Wi-Fi 密码、bearer 或 API key。
