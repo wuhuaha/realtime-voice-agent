@@ -5,6 +5,7 @@ import json
 from types import SimpleNamespace
 
 import pytest
+from livekit.agents import vad as vad_api
 from realtime_worker import agent as agent_module
 from realtime_worker.agent import LiveKitAgentRunner, RoomlessTextOutput, _register_livekit_observers
 from realtime_worker.config import Settings
@@ -288,7 +289,15 @@ async def test_livekit_runner_passes_one_session_tracer_to_stt_tts_and_observers
     monkeypatch.setattr(agent_module, "create_tts", create_tts)
     monkeypatch.setattr(agent_module, "FunASRSTT", create_stt)
     monkeypatch.setattr(agent_module, "create_deepseek_llm", lambda _settings: object())
-    monkeypatch.setattr(agent_module.silero.VAD, "load", lambda **_options: object())
+    monkeypatch.setattr(
+        agent_module.silero.VAD,
+        "load",
+        lambda **_options: SimpleNamespace(
+            capabilities=vad_api.VADCapabilities(update_interval=0.032),
+            model="fake",
+            provider="fake",
+        ),
+    )
     monkeypatch.setattr(agent_module, "AgentSession", lambda **_options: fake_session)
     monkeypatch.setattr(agent_module, "_DefaultAgent", lambda _overlap_consumer: object())
 

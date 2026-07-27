@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-from typing import Literal
+from typing import Literal, Self
 from urllib.parse import urlsplit
 
-from pydantic import AliasChoices, Field, SecretStr
+from pydantic import AliasChoices, Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from .audio import PCM_SAMPLE_RATE, PCM_SAMPLES
@@ -134,13 +134,16 @@ class Settings(BaseSettings):
 
     runner: Literal["deterministic", "livekit"] = "deterministic"
     agent_profile: str = "default"
-    vad_activation_threshold: float = Field(default=0.35, ge=0.1, le=0.9)
+    vad_activation_threshold: float = Field(default=0.10, ge=0.1, le=0.9)
+    vad_deactivation_threshold: float = Field(default=0.10, ge=0.1, le=0.9)
+    vad_idle_reset_seconds: float = Field(default=30.0, ge=5.0, le=300.0)
     agent_interruption_min_duration_seconds: float = Field(default=1.2, ge=0.1, le=3.0)
     interruption_policy_enabled: bool = True
     deepseek_api_key: SecretStr | None = Field(
         default=None,
         validation_alias=AliasChoices("VOICE_LLM_API_KEY", "VOICE_DEEPSEEK_API_KEY"),
     )
+
     deepseek_base_url: str = Field(
         default="https://api.deepseek.com",
         validation_alias=AliasChoices("VOICE_LLM_BASE_URL", "VOICE_DEEPSEEK_BASE_URL"),
@@ -188,6 +191,12 @@ class Settings(BaseSettings):
     mimo_tts_style: str = ""
     mimo_timeout_seconds: float = Field(default=20.0, gt=0, le=120)
     mimo_max_concurrency: int = Field(default=1, ge=1, le=4)
+
+    @model_validator(mode="after")
+    def validate_vad_thresholds(self) -> Self:
+        if self.vad_deactivation_threshold > self.vad_activation_threshold:
+            raise ValueError("vad_deactivation_threshold must not exceed vad_activation_threshold")
+        return self
 
     @property
     def funasr_chunk_sizes(self) -> tuple[int, int, int]:

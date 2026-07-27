@@ -29,6 +29,7 @@ from .observability.events import (
 from .providers.deepseek_llm import create_deepseek_llm
 from .providers.funasr_stt import FunASRStreamConfig, FunASRSTT
 from .providers.tts_factory import create_tts
+from .vad import ResettingVAD
 
 logger = logging.getLogger(__name__)
 
@@ -381,11 +382,12 @@ class _LiveKitPlaybackTrace:
 
 
 @lru_cache(maxsize=8)
-def _load_vad(activation_threshold: float):  # type: ignore[no-untyped-def]
+def _load_vad(activation_threshold: float, deactivation_threshold: float):  # type: ignore[no-untyped-def]
     return silero.VAD.load(
         force_cpu=True,
         sample_rate=PCM_SAMPLE_RATE,
         activation_threshold=activation_threshold,
+        deactivation_threshold=deactivation_threshold,
     )
 
 
@@ -422,9 +424,16 @@ class LiveKitAgentRunner:
     async def start(self) -> None:
         configure_trace_logging()
         self._tts = await create_tts(self._settings, tracer=self._tracer)
+        vad = ResettingVAD(
+            _load_vad(
+                self._settings.vad_activation_threshold,
+                self._settings.vad_deactivation_threshold,
+            ),
+            idle_reset_seconds=self._settings.vad_idle_reset_seconds,
+        )
         session = AgentSession(
             stt=FunASRSTT(FunASRStreamConfig.from_settings(self._settings), tracer=self._tracer),
-            vad=_load_vad(self._settings.vad_activation_threshold),
+            vad=vad,
             llm=create_deepseek_llm(self._settings),
             tts=self._tts,
             turn_handling={
