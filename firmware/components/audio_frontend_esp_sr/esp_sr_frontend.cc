@@ -1,6 +1,7 @@
 #include "audio_frontend_esp_sr/esp_sr_frontend.h"
 
 #include <cstring>
+#include <utility>
 
 #include <esp_err.h>
 #include <esp_ae_rate_cvt.h>
@@ -75,6 +76,9 @@ PortResult EspSrFrontend::Start() {
     }
     afe_config_->agc_init = false;
     afe_config_->memory_alloc_mode = AFE_MEMORY_ALLOC_MORE_PSRAM;
+    ESP_LOGI(kLogTag, "AFE scheduling: core=%d priority=%d ring_frames=%d",
+             afe_config_->afe_perferred_core, afe_config_->afe_perferred_priority,
+             afe_config_->afe_ringbuf_size);
 
     char* noise_suppression_model = nullptr;
     if (config_.enable_neural_noise_suppression && model_list_ != nullptr) {
@@ -156,6 +160,9 @@ PortResult EspSrFrontend::Start() {
     }
 
     vad_speech_.store(false);
+    fetch_telemetry_count_ = 0;
+    fetch_ring_min_ = 1.0F;
+    fetch_ring_max_ = 0.0F;
     started_.store(true);
     return PortResult::kOk;
 }
@@ -251,8 +258,39 @@ PortResult EspSrFrontend::Fetch(MutablePcmView* output, uint32_t timeout_ms) {
     }
 
     const size_t samples = static_cast<size_t>(result->data_size) / sizeof(int16_t);
-    if (samples > output->capacity_samples) {
+    if (samples != required_samples || samples > output->capacity_samples) {
         return PortResult::kResourceExhausted;
+    }
+    fetch_ring_min_ = result->ringbuff_free_pct < fetch_ring_min_
+                          ? result->ringbuff_free_pct
+                          : fetch_ring_min_;
+    fetch_ring_max_ = result->ringbuff_free_pct > fetch_ring_max_
+                          ? result->ringbuff_free_pct
+                          : fetch_ring_max_;
+    if (++fetch_telemetry_count_ == 1000) {
+        const auto level = [](const int16_t* data, size_t sample_count, size_t stride) {
+            uint64_t sum = 0;
+            uint32_t peak = 0;
+            for (size_t index = 0; index < sample_count; ++index) {
+                const int32_t sample = data[index * stride];
+                const uint32_t magnitude = static_cast<uint32_t>(sample < 0 ? -sample : sample);
+                sum += magnitude;
+                peak = magnitude > peak ? magnitude : peak;
+            }
+            return std::pair<uint32_t, uint32_t>{
+                sample_count == 0 ? 0U : static_cast<uint32_t>(sum / sample_count), peak};
+        };
+        const auto output_level = level(result->data, samples, 1);
+        ESP_LOGI(kLogTag,
+                 "AFE fetch window: ring_free_min=%.3f max=%.3f vad=%s "
+                 "mean_abs_out=%lu peak_out=%lu",
+                 static_cast<double>(fetch_ring_min_), static_cast<double>(fetch_ring_max_),
+                 vad_speech_.load() ? "speech" : "noise",
+                 static_cast<unsigned long>(output_level.first),
+                 static_cast<unsigned long>(output_level.second));
+        fetch_telemetry_count_ = 0;
+        fetch_ring_min_ = 1.0F;
+        fetch_ring_max_ = 0.0F;
     }
     std::memcpy(output->samples, result->data, samples * sizeof(int16_t));
     output->sample_count = samples;

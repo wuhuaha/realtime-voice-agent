@@ -64,6 +64,9 @@ private:
     std::atomic<bool> vad_speech_{false};
     std::atomic<bool> wakenet_available_{false};
     std::atomic<uint32_t> wake_word_index_{0};
+    uint32_t fetch_telemetry_count_ = 0;
+    float fetch_ring_min_ = 1.0F;
+    float fetch_ring_max_ = 0.0F;
 };
 
 }  // namespace rva::audio

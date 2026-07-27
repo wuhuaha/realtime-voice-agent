@@ -953,10 +953,8 @@ void VoiceRuntime::RunCapture() {
             const audio::PortResult fed = pipeline_.FeedFrontend(
                 {capture.samples, capture.sample_count, capture.sample_rate_hz, capture.channel_count});
             consecutive_failures = fed == audio::PortResult::kOk ? 0 : consecutive_failures + 1;
-            // AFE/AEC can consume a full time slice when near real-time load. Give
-            // idle, Wi-Fi and TCP/IP maintenance tasks a bounded chance to run
-            // after each captured frame instead of relying on driver blocking.
-            vTaskDelay(1);
+            // I2S capture is the real-time pacer. A fixed tick delay here would
+            // discard input because one FreeRTOS tick is 10 ms on this target.
         } else {
             consecutive_failures++;
         }
@@ -975,6 +973,14 @@ void VoiceRuntime::RunUplink() {
     size_t accumulated_samples = 0;
     std::array<uint8_t, protocol::kWssMaxPayloadBytes> opus{};
     uint32_t consecutive_failures = 0;
+    bool observed_vad = frontend_.speech_active();
+    uint32_t telemetry_packets = 0;
+    uint32_t telemetry_dtx_packets = 0;
+    uint32_t telemetry_opus_bytes = 0;
+    size_t telemetry_min_opus_bytes = std::numeric_limits<size_t>::max();
+    size_t telemetry_max_opus_bytes = 0;
+    ESP_LOGI(kLogTag, "uplink audio state: afe_vad=%s",
+             observed_vad ? "speech" : "noise");
     while (running_) {
         audio::MutablePcmView output{.samples = fetched.data(), .capacity_samples = fetched.size()};
         const audio::PortResult fetched_result = pipeline_.FetchFrontend(&output, 100);
@@ -986,6 +992,12 @@ void VoiceRuntime::RunUplink() {
             continue;
         }
         consecutive_failures = 0;
+        const bool current_vad = frontend_.speech_active();
+        if (current_vad != observed_vad) {
+            observed_vad = current_vad;
+            ESP_LOGI(kLogTag, "uplink audio state: afe_vad=%s",
+                     observed_vad ? "speech" : "noise");
+        }
         size_t offset = 0;
         while (offset < output.sample_count && running_) {
             if (accumulated_samples == accumulated.size() && !session_opened_) {
@@ -1016,6 +1028,27 @@ void VoiceRuntime::RunUplink() {
                 running_ = false;
                 accumulated_samples = 0;
                 continue;
+            }
+            telemetry_packets++;
+            telemetry_opus_bytes += static_cast<uint32_t>(opus_size);
+            telemetry_min_opus_bytes = std::min(telemetry_min_opus_bytes, opus_size);
+            telemetry_max_opus_bytes = std::max(telemetry_max_opus_bytes, opus_size);
+            if (opus_size <= 64) telemetry_dtx_packets++;
+            if (telemetry_packets == 1000) {
+                ESP_LOGI(
+                    kLogTag,
+                    "uplink audio window: packets=%lu opus_bytes_avg=%lu min=%u max=%u dtx=%lu afe_vad=%s",
+                    static_cast<unsigned long>(telemetry_packets),
+                    static_cast<unsigned long>(telemetry_opus_bytes / telemetry_packets),
+                    static_cast<unsigned>(telemetry_min_opus_bytes),
+                    static_cast<unsigned>(telemetry_max_opus_bytes),
+                    static_cast<unsigned long>(telemetry_dtx_packets),
+                    observed_vad ? "speech" : "noise");
+                telemetry_packets = 0;
+                telemetry_dtx_packets = 0;
+                telemetry_opus_bytes = 0;
+                telemetry_min_opus_bytes = std::numeric_limits<size_t>::max();
+                telemetry_max_opus_bytes = 0;
             }
             if (media_owner_ == voice::core::MediaOwner::kUdp) {
                 if (udp_runtime_ == nullptr ||
@@ -1052,9 +1085,8 @@ void VoiceRuntime::RunUplink() {
                 }
             }
             accumulated_samples = 0;
-            // Opus encode + UDP/WSS send can complete without blocking on good
-            // networks, which otherwise lets this priority-6 task starve idle.
-            vTaskDelay(1);
+            // AFE fetch is the real-time pacer. Do not add a fixed tick per
+            // packet or 60 ms of media will take longer than 60 ms to upload.
         }
     }
     ESP_LOGI(kLogTag, "uplink task minimum free stack: %lu bytes",
