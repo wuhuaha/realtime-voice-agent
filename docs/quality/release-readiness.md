@@ -1,6 +1,6 @@
 # Release readiness
 
-更新日期：2026-07-26
+更新日期：2026-07-28
 状态：not ready
 
 本文只记录当前 Product source 的发布门禁。历史迁移 artifact、串口、SSID、临时地址和实验日志不构成当前
@@ -40,6 +40,22 @@ release evidence；详细实验材料不进入 Product 仓。
   `session_overloaded`。
 - WSS 下行 media sequence 统一为按方向、按 session 严格递增；Firmware 不再在每个 `response.begin` 重置 sequence，
   修复第二条 TTS response 首包触发 `wss_media_admission` 的确定性失败。
+
+## 2026-07-28 验证环境增量证据
+
+以下是验证环境的增量证据，不提升正式 release gate。服务端 archive 的 SHA256、不可变 release 名称、实际
+`EnvironmentFile` 引用和唯一 Worker incarnation 由受控 release record 保存；不在本仓记录主机地址、路径、
+凭据或原始日志。
+
+- Worker 对 DeepSeek-compatible LLM 显式使用 `VOICE_LLM_READ_TIMEOUT_SECONDS`，默认 20 秒。此前 HTTP 200 后
+  首 token 超过 SDK 默认 5 秒 read deadline 会形成 `httpx.ReadTimeout`，从而不会调用 TTS；该修复的 Worker
+  定向测试 24 项和完整测试 203 项均通过。
+- 当前 ESP32 实机在同一采集窗口内两次命中 `wn9s_hiesp`，完成 bootstrap、WSS control、
+  `udp-opus-gcm-v2` probe ACK、上行 Opus 和 AFE VAD 状态切换。服务端关联到 FunASR final、LLM、MiMo
+  `tts_first_pcm`、`endpoint_playback_started`、`agent_audio_published` 与正常 playback completion；会话由用户
+  主动结束，关闭统计存在实际 UDP downlink 包。
+- 本轮首音的 `speech_end_to_agent_audio_ms` 为约 3.8 秒和 4.7 秒。样本量仅为两次交互，不能作为延迟 SLA、
+  声学/AEC、弱网或 30 分钟稳定性结论。
 
 ## 发布门禁
 

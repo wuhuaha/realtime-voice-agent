@@ -152,6 +152,12 @@ class Settings(BaseSettings):
         default="deepseek-v4-flash",
         validation_alias=AliasChoices("VOICE_LLM_MODEL", "VOICE_DEEPSEEK_MODEL"),
     )
+    deepseek_read_timeout_seconds: float = Field(
+        default=20.0,
+        gt=0,
+        le=120,
+        validation_alias=AliasChoices("VOICE_LLM_READ_TIMEOUT_SECONDS", "VOICE_DEEPSEEK_READ_TIMEOUT_SECONDS"),
+    )
     funasr_ws_url: str = Field(
         default="ws://127.0.0.1:1111/v1/asr/stream",
         validation_alias=AliasChoices("VOICE_FUNASR_URL", "VOICE_FUNASR_WS_URL"),

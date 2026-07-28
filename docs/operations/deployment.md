@@ -223,5 +223,10 @@ test ! -e "$RELEASE_DIR" || { echo "release directory already exists" >&2; exit 
 incarnation、UDP ready（启用时）和 real-provider canary。readiness 只证明基础服务状态，ESP32 媒体 HIL、长稳和
 声学门禁仍须独立执行并写入 release record；未完成时只能标记为验证环境。
 
+使用 DeepSeek-compatible streaming LLM 时，必须显式设置 `VOICE_LLM_READ_TIMEOUT_SECONDS`。默认值为 `20`，
+用于覆盖上游 SDK 的短 read deadline；首个 token 在 5 秒后才到达时，不应被错误归因为 TTS 或 UDP 故障。发布
+canary 应覆盖一次真实的 `ASR final -> LLM -> TTS first PCM -> downlink` 闭环，并记录是否出现 `ReadTimeout`。
+发生 LLM 流失败时，Worker 不会产生 `tts_requested` 或下行媒体包，这是预期的失败边界。
+
 设备 HIL 与持续联调应始终使用稳定的公网 bootstrap origin，并通过 provisioning/受控配置绑定 credential；不得随
 开发者本机网络变化反复重编固件。真实域名、主机 inventory、网络凭据和 token 只保存在受控部署资产中。

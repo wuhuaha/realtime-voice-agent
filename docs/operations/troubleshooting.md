@@ -82,6 +82,21 @@ Close `1002` 看 protocol category，`1009` 看消息大小，`1013` 看 admissi
 若 host fixture 可触发 ASR，而设备持续上传却没有 ASR，优先检查输入幅度、测试声源耦合、AFE/VAD 门限和
 Opus 解码 PCM peak/RMS，再检查 grant、transport admission 与 provider endpoint。
 
+## 6.1 已有 ASR final，但没有 TTS
+
+先按事件顺序定位，不要先改 UDP 或端侧播放：
+
+1. 确认同一 `turn_id` 出现 `asr_final` 和 `llm_requested`。
+2. 若没有 `tts_requested`，检查 LLM streaming 的错误、超时和首 token；DeepSeek-compatible provider 应使用
+   `VOICE_LLM_READ_TIMEOUT_SECONDS`，不要依赖 SDK 的默认 read deadline。
+3. 若已有 `tts_requested` 但没有 `tts_first_pcm`，检查 TTS provider、流式响应和 provider timeout。
+4. 若已有 `tts_first_pcm` 但没有 `endpoint_playback_started`，检查 Agent playback/generation；若已开始播放但
+   session close 统计的 `downlink_packets=0`，再检查 Worker media binding。
+5. `downlink_packets>0` 时，才继续检查 UDP/WSS transport、jitter、Opus decode 和端侧 playback queue。
+
+LLM 失败时没有 TTS 下行是正常因果链，不应误诊为端侧没有播放。日志只能关联脱敏的 `turn_id`、`session`、
+`worker_id` 和计数器，不得加入 prompt、token 或 provider 原始响应。
+
 ## 7. UDP 无音频
 
 - `session.opened` 确实 commit `udp-opus-gcm-v2` 并包含 grant。

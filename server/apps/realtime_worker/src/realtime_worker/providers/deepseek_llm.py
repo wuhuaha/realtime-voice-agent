@@ -10,6 +10,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+import httpx
+
 from ..config import Settings
 from ..errors import ProviderError
 
@@ -32,6 +34,17 @@ def create_deepseek_llm(settings: Settings) -> Any:
         model=settings.deepseek_model,
         base_url=settings.deepseek_base_url,
         api_key=key.get_secret_value(),
+        # The plugin default is a 5 s read deadline.  That is too aggressive
+        # for an Internet LLM stream: a provider can accept the request yet
+        # legitimately take longer before its first token.  Keep connect and
+        # pool bounds short, but give the streaming response a configured
+        # per-read deadline so a brief provider pause does not discard a turn.
+        timeout=httpx.Timeout(
+            connect=15.0,
+            read=settings.deepseek_read_timeout_seconds,
+            write=10.0,
+            pool=5.0,
+        ),
         extra_body={"thinking": {"type": "disabled"}},
         temperature=0.7,
         max_completion_tokens=256,
