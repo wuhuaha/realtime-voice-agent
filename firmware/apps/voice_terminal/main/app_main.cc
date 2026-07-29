@@ -900,6 +900,11 @@ void RunApplication() {
                 ui.get(), udp_available, ui_controls_session, true, &preferred_media, &conversation_requested,
                 &configuration_requested, &stop_current_runtime);
             if (stop_current_runtime || configuration_requested) {
+                // This is the only supervisor-initiated normal close while a
+                // runtime is active. Keep its cause visible without logging
+                // per-frame transport activity.
+                ESP_LOGI(kTag, "conversation runtime stop requested cause=%s",
+                         configuration_requested ? "configuration" : "ui_stop");
                 runtime.Stop();
             }
             vTaskDelay(pdMS_TO_TICKS(50));
@@ -931,6 +936,23 @@ void RunApplication() {
             !configuration_requested;
         const bool continue_refresh = session_refresh_requested || refresh_retry_requested;
         const bool configuration_interrupted = configuration_requested;
+        const char* runtime_end_cause = "transport_or_runtime_end";
+        if (stop_current_runtime || final_stop_requested) {
+            runtime_end_cause = "ui_stop";
+        } else if (configuration_interrupted) {
+            runtime_end_cause = "configuration";
+        } else if (udp_fallback_requested) {
+            runtime_end_cause = "udp_fallback_wss";
+        } else if (session_refresh_requested) {
+            runtime_end_cause = "udp_grant_refresh";
+        } else if (refresh_retry_requested) {
+            runtime_end_cause = "udp_refresh_retry";
+        }
+        ESP_LOGI(
+            kTag,
+            "conversation runtime ended cause=%s requested=%d refresh=%d fallback=%d",
+            runtime_end_cause, conversation_requested ? 1 : 0, session_refresh_requested ? 1 : 0,
+            udp_fallback_requested ? 1 : 0);
         if (configuration_interrupted) {
             configuration_requested = false;
             lease.Finalize();
