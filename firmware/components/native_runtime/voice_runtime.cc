@@ -1088,8 +1088,14 @@ void VoiceRuntime::RunUplink() {
                 } else {
                     std::memcpy(frame.data() + protocol::kMediaHeaderBytes, opus.data(), opus_size);
                     if (!owner_->SendMedia(frame.data(), protocol::kMediaHeaderBytes + opus_size, 1000)) {
-                        events_.OnFailure("uplink_send");
-                        running_ = false;
+                        // Stop() clears running_ before requesting the websocket close.
+                        // A frame already in this task may race that close, but it is
+                        // not a transport failure and must not turn a normal UI stop
+                        // into an error/retry state.
+                        if (running_) {
+                            events_.OnFailure("uplink_send");
+                            running_ = false;
+                        }
                     }
                 }
             } else {
