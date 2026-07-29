@@ -40,6 +40,8 @@ public:
     UdpRuntime(UdpSession& session, DatagramIoPort& io);
     ~UdpRuntime();
     bool Start();
+    // Retries are byte-identical so the AEAD nonce/sequence-zero probe remains idempotent.
+    // The server may re-ack this authenticated handshake packet without advancing replay state.
     bool SendProbe();
     bool SendKeepalive();
     bool SendAudio(const uint8_t* opus, size_t opus_size, uint32_t timestamp);

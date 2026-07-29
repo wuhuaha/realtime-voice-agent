@@ -48,6 +48,10 @@ capture admission 与 playback state 耦合。PROBE、PROBE_ACK、KEEPALIVE 双�
 - AAD 是未经修改的完整 32-byte header；tag 固定 16 bytes。
 - 只有 authentication 成功后才能推进 anti-replay、绑定 source 或提交 generation/sequence state。
 - Sequence 不得回绕；耗尽前关闭并 fresh bootstrap。
+- PROBE ACK 总 deadline 内，Endpoint 可以每 250 ms 重发首次生成的 byte-identical sequence-zero PROBE；重发
+  不得延长 deadline，也不得在同一 nonce 下生成不同 ciphertext/AAD。Server 仅在已绑定同一 source、首个后续
+  uplink 尚未接收、原 replay entry 仍在窗口、握手时间/次数预算未耗尽时重新认证。通过后只重发缓存的同一个
+  byte-identical sequence-zero PROBE_ACK；不得推进任一方向 sequence/replay、媒体 cursor 或 liveness。
 
 ## Admission
 
@@ -55,8 +59,10 @@ capture admission 与 playback state 耦合。PROBE、PROBE_ACK、KEEPALIVE 双�
 2. 定位 `media_id/media_epoch`，预检查 64-packet replay history 与 1024-packet 最大 forward jump。
 3. 使用 header 作为 AAD 完成 GCM authentication。
 4. 校验 source binding；首次认证 PROBE 绑定 endpoint 并返回 PROBE_ACK。
-5. 校验 generation：uplink/non-AUDIO 必须为 0；downlink AUDIO 必须 exact-match active target。
-6. 通过 4-slot jitter admission 后提交 sequence；缺口最多等待 120 ms，随后用 Opus PLC 推进 live edge。
+5. 在严格握手窗口内，对同一 bound source 的 byte-identical sequence-zero PROBE 允许重新认证，并限频重发缓存的
+   byte-identical ACK；重复包不得二次提交 replay、sequence 或 liveness。
+6. 校验 generation：uplink/non-AUDIO 必须为 0；downlink AUDIO 必须 exact-match active target。
+7. 通过 4-slot jitter admission 后提交 sequence；缺口最多等待 120 ms，随后用 Opus PLC 推进 live edge。
 
 未认证 packet 不得推进任何可观测 session state，也不得触发放大响应。WSS 断开、grant expiry、source 变化、
 sequence exhaustion 或 fatal media error 都撤销 UDP session；恢复必须 fresh bootstrap，不做同 session transport switch。

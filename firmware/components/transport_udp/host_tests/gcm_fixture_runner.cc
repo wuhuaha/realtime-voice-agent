@@ -92,12 +92,18 @@ int main(int argc, char** argv) {
         assert(!view);
         return 0;
     }
-    assert(stage == "authentication" && view);
+    assert((stage == "authentication" || stage == "generation") && view);
     MbedTlsGcm crypto;
     assert(crypto.SetKey(key));
     std::vector<uint8_t> plaintext(std::max<uint32_t>(1, view->header.payload_length));
-    assert(!crypto.Decrypt(wire::MakeNonce(salt, view->header.sequence),
-                           view->header_bytes, view->ciphertext,
-                           view->header.payload_length, view->tag, plaintext.data()));
+    const bool authenticated = crypto.Decrypt(
+        wire::MakeNonce(salt, view->header.sequence),
+        view->header_bytes, view->ciphertext,
+        view->header.payload_length, view->tag, plaintext.data());
+    if (stage == "authentication") {
+        assert(!authenticated);
+    } else {
+        assert(authenticated && view->header.generation != 0);
+    }
     return 0;
 }

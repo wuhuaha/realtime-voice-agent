@@ -118,12 +118,12 @@ int Positive(int argc, char** argv) {
 }
 
 int Admission(int argc, char** argv, bool expected) {
-    if (argc != 3) return 2;
+    if (argc != 4) return 2;
     std::vector<std::uint8_t> datagram;
+    wire::Direction direction = wire::Direction::kUplink;
+    if (!ParseDirection(argv[3], direction)) return 3;
     const bool admitted = ParseHex(argv[2], datagram) &&
-        wire::ParseDatagram(
-            datagram.data(), datagram.size(), wire::Direction::kUplink)
-            .has_value();
+        wire::ParseDatagram(datagram.data(), datagram.size(), direction).has_value();
     return admitted == expected ? 0 : 10;
 }
 

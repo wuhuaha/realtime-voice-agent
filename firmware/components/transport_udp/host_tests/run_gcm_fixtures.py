@@ -62,6 +62,10 @@ def main() -> int:
         ])
 
         positive = json.loads((FIXTURES / "positive.json").read_text(encoding="utf-8"))
+        keys = {
+            direction: next(vector for vector in positive["vectors"] if vector["direction"] == direction)
+            for direction in ("uplink", "downlink")
+        }
         for vector in positive["vectors"]:
             run([
                 str(executable), "positive", vector["direction"], vector["key_hex"],
@@ -71,9 +75,11 @@ def main() -> int:
 
         negative = json.loads((FIXTURES / "negative.json").read_text(encoding="utf-8"))
         for vector in negative["vectors"]:
+            direction = "downlink" if "probe-ack" in vector["id"] else "uplink"
+            key_material = keys[direction]
             run([
-                str(executable), "negative", negative["key_hex"], negative["salt_hex"],
-                vector["datagram_hex"], vector["reject_stage"], "uplink",
+                str(executable), "negative", key_material["key_hex"], key_material["salt_hex"],
+                vector["datagram_hex"], vector["reject_stage"], direction,
             ])
     print("GCM fixtures: all positive and negative vectors passed")
     return 0

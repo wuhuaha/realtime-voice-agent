@@ -69,6 +69,8 @@ private:
     std::array<uint8_t, wire::kMaxPayloadBytes> plaintext_{};
     Stats stats_{};
     Endpoint bound_source_{};
+    std::array<uint8_t, wire::kHeaderBytes + wire::kTagBytes> probe_datagram_{};
+    size_t probe_size_ = 0;
     uint32_t send_sequence_ = 0;
     uint32_t downlink_generation_ = 1;
     int64_t last_authenticated_receive_us_ = 0;

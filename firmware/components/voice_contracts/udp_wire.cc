@@ -35,16 +35,8 @@ std::optional<DatagramType> ParseType(std::uint8_t value) {
     }
 }
 
-}  // namespace
-
-bool HeaderFieldsValid(const Header& header, Direction direction) {
+bool HeaderShapeValid(const Header& header, Direction direction) {
     if (header.media_epoch == 0 || header.payload_length > kMaxPayloadBytes) {
-        return false;
-    }
-    const bool audio = header.type == DatagramType::kAudio;
-    if ((direction == Direction::kUplink && header.generation != 0) ||
-        (direction == Direction::kDownlink &&
-         (audio ? header.generation == 0 : header.generation != 0))) {
         return false;
     }
     switch (header.type) {
@@ -60,6 +52,19 @@ bool HeaderFieldsValid(const Header& header, Direction direction) {
             return header.payload_length == 0;
     }
     return false;
+}
+
+}  // namespace
+
+bool HeaderFieldsValid(const Header& header, Direction direction) {
+    if (!HeaderShapeValid(header, direction)) return false;
+    const bool audio = header.type == DatagramType::kAudio;
+    if ((direction == Direction::kUplink && header.generation != 0) ||
+        (direction == Direction::kDownlink &&
+         (audio ? header.generation == 0 : header.generation != 0))) {
+        return false;
+    }
+    return true;
 }
 
 WireHeader EncodeHeader(const Header& header) {
@@ -97,7 +102,9 @@ std::optional<DatagramView> ParseDatagram(
     header.timestamp = ReadU32(data + 20);
     header.generation = ReadU32(data + 24);
     header.payload_length = ReadU32(data + 28);
-    if (!HeaderFieldsValid(header, direction) ||
+    // Generation is authenticated policy, not framing. Keeping it out of the
+    // pre-auth parser ensures a tampered AAD byte cannot bypass GCM admission.
+    if (!HeaderShapeValid(header, direction) ||
         size != kHeaderBytes + header.payload_length + kTagBytes) {
         return std::nullopt;
     }

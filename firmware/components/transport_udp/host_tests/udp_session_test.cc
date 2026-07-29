@@ -152,6 +152,13 @@ int main() {
         uplink_datagram.data(), uplink_size, wire::Direction::kUplink);
     assert(probe && probe->header.type == wire::DatagramType::kProbe);
     assert(probe->header.sequence == 0 && probe->header.generation == 0);
+    const auto first_probe = uplink_datagram;
+    const size_t first_probe_size = uplink_size;
+    std::array<uint8_t, wire::kMaxDatagramBytes> retried_probe{};
+    size_t retried_probe_size = 0;
+    assert(session.BuildProbe(retried_probe.data(), retried_probe.size(), &retried_probe_size));
+    assert(retried_probe_size == first_probe_size);
+    assert(std::equal(first_probe.begin(), first_probe.begin() + first_probe_size, retried_probe.begin()));
 
     assert(session.BuildKeepalive(
         uplink_datagram.data(), uplink_datagram.size(), &uplink_size));
@@ -201,11 +208,11 @@ int main() {
     assert(session.PopPlayout(1000).kind == PlayoutKind::kAudio);
     assert(session.Receive(Server(), datagram.data(), size, 1000) == AdmissionResult::kReplay);
 
-    // Downlink audio must always carry a non-zero active generation.
+    // Generation is authenticated before policy rejects a stale zero value.
     size = Downlink(downlink, grant, wire::DatagramType::kAudio,
                     2, 0, opus, sizeof(opus), datagram);
     assert(session.Receive(Server(), datagram.data(), size, 2000) ==
-           AdmissionResult::kInvalidFraming);
+           AdmissionResult::kStaleGeneration);
 
     // The canonical forward window is 1024 packets; a larger jump is rejected.
     size = Downlink(downlink, grant, wire::DatagramType::kAudio,
@@ -285,7 +292,7 @@ int main() {
     const Stats stats = session.stats();
     assert(stats.authentication_failed == 2);
     assert(stats.wrong_source == 1);
-    assert(stats.stale_generation == 0);
+    assert(stats.stale_generation == 1);
     assert(stats.future_generation == 5);
     assert(stats.lost == 2);
     assert(stats.played == 8);
@@ -331,9 +338,14 @@ int main() {
     assert(cadence.Receive(Server(), datagram.data(), size, 1000) ==
            AdmissionResult::kAcceptedAudio);
     size = Downlink(cadence_downlink, grant, wire::DatagramType::kKeepalive,
+                    2, 1, nullptr, 0, datagram);
+    assert(cadence.Receive(Server(), datagram.data(), size, 2000) ==
+           AdmissionResult::kStaleGeneration);
+    assert(cadence.last_authenticated_receive_us() == 1000);
+    size = Downlink(cadence_downlink, grant, wire::DatagramType::kKeepalive,
                     2, 0, nullptr, 0, datagram);
     assert(cadence.Receive(Server(), datagram.data(), size, 2000) ==
-           AdmissionResult::kAcceptedKeepalive);
+           AdmissionResult::kReplay);
     size = Downlink(cadence_downlink, grant, wire::DatagramType::kAudio,
                     3, 1, opus, sizeof(opus), datagram);
     assert(cadence.Receive(Server(), datagram.data(), size, 3000) ==

@@ -75,9 +75,9 @@ bool UdpRuntime::Start() {
 
 bool UdpRuntime::SendProbe() {
     std::lock_guard<std::mutex> lock(send_mutex_);
+    if (stop_requested_.load()) return false;
     std::array<uint8_t, wire::kMaxDatagramBytes> datagram{};
     size_t size = 0;
-    if (stop_requested_.load()) return false;
     return session_.BuildProbe(datagram.data(), datagram.size(), &size) &&
            SendDatagram(datagram.data(), size);
 }

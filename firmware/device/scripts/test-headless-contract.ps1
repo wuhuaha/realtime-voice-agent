@@ -55,7 +55,8 @@ try {
         } else {
             "auth-candidate"
         }
-        & $wireExecutable $mode $vector.datagram_hex
+        $direction = if ($vector.id -like "*probe-ack*") { "downlink" } else { "uplink" }
+        & $wireExecutable $mode $vector.datagram_hex $direction
         if ($LASTEXITCODE -ne 0) {
             throw "UDP wire fixture admission mismatch: $($vector.id)"
         }

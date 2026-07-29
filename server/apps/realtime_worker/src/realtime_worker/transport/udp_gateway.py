@@ -33,6 +33,8 @@ logger = logging.getLogger(__name__)
 
 AudioReceiver = Callable[[bytes, int, int], Awaitable[None]]
 FailureReceiver = Callable[[BaseException], None]
+_PROBE_RETRY_INTERVAL_SECONDS = 0.25
+_PROBE_RETRY_INTERVAL_MS = 250
 
 
 class UdpMediaError(RuntimeError):
@@ -139,6 +141,11 @@ class UdpMediaSession:
         self._replay = ReplayWindow()
         self._downlink_sequence = 0
         self._next_audio_sequence: int | None = None
+        self._probe_ack_datagram: bytes | None = None
+        self._probe_reack_deadline = 0.0
+        self._probe_reack_next_at = 0.0
+        self._probe_reack_remaining = 0
+        self._probe_reack_open = False
         self._reorder_wait_seconds = reorder_wait_seconds
         self._reorder: dict[int, tuple[int, bytes, int, int]] = {}
         self._reorder_timer: asyncio.Task[None] | None = None
@@ -255,7 +262,25 @@ class UdpMediaSession:
         if header.flags not in {UDP_FLAG_AUDIO, UDP_FLAG_PROBE, UDP_FLAG_KEEPALIVE}:
             self.stats.invalid += 1
             return
-        if not self._replay.can_accept(header.sequence):
+        now_monotonic = time.monotonic()
+        replay_acceptable = self._replay.can_accept(header.sequence)
+        repeated_initial_probe = (
+            not replay_acceptable
+            and self._replay.contains(header.sequence)
+            and header.flags == UDP_FLAG_PROBE
+            and header.sequence == 0
+            and header.timestamp == 0
+            and header.generation == 0
+            and header.payload_length == 0
+            and self._ready.is_set()
+            and self._source == addr
+            and self._probe_reack_open
+            and self._probe_ack_datagram is not None
+            and now_monotonic <= self._probe_reack_deadline
+            and now_monotonic >= self._probe_reack_next_at
+            and self._probe_reack_remaining > 0
+        )
+        if not replay_acceptable and not repeated_initial_probe:
             if self._replay.exceeds_forward_window(header.sequence):
                 self.stats.invalid += 1
             else:
@@ -271,6 +296,19 @@ class UdpMediaSession:
             self.stats.invalid += 1
             return
         self.stats.authenticated += 1
+        if repeated_initial_probe:
+            if payload:
+                self.stats.invalid += 1
+                return
+            self.stats.replayed += 1
+            transport = self._gateway.transport
+            if transport is None or self._source is None or self._probe_ack_datagram is None:
+                return
+            transport.sendto(self._probe_ack_datagram, self._source)
+            self.stats.sent += 1
+            self._probe_reack_remaining -= 1
+            self._probe_reack_next_at = now_monotonic + _PROBE_RETRY_INTERVAL_SECONDS
+            return
         if self._source is not None and addr != self._source:
             self.stats.wrong_source += 1
             return
@@ -297,6 +335,13 @@ class UdpMediaSession:
             if expected is None:
                 self._next_audio_sequence = header.sequence
             await self._buffer_media(header, b"")
+            acknowledged_at = time.monotonic()
+            self._probe_reack_deadline = acknowledged_at + self.grant.probe_timeout_ms / 1000
+            self._probe_reack_next_at = acknowledged_at + _PROBE_RETRY_INTERVAL_SECONDS
+            self._probe_reack_remaining = max(
+                1, (self.grant.probe_timeout_ms + _PROBE_RETRY_INTERVAL_MS - 1) // _PROBE_RETRY_INTERVAL_MS
+            )
+            self._probe_reack_open = True
             self._ready.set()
             return
         if self._source is None or not self._ready.is_set():
@@ -321,6 +366,7 @@ class UdpMediaSession:
         ):
             self.stats.queue_dropped += 1
             return
+        self._probe_reack_open = False
         self._replay.commit(header.sequence)
         await self._buffer_media(header, payload)
         if header.flags == UDP_FLAG_KEEPALIVE:
@@ -422,6 +468,8 @@ class UdpMediaSession:
         if len(datagram) > UDP_MAX_DATAGRAM_BYTES:
             raise UdpMediaError("UDP datagram exceeds conservative MTU")
         transport.sendto(datagram, source)
+        if flags == UDP_FLAG_PROBE_ACK and self._probe_ack_datagram is None:
+            self._probe_ack_datagram = datagram
         self.stats.sent += 1
         return sequence
 

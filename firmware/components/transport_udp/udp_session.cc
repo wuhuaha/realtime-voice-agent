@@ -62,6 +62,8 @@ bool UdpSession::Configure(const SessionGrant& grant) {
     jitter_.Reset(downlink_generation_);
     stats_ = {};
     bound_source_ = {};
+    SecureErase(&probe_datagram_);
+    probe_size_ = 0;
     ready_ = false;
     playback_active_ = false;
     configured_ = true;
@@ -86,6 +88,8 @@ void UdpSession::RevokeLocked() {
     downlink_crypto_.ClearKey();
     SecureErase(&plaintext_);
     SecureErase(&grant_);
+    SecureErase(&probe_datagram_);
+    probe_size_ = 0;
     send_sequence_ = 0;
     last_authenticated_receive_us_ = 0;
 }
@@ -182,7 +186,16 @@ void UdpSession::ClearFutureFrames() {
 
 bool UdpSession::BuildProbe(uint8_t* output, size_t capacity, size_t* size) {
     std::lock_guard<std::mutex> lock(mutex_);
-    return Build(wire::DatagramType::kProbe, nullptr, 0, 0, 0, output, capacity, size);
+    if (output == nullptr || size == nullptr || capacity < probe_datagram_.size()) return false;
+    if (probe_size_ == 0) {
+        if (!Build(wire::DatagramType::kProbe, nullptr, 0, 0, 0,
+                   probe_datagram_.data(), probe_datagram_.size(), &probe_size_)) {
+            return false;
+        }
+    }
+    std::copy_n(probe_datagram_.begin(), probe_size_, output);
+    *size = probe_size_;
+    return true;
 }
 
 bool UdpSession::BuildKeepalive(uint8_t* output, size_t capacity, size_t* size) {
@@ -256,9 +269,20 @@ AdmissionResult UdpSession::Receive(const Endpoint& source, const uint8_t* datag
         return AdmissionResult::kWrongSource;
     }
     if (!bound_source_.valid()) bound_source_ = source;
-    replay_.Commit(view->header.sequence);
-    last_authenticated_receive_us_ = now_us;
     const bool audio = view->header.type == wire::DatagramType::kAudio;
+    // Every authenticated packet from the bound source consumes its nonce.
+    // Semantic rejection must not leave the same sequence reusable.
+    replay_.Commit(view->header.sequence);
+    if (!audio && view->header.generation != 0) {
+        if (ready_) {
+            (void)jitter_.InsertControl(
+                view->header.sequence, downlink_generation_, now_us, &stats_);
+        }
+        SecureErase(&plaintext_);
+        stats_.stale_generation++;
+        return AdmissionResult::kStaleGeneration;
+    }
+    last_authenticated_receive_us_ = now_us;
     if (audio && view->header.generation < downlink_generation_) {
         SecureErase(&plaintext_);
         stats_.stale_generation++;

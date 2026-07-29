@@ -83,6 +83,12 @@ class ReplayWindow:
         distance = self._highest - sequence
         return distance < UDP_REPLAY_WINDOW_PACKETS and (self._bitmap & (1 << distance)) == 0
 
+    def contains(self, sequence: int) -> bool:
+        if self._highest < 0 or sequence > self._highest:
+            return False
+        distance = self._highest - sequence
+        return distance < UDP_REPLAY_WINDOW_PACKETS and (self._bitmap & (1 << distance)) != 0
+
     def exceeds_forward_window(self, sequence: int) -> bool:
         return self._highest >= 0 and sequence > self._highest + UDP_MAX_SEQUENCE_FORWARD_JUMP
 
