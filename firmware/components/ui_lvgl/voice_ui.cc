@@ -498,9 +498,14 @@ void VoiceUi::Render() {
     lv_label_set_text(conversation_label_, ConversationLabel(state_.conversation));
     lv_label_set_text(asr_label_, state_.asr_text.c_str());
     lv_label_set_text(response_label_, state_.response_text.c_str());
+    // A media profile is authoritative only after session.opened. Showing the
+    // requested profile while connecting prevents a stale prior session from
+    // briefly being presented as the new session's transport.
+    const bool media_established = state_.conversation == ConversationState::kListening ||
+                                   state_.conversation == ConversationState::kThinking ||
+                                   state_.conversation == ConversationState::kSpeaking;
     lv_label_set_text(transport_label_, TransportLabel(
-        state_.conversation == ConversationState::kIdle ? state_.preferred_transport
-                                                        : state_.active_transport));
+        media_established ? state_.active_transport : state_.preferred_transport));
 
     const bool idle = state_.conversation == ConversationState::kIdle;
     lv_obj_set_style_bg_color(

@@ -17,6 +17,8 @@ int main() {
     assert(!lifecycle.Begin());
 
     UiState state;
+    assert(state.preferred_transport == Transport::kWss);
+    assert(state.active_transport == Transport::kWss);
     state.connection = ConnectionState::kOnline;
 
     auto event = Reduce(&state, {.kind = CommandKind::kMicPressed, .value = 0, .text = {}});
@@ -40,12 +42,12 @@ int main() {
     state.conversation = ConversationState::kListening;
     event = Reduce(&state, {.kind = CommandKind::kTransportPressed, .value = 0, .text = {}});
     assert(!event.has_value());
-    assert(state.preferred_transport == Transport::kUdp);
+    assert(state.preferred_transport == Transport::kWss);
 
     state.conversation = ConversationState::kIdle;
     event = Reduce(&state, {.kind = CommandKind::kTransportPressed, .value = 0, .text = {}});
     assert(event.has_value() && event->kind == EventKind::kSelectTransport);
-    assert(event->transport == Transport::kWss);
+    assert(event->transport == Transport::kUdp);
 
     const std::string chinese = "中文语音";
     assert(TruncateUtf8(chinese, 4) == "中");

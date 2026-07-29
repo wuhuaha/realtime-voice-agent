@@ -80,6 +80,15 @@ constexpr uint32_t RefreshRetryDelayMs(uint32_t consecutive_failures) {
     return 250U << (consecutive_failures - 1U);
 }
 
+constexpr rva::ui::Transport ToUiTransport(rva::runtime::MediaPreference preference) {
+    return preference == rva::runtime::MediaPreference::kUdp ? rva::ui::Transport::kUdp
+                                                              : rva::ui::Transport::kWss;
+}
+
+constexpr const char* MediaPreferenceLabel(rva::runtime::MediaPreference preference) {
+    return preference == rva::runtime::MediaPreference::kUdp ? "udp" : "wss";
+}
+
 static_assert(ShouldContinueConversation(false, false, false, true, false, false, false));
 static_assert(ShouldContinueConversation(false, false, false, false, true, false, false));
 static_assert(ShouldContinueConversation(false, false, true, false, false, false, false));
@@ -119,9 +128,7 @@ public:
     void OnMediaProfile(rva::runtime::MediaPreference preference) override {
         Post({
             rva::ui::CommandKind::kSetActiveTransport,
-            static_cast<uint32_t>(preference == rva::runtime::MediaPreference::kUdp
-                                      ? rva::ui::Transport::kUdp
-                                      : rva::ui::Transport::kWss),
+            static_cast<uint32_t>(ToUiTransport(preference)),
             {},
         });
         Post({
@@ -317,6 +324,9 @@ void ProcessConversationUiEvents(
             *preferred_media = udp_available && event.transport == rva::ui::Transport::kUdp
                                    ? rva::runtime::MediaPreference::kUdp
                                    : rva::runtime::MediaPreference::kWss;
+            ESP_LOGI(kTag, "transport preference selected=%s source=%s",
+                     MediaPreferenceLabel(*preferred_media),
+                     event.kind == rva::ui::EventKind::kSelectTransport ? "ui" : "mic");
         }
         if (event.kind == rva::ui::EventKind::kStartConversation) {
             ESP_LOGI(kTag, "MIC requested conversation start");
@@ -634,7 +644,14 @@ void RunApplication() {
     rva::runtime::IdleWakeRuntime idle_wake(codec.capture(), frontend);
     rva::runtime::DirectorBootstrap director;
     const bool udp_available = true;
-    rva::runtime::MediaPreference preferred_media = rva::runtime::MediaPreference::kUdp;
+    // Keep the startup source of truth aligned with UiState. UDP is selectable
+    // from the idle UI and selected only for the session that follows.
+    rva::runtime::MediaPreference preferred_media = rva::runtime::MediaPreference::kWss;
+    PostUi(ui.get(), {
+        rva::ui::CommandKind::kSetPreferredTransport,
+        static_cast<uint32_t>(ToUiTransport(preferred_media)),
+        {},
+    });
     const bool ui_controls_session = kMicButtonControlsSession && !kAutoStartConversation;
     ESP_LOGI(kTag,
              "conversation lifecycle: auto_start=%d mic_button_controls_session=%d effective_ui_controls=%d",
@@ -773,6 +790,8 @@ void RunApplication() {
             static_cast<uint32_t>(rva::ui::ConversationState::kConnecting),
             {},
         });
+        ESP_LOGI(kTag, "conversation bootstrap preference=%s source=supervisor",
+                 MediaPreferenceLabel(preferred_media));
         rva::runtime::BootstrapGrant grant;
         const bool bootstrap_accepted = director.Request(
             service_endpoint.url,
@@ -960,6 +979,11 @@ void RunApplication() {
         }
         if (udp_fallback_requested) {
             preferred_media = rva::runtime::MediaPreference::kWss;
+            PostUi(ui.get(), {
+                rva::ui::CommandKind::kSetPreferredTransport,
+                static_cast<uint32_t>(ToUiTransport(preferred_media)),
+                {},
+            });
             runtime_events.OnFailure("udp_fallback_wss");
             ESP_LOGW(kTag, "UDP media unavailable; retrying current request with fresh WSS route");
         }
