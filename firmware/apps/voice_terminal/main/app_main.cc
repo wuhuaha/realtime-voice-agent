@@ -8,6 +8,7 @@
 
 #include <esp_log.h>
 #include <esp_system.h>
+#include <esp_timer.h>
 #include <model_path.h>
 #include <nvs_flash.h>
 
@@ -43,6 +44,58 @@ constexpr bool kMicButtonControlsSession = true;
 #else
 constexpr bool kMicButtonControlsSession = false;
 #endif
+
+constexpr bool ShouldContinueConversation(
+    bool auto_start,
+    bool current_request,
+    bool user_start_requested,
+    bool session_refresh_requested,
+    bool transport_fallback_requested,
+    bool user_stop_requested,
+    bool configuration_requested) {
+    return !configuration_requested && !user_stop_requested &&
+           (auto_start || current_request || user_start_requested || session_refresh_requested ||
+             transport_fallback_requested);
+}
+
+constexpr bool ShouldRetryStartup(
+    bool auto_start,
+    bool current_request,
+    bool start_requested,
+    bool session_refresh_requested,
+    bool user_stop_requested,
+    bool configuration_requested) {
+    return ShouldContinueConversation(
+        auto_start, current_request,
+        current_request || start_requested,
+        session_refresh_requested,
+        false,
+        user_stop_requested,
+        configuration_requested);
+}
+
+constexpr uint32_t RefreshRetryDelayMs(uint32_t consecutive_failures) {
+    if (consecutive_failures == 0) return 0;
+    if (consecutive_failures >= 5) return 4000;
+    return 250U << (consecutive_failures - 1U);
+}
+
+static_assert(ShouldContinueConversation(false, false, false, true, false, false, false));
+static_assert(ShouldContinueConversation(false, false, false, false, true, false, false));
+static_assert(ShouldContinueConversation(false, false, true, false, false, false, false));
+static_assert(ShouldContinueConversation(false, true, false, false, false, false, false));
+static_assert(ShouldContinueConversation(true, false, false, false, false, false, false));
+static_assert(!ShouldContinueConversation(false, false, false, false, false, false, false));
+static_assert(!ShouldContinueConversation(true, true, true, true, true, true, false));
+static_assert(!ShouldContinueConversation(true, true, true, true, true, false, true));
+static_assert(ShouldRetryStartup(false, true, false, false, false, false));
+static_assert(!ShouldRetryStartup(false, true, false, false, true, false));
+static_assert(!ShouldRetryStartup(false, true, false, false, false, true));
+static_assert(RefreshRetryDelayMs(0) == 0);
+static_assert(RefreshRetryDelayMs(1) == 250);
+static_assert(RefreshRetryDelayMs(4) == 2000);
+static_assert(RefreshRetryDelayMs(5) == 4000);
+static_assert(RefreshRetryDelayMs(100) == 4000);
 
 class UiRuntimeEvents final : public rva::runtime::RuntimeEventSink {
 public:
@@ -156,13 +209,31 @@ std::vector<rva::config::EndpointCandidate> ProvisionedEndpoints() {
     }};
 }
 
-bool PostUi(rva::ui::VoiceUi* ui, const rva::ui::UiCommand& command) {
+bool PostUi(
+    rva::ui::VoiceUi* ui,
+    const rva::ui::UiCommand& command,
+    uint32_t timeout_ms = 200) {
     if (ui == nullptr) return false;
-    for (uint32_t attempt = 0; attempt < 20; ++attempt) {
+    constexpr uint32_t kRetryIntervalMs = 10;
+    const uint32_t attempts = std::max<uint32_t>(
+        1, (timeout_ms + kRetryIntervalMs - 1) / kRetryIntervalMs);
+    for (uint32_t attempt = 0; attempt < attempts; ++attempt) {
         if (ui->Post(command)) return true;
-        vTaskDelay(pdMS_TO_TICKS(10));
+        vTaskDelay(pdMS_TO_TICKS(kRetryIntervalMs));
     }
     return false;
+}
+
+void ReturnUiHome(rva::ui::VoiceUi* ui) {
+    if (ui == nullptr) return;
+    constexpr uint32_t kNavigationTimeoutMs = 2000;
+    if (PostUi(
+            ui,
+            {.kind = rva::ui::CommandKind::kBackHome, .value = 0, .text = {}},
+            kNavigationTimeoutMs)) {
+        return;
+    }
+    ESP_LOGW(kTag, "UI navigation delivery failed command=back_home; continuing voice startup");
 }
 
 class ScopedBootstrapLease final {
@@ -221,11 +292,16 @@ void ProcessConversationUiEvents(
     rva::runtime::MediaPreference* preferred_media,
     bool* conversation_requested,
     bool* configuration_requested,
-    bool* stop_current_runtime) {
+    bool* stop_current_runtime,
+    bool* start_conversation_seen = nullptr,
+    bool* stop_conversation_seen = nullptr) {
     if (ui == nullptr || preferred_media == nullptr || conversation_requested == nullptr ||
         configuration_requested == nullptr) {
         return;
     }
+    bool saw_start = false;
+    bool saw_stop = false;
+    bool saw_configuration = false;
     rva::ui::UiEvent event;
     while (ui->PollEvent(&event)) {
         const bool session_lifecycle_event =
@@ -244,20 +320,37 @@ void ProcessConversationUiEvents(
         }
         if (event.kind == rva::ui::EventKind::kStartConversation) {
             ESP_LOGI(kTag, "MIC requested conversation start");
-            *conversation_requested = true;
+            saw_start = true;
         } else if (event.kind == rva::ui::EventKind::kStopConversation) {
             ESP_LOGI(kTag, "MIC requested conversation stop");
-            *conversation_requested = false;
-            if (runtime_active && stop_current_runtime != nullptr) {
-                *stop_current_runtime = true;
-            }
+            saw_stop = true;
         } else if (event.kind == rva::ui::EventKind::kRequestWifiScan) {
-            *configuration_requested = true;
-            *conversation_requested = false;
-            if (runtime_active && stop_current_runtime != nullptr) {
-                *stop_current_runtime = true;
-            }
+            saw_configuration = true;
         }
+    }
+    if (start_conversation_seen != nullptr) {
+        *start_conversation_seen = *start_conversation_seen || saw_start;
+    }
+    if (stop_conversation_seen != nullptr) {
+        *stop_conversation_seen = *stop_conversation_seen || saw_stop;
+    }
+
+    // Configuration and stop are cancellation signals. Apply them after the
+    // complete queue drain so a later start event in the same batch cannot
+    // accidentally reopen a session that the user just stopped.
+    if (*configuration_requested || saw_configuration) {
+        *configuration_requested = true;
+        *conversation_requested = false;
+        if (runtime_active && stop_current_runtime != nullptr) {
+            *stop_current_runtime = true;
+        }
+    } else if (saw_stop) {
+        *conversation_requested = false;
+        if (runtime_active && stop_current_runtime != nullptr) {
+            *stop_current_runtime = true;
+        }
+    } else if (saw_start) {
+        *conversation_requested = true;
     }
 }
 
@@ -268,12 +361,16 @@ void WaitForRetryOrUi(
     rva::runtime::MediaPreference* preferred_media,
     bool* conversation_requested,
     bool* configuration_requested,
-    uint32_t timeout_ms) {
+    uint32_t timeout_ms,
+    bool* start_conversation_seen,
+    bool* stop_conversation_seen) {
+    if (start_conversation_seen != nullptr) *start_conversation_seen = false;
+    if (stop_conversation_seen != nullptr) *stop_conversation_seen = false;
     constexpr uint32_t kPollIntervalMs = 50;
     for (uint32_t elapsed = 0; elapsed < timeout_ms; elapsed += kPollIntervalMs) {
         ProcessConversationUiEvents(
             ui, udp_available, ui_controls_session, false, preferred_media, conversation_requested,
-            configuration_requested, nullptr);
+            configuration_requested, nullptr, start_conversation_seen, stop_conversation_seen);
         if (!*conversation_requested || *configuration_requested) return;
         vTaskDelay(pdMS_TO_TICKS(kPollIntervalMs));
     }
@@ -309,11 +406,27 @@ bool ResolveUsableEndpoint(
 bool ConnectConfiguredWifi(
     rva::config::DeviceConfig* config,
     const std::vector<rva::config::WifiCredential>& provisioned,
-    rva::runtime::WifiStation* wifi) {
+    rva::runtime::WifiStation* wifi,
+    uint32_t timeout_ms = 30000) {
+    if (config == nullptr || wifi == nullptr) return false;
     rva::config::WifiPlan plan;
-    return config != nullptr && wifi != nullptr &&
-           config->LoadWifiPlan(provisioned, &plan) == rva::config::ConfigResult::kOk &&
-           wifi->Connect(std::move(plan)) && wifi->WaitConnected(30000);
+    const auto load_result = config->LoadWifiPlan(provisioned, &plan);
+    if (load_result != rva::config::ConfigResult::kOk) {
+        ESP_LOGW(kTag, "Configured Wi-Fi plan unavailable result=%u",
+                 static_cast<unsigned>(load_result));
+        return false;
+    }
+    const size_t candidate_count = plan.credentials().size();
+    if (!wifi->Connect(std::move(plan))) {
+        ESP_LOGW(kTag, "Configured Wi-Fi connect did not start candidates=%u",
+                 static_cast<unsigned>(candidate_count));
+        return false;
+    }
+    const bool connected = wifi->WaitConnected(timeout_ms);
+    ESP_LOGI(kTag, "Configured Wi-Fi result connected=%d candidates=%u timeout_ms=%lu",
+             connected ? 1 : 0, static_cast<unsigned>(candidate_count),
+             static_cast<unsigned long>(timeout_ms));
+    return connected;
 }
 
 bool EnsureProvisioned(
@@ -326,7 +439,12 @@ bool EnsureProvisioned(
     const auto provisioned_endpoints = ProvisionedEndpoints();
     bool wifi_connected = ConnectConfiguredWifi(config, provisioned_wifi, wifi);
     bool endpoint_ready = ResolveUsableEndpoint(config, provisioned_endpoints, endpoint);
-    if (wifi_connected && endpoint_ready && !force_editor) return true;
+    if (wifi_connected && endpoint_ready && !force_editor) {
+        ReturnUiHome(ui);
+        return true;
+    }
+    ESP_LOGW(kTag, "Provisioning required wifi_connected=%d endpoint_ready=%d forced=%d",
+             wifi_connected ? 1 : 0, endpoint_ready ? 1 : 0, force_editor ? 1 : 0);
     if (ui == nullptr) {
         ESP_LOGE(kTag, "Configuration is incomplete and provisioning UI is unavailable");
         return false;
@@ -341,11 +459,36 @@ bool EnsureProvisioned(
     PostUi(ui, {.kind = rva::ui::CommandKind::kOpenWifi, .value = 0, .text = {}});
     ScanWifi(wifi, ui);
     if (!wifi_connected) {
-        PostUi(ui, {.kind = rva::ui::CommandKind::kSetConfigMessage, .text = "请选择可用网络"});
+        PostUi(ui, {.kind = rva::ui::CommandKind::kSetConfigMessage,
+                    .text = "请选择可用网络，设备将自动重试"});
+    } else if (!endpoint_ready) {
+        PostUi(ui, {.kind = rva::ui::CommandKind::kOpenEndpoint, .text = initial_endpoint});
     }
 
+    constexpr int64_t kWifiAutoRetryIntervalUs = 10LL * 1000LL * 1000LL;
+    constexpr uint32_t kWifiAutoRetryTimeoutMs = 5000;
+    int64_t next_wifi_retry_at = esp_timer_get_time() + kWifiAutoRetryIntervalUs;
     bool exit_requested = false;
     while (!wifi_connected || !endpoint_ready || (force_editor && !exit_requested)) {
+        if (!wifi_connected && wifi->WaitConnected(0)) {
+            wifi_connected = true;
+            PostUi(ui, {.kind = rva::ui::CommandKind::kSetConfigMessage,
+                        .text = "网络已自动恢复"});
+            if (!endpoint_ready) {
+                PostUi(ui, {.kind = rva::ui::CommandKind::kOpenEndpoint, .text = initial_endpoint});
+            }
+        } else if (!wifi_connected && esp_timer_get_time() >= next_wifi_retry_at) {
+            PostUi(ui, {.kind = rva::ui::CommandKind::kSetConfigMessage,
+                        .text = "正在重试默认网络..."});
+            wifi_connected = ConnectConfiguredWifi(
+                config, provisioned_wifi, wifi, kWifiAutoRetryTimeoutMs);
+            next_wifi_retry_at = esp_timer_get_time() + kWifiAutoRetryIntervalUs;
+            PostUi(ui, {.kind = rva::ui::CommandKind::kSetConfigMessage,
+                        .text = wifi_connected ? "网络已自动恢复" : "自动重试失败，可手动选择网络"});
+            if (wifi_connected && !endpoint_ready) {
+                PostUi(ui, {.kind = rva::ui::CommandKind::kOpenEndpoint, .text = initial_endpoint});
+            }
+        }
         rva::ui::UiEvent event;
         if (!ui->PollEvent(&event)) {
             vTaskDelay(pdMS_TO_TICKS(25));
@@ -365,6 +508,7 @@ bool EnsureProvisioned(
             }
             PostUi(ui, {.kind = rva::ui::CommandKind::kSetConfigMessage, .text = "正在连接..."});
             wifi_connected = ConnectConfiguredWifi(config, provisioned_wifi, wifi);
+            next_wifi_retry_at = esp_timer_get_time() + kWifiAutoRetryIntervalUs;
             PostUi(ui, {
                 .kind = rva::ui::CommandKind::kSetConfigMessage,
                 .text = wifi_connected ? "网络已连接" : "连接失败，请检查密码",
@@ -393,7 +537,7 @@ bool EnsureProvisioned(
             }
         }
     }
-    PostUi(ui, {.kind = rva::ui::CommandKind::kBackHome, .value = 0, .text = {}});
+    ReturnUiHome(ui);
     return true;
 }
 
@@ -462,7 +606,9 @@ void RunApplication() {
     const bool clock_synchronized =
         rva::runtime::SynchronizeSystemClock(CONFIG_RVA_SNTP_SERVER, clock_sync_timeout_ms);
     if (!clock_synchronized) {
-        ESP_LOGW(kTag, "Clock synchronization failed; TLS or local UDP grant expiry validation may be unavailable");
+        ESP_LOGW(kTag,
+                 "Clock synchronization failed; HTTPS bootstrap remains unavailable, but UDP uses "
+                 "monotonic refresh_after_ms while the server enforces expires_at_ms");
     }
     const std::string device_id = rva::runtime::DeviceIdFromStationMac();
     if (device_id.empty()) {
@@ -496,11 +642,18 @@ void RunApplication() {
              ui_controls_session ? 1 : 0);
     bool conversation_requested = kAutoStartConversation || ui == nullptr;
     bool configuration_requested = false;
+    bool session_refresh_pending = false;
+    uint32_t session_refresh_failures = 0;
     bool wake_word_available = false;
     bool wake_word_disabled = models == nullptr;
 
     while (true) {
-        if (!conversation_requested && !wake_word_disabled && !idle_wake.started()) {
+        if (!conversation_requested) {
+            session_refresh_pending = false;
+            session_refresh_failures = 0;
+        }
+        if (!conversation_requested && !configuration_requested && !wake_word_disabled &&
+            !idle_wake.started()) {
             const auto wake_result = idle_wake.Start();
             if (wake_result == rva::runtime::IdleWakeStartResult::kStarted ||
                 wake_result == rva::runtime::IdleWakeStartResult::kAlreadyStarted) {
@@ -567,16 +720,49 @@ void RunApplication() {
         if (!wifi.WaitConnected(0) &&
             !ConnectConfiguredWifi(&device_config, ProvisionedWifi(), &wifi)) {
             runtime_events.OnFailure("wifi_reconnect");
+            PostUi(ui.get(), {
+                rva::ui::CommandKind::kSetConversation,
+                static_cast<uint32_t>(rva::ui::ConversationState::kConnecting),
+                {},
+            });
+            uint32_t retry_delay_ms = 3000;
+            if (session_refresh_pending) {
+                if (session_refresh_failures < 5) ++session_refresh_failures;
+                retry_delay_ms = RefreshRetryDelayMs(session_refresh_failures);
+                ESP_LOGW(kTag,
+                         "UDP grant refresh Wi-Fi reconnect failed; retry=%lu delay_ms=%lu",
+                         static_cast<unsigned long>(session_refresh_failures),
+                         static_cast<unsigned long>(retry_delay_ms));
+            }
+            bool retry_start_requested = false;
+            bool retry_stop_requested = false;
             WaitForRetryOrUi(
                 ui.get(), udp_available, ui_controls_session, &preferred_media,
-                &conversation_requested, &configuration_requested, 3000);
-            if (configuration_requested) {
+                &conversation_requested, &configuration_requested, retry_delay_ms,
+                &retry_start_requested, &retry_stop_requested);
+            const bool retry_configuration_requested = configuration_requested;
+            if (retry_configuration_requested) {
                 configuration_requested = false;
                 EnsureProvisioned(&device_config, &wifi, ui.get(), &service_endpoint, true);
             }
-            if (!kAutoStartConversation && ui != nullptr) conversation_requested = false;
+            if (ui != nullptr) {
+                conversation_requested = ShouldRetryStartup(
+                    kAutoStartConversation, conversation_requested, retry_start_requested,
+                    session_refresh_pending, retry_stop_requested, retry_configuration_requested);
+            }
+            if (session_refresh_pending && !conversation_requested) {
+                session_refresh_pending = false;
+                session_refresh_failures = 0;
+            }
             continue;
         }
+        // Wi-Fi connect is synchronous. Drain cancellation before the next
+        // external action so a Stop pressed during reconnect cannot bootstrap
+        // a session after the network call returns.
+        ProcessConversationUiEvents(
+            ui.get(), udp_available, ui_controls_session, false, &preferred_media,
+            &conversation_requested, &configuration_requested, nullptr);
+        if (!conversation_requested || configuration_requested) continue;
         PostUi(ui.get(), {
             rva::ui::CommandKind::kSetConnection,
             static_cast<uint32_t>(rva::ui::ConnectionState::kConnecting),
@@ -596,21 +782,55 @@ void RunApplication() {
             &grant);
         ScopedBootstrapLease lease(
             director, service_endpoint, tenant_id, device_id, grant);
+        if (bootstrap_accepted) {
+            // The HTTP request can outlive a user cancellation. A returned
+            // grant is never handed to runtime until pending UI events have
+            // been drained; cancellation releases it immediately.
+            ProcessConversationUiEvents(
+                ui.get(), udp_available, ui_controls_session, false, &preferred_media,
+                &conversation_requested, &configuration_requested, nullptr);
+            if (!conversation_requested || configuration_requested) {
+                lease.ReleaseNow();
+                continue;
+            }
+        }
         if (!bootstrap_accepted) {
             lease.ReleaseNow();
             runtime_events.OnFailure("director_bootstrap");
+            PostUi(ui.get(), {
+                rva::ui::CommandKind::kSetConversation,
+                static_cast<uint32_t>(rva::ui::ConversationState::kConnecting),
+                {},
+            });
+            uint32_t retry_delay_ms = 3000;
+            if (session_refresh_pending) {
+                if (session_refresh_failures < 5) ++session_refresh_failures;
+                retry_delay_ms = RefreshRetryDelayMs(session_refresh_failures);
+                ESP_LOGW(kTag,
+                         "UDP grant refresh bootstrap failed; retry=%lu delay_ms=%lu",
+                         static_cast<unsigned long>(session_refresh_failures),
+                         static_cast<unsigned long>(retry_delay_ms));
+            }
+            bool retry_start_requested = false;
+            bool retry_stop_requested = false;
             WaitForRetryOrUi(
                 ui.get(), udp_available, ui_controls_session, &preferred_media, &conversation_requested,
-                &configuration_requested, 3000);
-            if (configuration_requested) {
+                &configuration_requested, retry_delay_ms, &retry_start_requested,
+                &retry_stop_requested);
+            const bool retry_configuration_requested = configuration_requested;
+            if (retry_configuration_requested) {
                 configuration_requested = false;
                 lease.Finalize();
                 EnsureProvisioned(&device_config, &wifi, ui.get(), &service_endpoint, true);
             }
-            if (kAutoStartConversation) {
-                conversation_requested = true;
-            } else if (ui != nullptr) {
-                conversation_requested = false;
+            if (ui != nullptr) {
+                conversation_requested = ShouldRetryStartup(
+                    kAutoStartConversation, conversation_requested, retry_start_requested,
+                    session_refresh_pending, retry_stop_requested, retry_configuration_requested);
+            }
+            if (session_refresh_pending && !conversation_requested) {
+                session_refresh_pending = false;
+                session_refresh_failures = 0;
             }
             continue;
         }
@@ -628,24 +848,54 @@ void RunApplication() {
         runtime.SetFailClosedHook(ReleaseLeaseBeforeRestart, &lease);
         if (!runtime.Start(grant, device_id, preferred_media)) {
             runtime_events.OnFailure("voice_runtime_start");
+            PostUi(ui.get(), {
+                rva::ui::CommandKind::kSetConversation,
+                static_cast<uint32_t>(rva::ui::ConversationState::kConnecting),
+                {},
+            });
             lease.ReleaseNow();
+            uint32_t retry_delay_ms = 3000;
+            if (session_refresh_pending) {
+                if (session_refresh_failures < 5) ++session_refresh_failures;
+                retry_delay_ms = RefreshRetryDelayMs(session_refresh_failures);
+                ESP_LOGW(kTag,
+                         "UDP grant refresh runtime start failed; retry=%lu delay_ms=%lu",
+                         static_cast<unsigned long>(session_refresh_failures),
+                         static_cast<unsigned long>(retry_delay_ms));
+            }
+            bool retry_start_requested = false;
+            bool retry_stop_requested = false;
             WaitForRetryOrUi(
                 ui.get(), udp_available, ui_controls_session, &preferred_media, &conversation_requested,
-                &configuration_requested, 3000);
-            if (configuration_requested) {
+                &configuration_requested, retry_delay_ms, &retry_start_requested,
+                &retry_stop_requested);
+            const bool retry_configuration_requested = configuration_requested;
+            if (retry_configuration_requested) {
                 configuration_requested = false;
                 lease.Finalize();
                 EnsureProvisioned(&device_config, &wifi, ui.get(), &service_endpoint, true);
             }
-            if (kAutoStartConversation) {
-                conversation_requested = true;
-            } else if (ui != nullptr) {
-                conversation_requested = false;
+            if (ui != nullptr) {
+                conversation_requested = ShouldRetryStartup(
+                    kAutoStartConversation, conversation_requested, retry_start_requested,
+                    session_refresh_pending, retry_stop_requested, retry_configuration_requested);
+            }
+            if (session_refresh_pending && !conversation_requested) {
+                session_refresh_pending = false;
+                session_refresh_failures = 0;
             }
             continue;
         }
+        const auto acknowledge_refresh_ready = [&]() {
+            if (!session_refresh_pending || !runtime.media_ready()) return;
+            ESP_LOGI(kTag, "UDP grant refresh established after %lu startup failure(s)",
+                     static_cast<unsigned long>(session_refresh_failures));
+            session_refresh_pending = false;
+            session_refresh_failures = 0;
+        };
         bool stop_current_runtime = false;
         while (runtime.running()) {
+            acknowledge_refresh_ready();
             ProcessConversationUiEvents(
                 ui.get(), udp_available, ui_controls_session, true, &preferred_media, &conversation_requested,
                 &configuration_requested, &stop_current_runtime);
@@ -654,13 +904,34 @@ void RunApplication() {
             }
             vTaskDelay(pdMS_TO_TICKS(50));
         }
+        // Catch media readiness that raced with the final running() poll. Once
+        // Stop() begins it deliberately clears the media readiness atoms.
+        acknowledge_refresh_ready();
         runtime.Stop();
+        // The runtime can stop itself between UI polling ticks (for example at
+        // a UDP grant refresh boundary). Drain events once more so a concurrent
+        // MIC stop or configuration request wins over any automatic reopen.
+        bool final_start_requested = false;
+        bool final_stop_requested = false;
+        ProcessConversationUiEvents(
+            ui.get(), udp_available, ui_controls_session, false, &preferred_media,
+            &conversation_requested, &configuration_requested, nullptr,
+            &final_start_requested, &final_stop_requested);
         lease.ReleaseNow();
-        const bool fresh_start_requested =
-            stop_current_runtime && conversation_requested && !configuration_requested;
         const bool udp_fallback_requested =
-            runtime.should_fallback_to_wss() && !stop_current_runtime && !configuration_requested;
-        if (configuration_requested) {
+            runtime.should_fallback_to_wss() && conversation_requested &&
+            !stop_current_runtime && !final_stop_requested && !configuration_requested;
+        const bool session_refresh_requested =
+            runtime.should_refresh_session() && conversation_requested &&
+            !udp_fallback_requested && !stop_current_runtime && !final_stop_requested &&
+            !configuration_requested;
+        const bool refresh_retry_requested =
+            session_refresh_pending && conversation_requested &&
+            !udp_fallback_requested && !stop_current_runtime && !final_stop_requested &&
+            !configuration_requested;
+        const bool continue_refresh = session_refresh_requested || refresh_retry_requested;
+        const bool configuration_interrupted = configuration_requested;
+        if (configuration_interrupted) {
             configuration_requested = false;
             lease.Finalize();
             EnsureProvisioned(&device_config, &wifi, ui.get(), &service_endpoint, true);
@@ -670,9 +941,25 @@ void RunApplication() {
             runtime_events.OnFailure("udp_fallback_wss");
             ESP_LOGW(kTag, "UDP media unavailable; retrying current request with fresh WSS route");
         }
+        if (session_refresh_requested) {
+            ESP_LOGI(kTag, "UDP grant refresh; continuing conversation with fresh bootstrap");
+        }
+        if (refresh_retry_requested) {
+            if (session_refresh_failures < 5) ++session_refresh_failures;
+            ESP_LOGW(kTag,
+                     "UDP grant refresh runtime ended before media ready; retry=%lu delay_ms=%lu",
+                     static_cast<unsigned long>(session_refresh_failures),
+                     static_cast<unsigned long>(RefreshRetryDelayMs(session_refresh_failures)));
+        }
         if (ui != nullptr) {
-            conversation_requested =
-                kAutoStartConversation || fresh_start_requested || udp_fallback_requested;
+            conversation_requested = ShouldContinueConversation(
+                kAutoStartConversation,
+                conversation_requested,
+                final_start_requested,
+                continue_refresh,
+                udp_fallback_requested,
+                final_stop_requested,
+                configuration_interrupted);
             if (conversation_requested) {
                 ui->Post({
                     rva::ui::CommandKind::kSetConversation,
@@ -687,7 +974,31 @@ void RunApplication() {
                 });
             }
         }
-        if (conversation_requested) vTaskDelay(pdMS_TO_TICKS(1000));
+        if (configuration_interrupted || final_stop_requested || udp_fallback_requested) {
+            session_refresh_pending = false;
+            session_refresh_failures = 0;
+        } else if (session_refresh_requested) {
+            session_refresh_pending = true;
+            session_refresh_failures = 0;
+        }
+        if (conversation_requested) {
+            const uint32_t delay_ms = refresh_retry_requested
+                                          ? RefreshRetryDelayMs(session_refresh_failures)
+                                          : (session_refresh_requested ? 0U : 1000U);
+            if (delay_ms > 0) {
+                bool retry_start_requested = false;
+                bool retry_stop_requested = false;
+                WaitForRetryOrUi(
+                    ui.get(), udp_available, ui_controls_session, &preferred_media,
+                    &conversation_requested, &configuration_requested, delay_ms,
+                    &retry_start_requested, &retry_stop_requested);
+                const bool retry_configuration_requested = configuration_requested;
+                conversation_requested = ShouldRetryStartup(
+                    kAutoStartConversation, conversation_requested, retry_start_requested,
+                    session_refresh_pending, retry_stop_requested,
+                    retry_configuration_requested);
+            }
+        }
     }
 }
 

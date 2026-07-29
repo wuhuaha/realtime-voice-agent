@@ -449,11 +449,20 @@ void VoiceUi::BuildHome() {
 
 void VoiceUi::DrainCommands() {
     CommandPacket packet{};
+    bool processed_command = false;
     for (uint32_t count = 0; count < kMaxCommandsPerTick; ++count) {
         if (xQueueReceive(command_queue_, &packet, 0) != pdTRUE) {
             break;
         }
-        Apply({.kind = packet.kind, .value = packet.value, .text = packet.text});
+        processed_command = true;
+        const std::optional<UiEvent> event =
+            Reduce(&state_, {.kind = packet.kind, .value = packet.value, .text = packet.text});
+        if (event.has_value()) {
+            Publish(*event);
+        }
+    }
+    if (processed_command) {
+        Render();
     }
 }
 

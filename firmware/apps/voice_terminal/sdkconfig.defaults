@@ -26,7 +26,7 @@ CONFIG_ESP_TASK_WDT_TIMEOUT_S=10
 # CONFIG_ESP_TASK_WDT_CHECK_IDLE_TASK_CPU1 is not set
 CONFIG_LOG_DEFAULT_LEVEL_INFO=y
 CONFIG_ESP_CONSOLE_UART_DEFAULT=y
-CONFIG_ESP_CONSOLE_SECONDARY_NONE=y
+CONFIG_ESP_CONSOLE_SECONDARY_USB_SERIAL_JTAG=y
 CONFIG_RVA_ENABLE_UI=y
 # A conversation is an explicit user-owned lifecycle. Keeping the network and
 # UI ready while idle avoids occupying a worker lease until MIC is pressed.

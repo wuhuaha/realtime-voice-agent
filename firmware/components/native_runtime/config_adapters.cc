@@ -6,6 +6,8 @@
 #include <cstring>
 #include <ctime>
 
+#include <esp_err.h>
+#include <esp_log.h>
 #include <esp_mac.h>
 #include <esp_netif_sntp.h>
 #include <esp_wifi.h>
@@ -17,6 +19,7 @@ namespace {
 constexpr char kWifiNamespace[] = "rva_wifi";
 constexpr char kWifiSsidKey[] = "ssid";
 constexpr char kWifiPasswordKey[] = "password";
+constexpr char kWifiLogTag[] = "rva-wifi";
 constexpr EventBits_t kConnectedBit = BIT0;
 constexpr EventBits_t kFailedBit = BIT1;
 
@@ -146,14 +149,23 @@ bool WifiStation::Connect(config::WifiPlan plan) {
         if (esp_wifi_disconnect() == ESP_OK) return true;
         reconnect_after_disconnect_ = false;
     }
-    return ConnectCurrent();
+    const bool connecting = ConnectCurrent();
+    if (!connecting) xEventGroupSetBits(events_, kFailedBit);
+    return connecting;
 }
 
 bool WifiStation::WaitConnected(uint32_t timeout_ms) {
     if (!started_ || events_ == nullptr) return false;
     const EventBits_t bits = xEventGroupWaitBits(
         events_, kConnectedBit | kFailedBit, pdFALSE, pdFALSE, pdMS_TO_TICKS(timeout_ms));
-    return (bits & kConnectedBit) != 0;
+    const bool connected = (bits & kConnectedBit) != 0;
+    if (!connected && timeout_ms > 0) {
+        ESP_LOGW(
+            kWifiLogTag, "wait ended: result=%s timeout_ms=%lu",
+            (bits & kFailedBit) != 0 ? "failed" : "timeout",
+            static_cast<unsigned long>(timeout_ms));
+    }
+    return connected;
 }
 
 void WifiStation::Stop() {
@@ -215,20 +227,45 @@ bool WifiStation::Scan(std::vector<WifiScanRecord>* records) {
     return true;
 }
 
-void WifiStation::EventHandler(void* context, esp_event_base_t base, int32_t id, void*) {
-    static_cast<WifiStation*>(context)->HandleEvent(base, id);
+void WifiStation::EventHandler(void* context, esp_event_base_t base, int32_t id, void* data) {
+    static_cast<WifiStation*>(context)->HandleEvent(base, id, data);
 }
 
-void WifiStation::HandleEvent(esp_event_base_t base, int32_t id) {
+void WifiStation::HandleEvent(esp_event_base_t base, int32_t id, void* data) {
     if (!started_) return;
     if (base == IP_EVENT && id == IP_EVENT_STA_GOT_IP) {
+        std::lock_guard<std::mutex> lock(connection_mutex_);
+        if (reconnect_after_disconnect_) {
+            ESP_LOGI(kWifiLogTag, "ignoring stale GOT_IP during planned reconnect");
+            return;
+        }
+        attempts_ = 0;
+        xEventGroupClearBits(events_, kFailedBit);
         xEventGroupSetBits(events_, kConnectedBit);
+        ESP_LOGI(kWifiLogTag, "station connected");
         return;
     }
     if (base == WIFI_EVENT && id == WIFI_EVENT_STA_DISCONNECTED) {
+        const int reason = data == nullptr
+                               ? -1
+                               : static_cast<int>(
+                                     static_cast<const wifi_event_sta_disconnected_t*>(data)->reason);
         xEventGroupClearBits(events_, kConnectedBit);
         std::lock_guard<std::mutex> lock(connection_mutex_);
-        if (plan_.credentials().empty()) return;
+        const size_t credential_count = plan_.credentials().size();
+        const size_t failed_attempt = attempts_ + 1;
+        ESP_LOGW(
+            kWifiLogTag,
+            "station disconnected: reason=%d credential_index=%lu credential_count=%lu attempt=%lu planned=%d",
+            reason,
+            static_cast<unsigned long>(credential_index_),
+            static_cast<unsigned long>(credential_count),
+            static_cast<unsigned long>(failed_attempt),
+            reconnect_after_disconnect_ ? 1 : 0);
+        if (credential_count == 0) {
+            xEventGroupSetBits(events_, kFailedBit);
+            return;
+        }
         if (reconnect_after_disconnect_) {
             reconnect_after_disconnect_ = false;
             credential_index_ = 0;
@@ -241,21 +278,47 @@ void WifiStation::HandleEvent(esp_event_base_t base, int32_t id) {
             return;
         }
         credential_index_ = (credential_index_ + 1) % plan_.credentials().size();
-        ConnectCurrent();
+        if (!ConnectCurrent()) xEventGroupSetBits(events_, kFailedBit);
     }
 }
 
 bool WifiStation::ConnectCurrent() {
     const auto& credential = plan_.credentials()[credential_index_];
+    const size_t attempt = attempts_ + 1;
     wifi_config_t configuration{};
     if (credential.ssid.size() > sizeof(configuration.sta.ssid) ||
         credential.password.size() > sizeof(configuration.sta.password) - 1) {
+        ESP_LOGE(
+            kWifiLogTag,
+            "connect rejected: category=credential_bounds credential_index=%lu attempt=%lu",
+            static_cast<unsigned long>(credential_index_),
+            static_cast<unsigned long>(attempt));
         return false;
     }
     std::memcpy(configuration.sta.ssid, credential.ssid.data(), credential.ssid.size());
     std::memcpy(configuration.sta.password, credential.password.data(), credential.password.size());
     configuration.sta.threshold.authmode = credential.password.empty() ? WIFI_AUTH_OPEN : WIFI_AUTH_WPA2_PSK;
-    return esp_wifi_set_config(WIFI_IF_STA, &configuration) == ESP_OK && esp_wifi_connect() == ESP_OK;
+    const esp_err_t set_config_result = esp_wifi_set_config(WIFI_IF_STA, &configuration);
+    if (set_config_result != ESP_OK) {
+        ESP_LOGE(
+            kWifiLogTag,
+            "connect failed: category=set_config error=%s credential_index=%lu attempt=%lu",
+            esp_err_to_name(set_config_result),
+            static_cast<unsigned long>(credential_index_),
+            static_cast<unsigned long>(attempt));
+        return false;
+    }
+    const esp_err_t connect_result = esp_wifi_connect();
+    if (connect_result != ESP_OK) {
+        ESP_LOGE(
+            kWifiLogTag,
+            "connect failed: category=connect error=%s credential_index=%lu attempt=%lu",
+            esp_err_to_name(connect_result),
+            static_cast<unsigned long>(credential_index_),
+            static_cast<unsigned long>(attempt));
+        return false;
+    }
+    return true;
 }
 
 std::string DeviceIdFromStationMac() {

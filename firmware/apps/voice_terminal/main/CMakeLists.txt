@@ -5,6 +5,7 @@ idf_component_register(
         audio_pipeline
         board_lichuang_s3
         device_config
+        esp_timer
         espressif__esp-sr
         idle_wake_runtime
         native_runtime

@@ -49,6 +49,7 @@ constexpr uint32_t kWebsocketTeardownTimeoutMs = 1500;
 // comfortably above the server heartbeat/idle contract.
 constexpr int kWebsocketNetworkTimeoutMs = 60000;
 constexpr int kWebsocketPingIntervalSec = 10;
+constexpr int64_t kUdpProbeRetryIntervalUs = 250000;
 constexpr size_t kDecodedSamplesPerFrame = 960;
 constexpr size_t kNominalResampledSamplesPerFrame = 1440;
 constexpr size_t kMaximumResampledSamplesPerFrame = 4096;
@@ -81,10 +82,11 @@ bool VoiceRuntime::Start(
     media_owner_ = voice::core::MediaOwner::kNone;
     playback_generation_ = 1;
     playback_enabled_ = false;
-    udp_expiry_deadline_us_ = 0;
+    udp_refresh_deadline_us_ = 0;
     udp_heartbeat_interval_us_ = 0;
     udp_liveness_timeout_us_ = 0;
     udp_next_keepalive_us_ = 0;
+    udp_refresh_requested_ = false;
     fallback_to_wss_ = false;
     wss_playback_queue_dropped_ = 0;
     media_started_ = false;
@@ -379,15 +381,15 @@ void VoiceRuntime::RunSupervisor() {
         }
         const int64_t now_us = esp_timer_get_time();
         if (media_owner_ == voice::core::MediaOwner::kUdp && udp_runtime_ != nullptr) {
-            const int64_t expiry_deadline_us = udp_expiry_deadline_us_.load();
+            const int64_t refresh_deadline_us = udp_refresh_deadline_us_.load();
             const int64_t liveness_timeout_us = udp_liveness_timeout_us_.load();
             const int64_t last_receive_us = udp_runtime_->last_authenticated_receive_us();
             const uint32_t handoff_dropped = udp_runtime_->playout_queue_dropped();
             const uint32_t jitter_dropped = udp_runtime_->stats().queue_dropped;
             const uint32_t media_age_dropped = udp_runtime_->playout_media_age_dropped();
             const char* failure = nullptr;
-            if (expiry_deadline_us > 0 && now_us >= expiry_deadline_us) {
-                ESP_LOGI(kLogTag, "UDP grant nearing expiry; requesting fresh session");
+            if (refresh_deadline_us > 0 && now_us >= refresh_deadline_us) {
+                ESP_LOGI(kLogTag, "UDP monotonic refresh deadline reached; requesting fresh session");
                 udp_refresh_requested_ = true;
                 running_ = false;
                 continue;
@@ -771,11 +773,18 @@ bool VoiceRuntime::ConfigureUdp(const protocol::SessionOpened& opened) {
                  static_cast<unsigned long long>(control.expires_at_ms));
         return false;
     }
+    const int64_t configured_us = esp_timer_get_time();
+    const uint64_t maximum_refresh_ms =
+        static_cast<uint64_t>((std::numeric_limits<int64_t>::max() - configured_us) / 1000);
+    const uint64_t refresh_delay_ms = control.refresh_after_ms;
+    const int64_t refresh_deadline_us = refresh_delay_ms > maximum_refresh_ms
+                                            ? std::numeric_limits<int64_t>::max()
+                                            : configured_us + static_cast<int64_t>(refresh_delay_ms) * 1000;
     if (!clock_valid) {
-        ESP_LOGW(kLogTag,
-                 "udp configure continuing without local expiry deadline: invalid clock now_ms=%lld expires_at_ms=%llu",
-                 static_cast<long long>(now_ms),
-                 static_cast<unsigned long long>(control.expires_at_ms));
+        ESP_LOGI(kLogTag,
+                 "wall clock unavailable; UDP uses monotonic refresh_after_ms=%lu for local rotation; "
+                 "server enforces expires_at_ms",
+                 static_cast<unsigned long>(control.refresh_after_ms));
     }
     auto uplink = std::make_unique<udp::MbedTlsGcm>();
     auto downlink = std::make_unique<udp::MbedTlsGcm>();
@@ -807,43 +816,48 @@ bool VoiceRuntime::ConfigureUdp(const protocol::SessionOpened& opened) {
         ESP_LOGW(kLogTag, "udp configure failed: runtime start");
         return false;
     }
-    if (!runtime->SendProbe()) {
-        ESP_LOGW(kLogTag, "udp configure failed: send probe host=%s port=%u",
-                 control.host.c_str(), static_cast<unsigned>(control.port));
-        runtime->RequestStop();
-        if (!runtime->JoinAndClose(1000)) {
-            FailClosedRestart("udp_probe_teardown_failed");
-        }
-        return false;
-    }
-    const int64_t deadline_us = esp_timer_get_time() +
+    const int64_t started_us = esp_timer_get_time();
+    const int64_t deadline_us = started_us +
                                 static_cast<int64_t>(control.probe_timeout_ms) * 1000;
+    int64_t next_probe_us = started_us;
+    uint32_t probe_attempts = 0;
+    uint32_t probe_send_failures = 0;
     while (running_ && !session->ready() && esp_timer_get_time() < deadline_us) {
+        const int64_t now_us = esp_timer_get_time();
+        if (now_us >= next_probe_us) {
+            if (runtime->SendProbe()) {
+                probe_attempts++;
+            } else {
+                probe_send_failures++;
+            }
+            next_probe_us = now_us + kUdpProbeRetryIntervalUs;
+        }
         vTaskDelay(pdMS_TO_TICKS(10));
     }
     if (!session->ready()) {
         ESP_LOGW(kLogTag,
-                 "udp configure failed: probe ack timeout host=%s port=%u timeout_ms=%u",
+                 "udp configure failed: probe ack timeout host=%s port=%u timeout_ms=%u attempts=%lu send_failures=%lu",
                  control.host.c_str(), static_cast<unsigned>(control.port),
-                 static_cast<unsigned>(control.probe_timeout_ms));
+                 static_cast<unsigned>(control.probe_timeout_ms),
+                 static_cast<unsigned long>(probe_attempts),
+                 static_cast<unsigned long>(probe_send_failures));
         runtime->RequestStop();
         if (!runtime->JoinAndClose(1000)) {
             FailClosedRestart("udp_probe_teardown_failed");
         }
         return false;
     }
+    ESP_LOGI(kLogTag, "udp probe acknowledged: attempts=%lu elapsed_ms=%lld",
+             static_cast<unsigned long>(probe_attempts),
+             static_cast<long long>((esp_timer_get_time() - started_us) / 1000));
     udp_uplink_crypto_ = std::move(uplink);
     udp_downlink_crypto_ = std::move(downlink);
     udp_session_ = std::move(session);
     udp_io_ = std::move(io);
     udp_runtime_ = std::move(runtime);
-    const int64_t now_us = esp_timer_get_time();
-    const uint64_t maximum_remaining_ms =
-        static_cast<uint64_t>((std::numeric_limits<int64_t>::max() - now_us) / 1000);
-    const uint64_t refresh_delay_ms = control.refresh_after_ms;
-    udp_expiry_deadline_us_ = refresh_delay_ms > maximum_remaining_ms
-                                  ? std::numeric_limits<int64_t>::max()
-                                  : now_us + static_cast<int64_t>(refresh_delay_ms) * 1000;
+    // Anchor the refresh lease to UDP configuration, not to PROBE_ACK. A slow
+    // probe must not silently extend the server-advertised session lifetime.
+    udp_refresh_deadline_us_ = refresh_deadline_us;
     return true;
 }
 

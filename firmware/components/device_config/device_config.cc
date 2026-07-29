@@ -86,10 +86,10 @@ bool ReadOptional(ConfigStorePort& store, const char* key, std::string* value, C
     return *result == ConfigResult::kOk;
 }
 
-bool ContainsSsid(const std::vector<WifiCredential>& credentials, const std::string& ssid) {
-    return std::any_of(credentials.begin(), credentials.end(), [&ssid](const WifiCredential& candidate) {
-        return candidate.ssid == ssid;
-    });
+bool ContainsCredential(
+    const std::vector<WifiCredential>& credentials,
+    const WifiCredential& credential) {
+    return std::find(credentials.begin(), credentials.end(), credential) != credentials.end();
 }
 
 }  // namespace
@@ -320,12 +320,12 @@ ConfigResult DeviceConfig::LoadWifiPlan(
     std::vector<WifiCredential> ordered;
     ordered.reserve(saved.size() + provisioned.size());
     for (const auto& credential : saved) {
-        if (!credential.ssid.empty() && !ContainsSsid(ordered, credential.ssid)) {
+        if (!credential.ssid.empty() && !ContainsCredential(ordered, credential)) {
             ordered.push_back(credential);
         }
     }
     for (const auto& credential : provisioned) {
-        if (!credential.ssid.empty() && !ContainsSsid(ordered, credential.ssid)) {
+        if (!credential.ssid.empty() && !ContainsCredential(ordered, credential)) {
             ordered.push_back(credential);
         }
     }

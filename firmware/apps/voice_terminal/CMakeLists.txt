@@ -1,5 +1,13 @@
 cmake_minimum_required(VERSION 3.16)
 
+if(NOT DEFINED SDKCONFIG_DEFAULTS)
+    set(SDKCONFIG_DEFAULTS "${CMAKE_CURRENT_LIST_DIR}/sdkconfig.defaults")
+    set(RVA_LOCAL_SDKCONFIG "${CMAKE_CURRENT_LIST_DIR}/sdkconfig.local")
+    if(EXISTS "${RVA_LOCAL_SDKCONFIG}")
+        list(APPEND SDKCONFIG_DEFAULTS "${RVA_LOCAL_SDKCONFIG}")
+    endif()
+endif()
+
 set(EXTRA_COMPONENT_DIRS
     "${CMAKE_CURRENT_LIST_DIR}/../../components"
 )

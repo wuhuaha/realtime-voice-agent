@@ -78,6 +78,12 @@ public:
         fail_closed_context_ = context;
     }
     bool running() const { return running_; }
+    bool media_ready() const {
+        if (!session_opened_.load() || !media_started_.load()) return false;
+        return media_owner_.load() != voice::core::MediaOwner::kUdp ||
+               (udp_heartbeat_interval_us_.load() > 0 && udp_liveness_timeout_us_.load() > 0);
+    }
+    bool should_refresh_session() const { return udp_refresh_requested_.load(); }
     bool should_fallback_to_wss() const { return fallback_to_wss_.load(); }
 
 private:
@@ -186,7 +192,9 @@ private:
     std::atomic<voice::core::MediaOwner> media_owner_{voice::core::MediaOwner::kNone};
     std::atomic<uint32_t> playback_generation_{1};
     std::atomic<bool> playback_enabled_{false};
-    std::atomic<int64_t> udp_expiry_deadline_us_{0};
+    // Derived from the authenticated refresh_after_ms control value and the
+    // local monotonic timer. This is intentionally not a wall-clock expiry.
+    std::atomic<int64_t> udp_refresh_deadline_us_{0};
     std::atomic<int64_t> udp_heartbeat_interval_us_{0};
     std::atomic<int64_t> udp_liveness_timeout_us_{0};
     std::atomic<int64_t> udp_next_keepalive_us_{0};

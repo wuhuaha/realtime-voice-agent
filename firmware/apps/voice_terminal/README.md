@@ -13,6 +13,10 @@ Wi-Fi、bootstrap token 和 endpoint 不得写入源码、`sdkconfig.defaults` �
 build input 注入；生成的 `sdkconfig`、`managed_components/`、`build/` 和 firmware binary 保持 ignored。
 生产设备应使用独立 provisioning/credential 流程，不发布开发 token。
 
+本地开发凭据放在 ignored 的 `sdkconfig.local`。未显式传入其他 `SDKCONFIG_DEFAULTS` 时，工程会按顺序自动加载
+`sdkconfig.defaults` 和存在的 `sdkconfig.local`；因此 clean build 与增量 build 使用同一配置来源。烧录前仍需核对
+生成的 `sdkconfig` 和目标 build 目录，禁止从历史 `build-*` 目录烧录未确认身份的镜像。
+
 设置页只允许编辑 Director bootstrap URL。设备仅会复用与已 provisioned credential 完全相同 origin
 （scheme、host、port）的 token；界面不会显示 token，也不会把 token 拼入 URL。跨 origin 切换必须通过安全的
 credential reprovision 流程重新绑定，不能仅在屏幕上修改地址。
@@ -31,6 +35,9 @@ WakeNet 不运行，打断裁决仍由服务端负责；MIC 再次点击发送�
 要求 ESP-IDF 5.5.2（revision `30aaf64524299d3bde422ca9a2848090d1bc5d0f`）：
 
 ```powershell
+# ESP-SR 2.3.1 的模型打包脚本按 Python 默认编码读取 sdkconfig；
+# Windows 上只要 local 配置含非 ASCII 文本，就必须启用 UTF-8 模式。
+$env:PYTHONUTF8 = "1"
 idf.py set-target esp32s3
 idf.py build
 idf.py size

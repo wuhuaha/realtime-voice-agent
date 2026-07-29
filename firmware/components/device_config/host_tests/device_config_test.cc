@@ -93,7 +93,7 @@ void TestEndpointParsingAndBounds() {
     assert(endpoint.host == "[2001:db8::1]" && endpoint.port == 443);
 
     const std::string maximum =
-        "ws://" + std::string(rva::config::kMaxWebsocketUrlBytes - 13, 'a') + "/v2/voice";
+        "ws://" + std::string(rva::config::kMaxWebsocketUrlBytes - 14, 'a') + "/v2/voice";
     assert(maximum.size() == rva::config::kMaxWebsocketUrlBytes);
     assert(DeviceConfig::ParseEndpoint(maximum, &endpoint) == ConfigResult::kOk);
     assert(DeviceConfig::ParseEndpoint(maximum + "x", &endpoint) == ConfigResult::kInvalidArgument);
@@ -219,7 +219,9 @@ void TestWifiPlanPrioritizesSavedCredentialsAndIsASnapshot() {
     wifi.credentials = {{"saved-primary", "saved-password"}, {"duplicate", "saved-version"}};
     DeviceConfig config(store, wifi);
     std::vector<WifiCredential> provisioned = {
+        {"duplicate", "saved-version"},
         {"duplicate", "provisioned-version"},
+        {"fallback", "fallback-password"},
         {"fallback", "fallback-password"},
     };
 
@@ -228,13 +230,14 @@ void TestWifiPlanPrioritizesSavedCredentialsAndIsASnapshot() {
     const std::vector<WifiCredential> expected = {
         {"saved-primary", "saved-password"},
         {"duplicate", "saved-version"},
+        {"duplicate", "provisioned-version"},
         {"fallback", "fallback-password"},
     };
     assert(plan.credentials() == expected);
 
     wifi.credentials.clear();
     provisioned.clear();
-    assert(plan.credentials().size() == 3);
+    assert(plan.credentials().size() == 4);
     assert(plan.credentials().front().ssid == "saved-primary");
 }
 

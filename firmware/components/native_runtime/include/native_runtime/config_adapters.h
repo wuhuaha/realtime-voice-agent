@@ -49,7 +49,7 @@ public:
 
 private:
     static void EventHandler(void* context, esp_event_base_t base, int32_t id, void* data);
-    void HandleEvent(esp_event_base_t base, int32_t id);
+    void HandleEvent(esp_event_base_t base, int32_t id, void* data);
     bool ConnectCurrent();
     bool Initialize();
 
