@@ -16,12 +16,24 @@ from realtime_worker.bindings.rva import (
     RvaWssConnection,
     WssMediaFrame,
 )
+from realtime_worker.bindings.rva.binding import ControlEffect, InboundAudioPacket
 from realtime_worker.interruption import InterruptionPolicyConfig, LayeredInterruptionPolicy
 from realtime_worker.transport.udp_gateway import UdpGrantExpiredError
 
 
 def pcm_frame(sequence: int) -> PcmFrame:
     return PcmFrame(0, sequence, sequence * PCM_SAMPLES, b"\x00" * (PCM_SAMPLES * 2))
+
+
+class MutableMonotonicClock:
+    def __init__(self, value: float = 0.0) -> None:
+        self.value = value
+
+    def __call__(self) -> float:
+        return self.value
+
+    def advance(self, seconds: float) -> None:
+        self.value += seconds
 
 
 def session_open() -> str:
@@ -111,6 +123,7 @@ class FakeRunner:
         self.close_calls = 0
         self.started = False
         self.playback: list[tuple[float, bool]] = []
+        self.response_gate: list[bool] = []
         self.playback_started_event = asyncio.Event()
         self.block_interrupt = False
         self.interrupt_started = asyncio.Event()
@@ -145,6 +158,9 @@ class FakeRunner:
         )
         self.response_end(self.producer_epoch)
 
+    def set_response_gate(self, active: bool) -> None:
+        self.response_gate.append(active)
+
     async def commit_text(self, text: str) -> None:
         return None
 
@@ -175,6 +191,7 @@ def create_connection(
     limits: RvaRuntimeLimits | None = None,
     interruption_policy: LayeredInterruptionPolicy | None = None,
     codec_factory: Callable[[], RvaOpusCodec] = RvaOpusCodec,
+    clock: Callable[[], float] | None = None,
 ) -> tuple[RvaWssConnection, list[FakeRunner]]:
     runners: list[FakeRunner] = []
 
@@ -186,6 +203,7 @@ def create_connection(
         runners.append(runner)
         return runner
 
+    connection_kwargs = {"clock": clock} if clock is not None else {}
     connection = RvaWssConnection(
         websocket,  # type: ignore[arg-type]
         expected_device_id="device-001",
@@ -197,6 +215,7 @@ def create_connection(
         limits=limits,
         interruption_policy=interruption_policy,
         codec_factory=codec_factory,
+        **connection_kwargs,  # type: ignore[arg-type]
     )
     return connection, runners
 
@@ -448,6 +467,7 @@ async def test_three_uplink_packets_produce_text_and_generation_framed_audio() -
     assert end["generation"] == begin["generation"]
     assert end["outcome"] == "completed"
     assert end["final_media_sequence"] == decoded_media[-1].sequence
+    assert runner.response_gate == [True]
     assert runner.pushes == 9
     # Physical playout is endpoint-owned in rva-control-v2 and is only
     # acknowledged after playback.started/playback.ended arrive from the device.
@@ -711,11 +731,12 @@ class SlowRunner(FakeRunner):
         self.release = asyncio.Event()
 
     async def push_audio(self, frame: PcmFrame) -> None:
+        self.pushes += 1
         await self.release.wait()
 
 
 @pytest.mark.integration
-async def test_input_queue_overload_fails_connection_explicitly() -> None:
+async def test_input_queue_short_burst_waits_for_consumer_and_recovers() -> None:
     websocket = FakeWebSocket()
     runners: list[SlowRunner] = []
 
@@ -735,18 +756,317 @@ async def test_input_queue_overload_fails_connection_explicitly() -> None:
         media_id=bytes.fromhex("0123456789abcdef"),
         media_epoch=7,
         runner_factory=factory,
-        limits=RvaRuntimeLimits(input_queue_packets=1),
+        limits=RvaRuntimeLimits(input_queue_packets=1, queue_timeout_seconds=0.2),
     )
     websocket.feed_open()
     task = asyncio.create_task(connection.run())
     await websocket.wait_control("session.opened")
-    for packet in uplink_packets(4):
+    packets = uplink_packets(4)
+    websocket.feed_media(packets[0])
+    await wait_until(lambda: runners[0].pushes == 1)
+    for packet in packets[1:]:
         websocket.feed_media(packet)
 
+    await asyncio.sleep(0.1)
+    assert not task.done()
+    runners[0].release.set()
+    await wait_until(lambda: runners[0].pushes == 12)
+    websocket.disconnect()
     await asyncio.wait_for(task, timeout=2.0)
+
+    assert websocket.closed == [(1_000, "normal")]
+
+
+@pytest.mark.unit
+async def test_input_queue_close_wakes_blocked_producer_without_late_enqueue() -> None:
+    websocket = FakeWebSocket()
+    connection, _ = create_connection(
+        websocket,
+        limits=RvaRuntimeLimits(input_queue_packets=1, queue_timeout_seconds=0.2),
+    )
+    port = connection._audio_port  # noqa: SLF001
+    first = InboundAudioPacket(0, 0, b"first")
+    second = InboundAudioPacket(1, 960, b"late")
+    await port.receive_audio(first)
+    pending = asyncio.create_task(port.receive_audio(second))
+    await asyncio.sleep(0)
+
+    await port.close()
+    await asyncio.wait_for(pending, timeout=0.1)
+
+    assert await port.queue.get() is None
+    assert port.queue.empty()
+
+
+@pytest.mark.unit
+async def test_input_timeline_accepts_wrap_and_reanchors_clock_skew() -> None:
+    websocket = FakeWebSocket()
+    clock = MutableMonotonicClock()
+    connection, _ = create_connection(websocket, clock=clock)
+    port = connection._audio_port  # noqa: SLF001
+
+    timestamp = 0xFFFFFC40
+    await port.receive_audio(InboundAudioPacket(0, timestamp, b"first"))
+    queued = await port.queue.get()
+    assert queued is not None
+    port.mark_consumed(queued)
+
+    for sequence in range(1, 10_100):
+        clock.advance(0.06006)  # 1,000 ppm slower than the nominal media clock.
+        timestamp = (timestamp + 960) & 0xFFFFFFFF
+        await port.receive_audio(InboundAudioPacket(sequence, timestamp, b"audio"))
+        queued = await port.queue.get()
+        assert queued is not None
+        assert queued.deadline_at > clock()
+        port.mark_consumed(queued)
+
+
+@pytest.mark.unit
+async def test_input_timeline_does_not_reanchor_growing_backlog_as_clock_skew() -> None:
+    websocket = FakeWebSocket()
+    clock = MutableMonotonicClock()
+    connection, _ = create_connection(websocket, clock=clock)
+    port = connection._audio_port  # noqa: SLF001
+
+    await port.receive_audio(InboundAudioPacket(0, 0, b"first"))
+    queued = await port.queue.get()
+    assert queued is not None
+    port.mark_consumed(queued)
+
+    expired_at: int | None = None
+    for sequence in range(1, 1_000):
+        clock.advance(0.06118)  # Adds 590 ms of real backlog per 500 packets.
+        await port.receive_audio(InboundAudioPacket(sequence, sequence * 960, b"audio"))
+        queued = await port.queue.get()
+        assert queued is not None
+        if queued.deadline_at <= clock():
+            expired_at = sequence
+            break
+        port.mark_consumed(queued)
+
+    assert expired_at is not None
+    assert 500 < expired_at < 600
+
+
+@pytest.mark.unit
+async def test_input_timeline_rejects_non_cadenced_or_future_timestamp() -> None:
+    websocket = FakeWebSocket()
+    clock = MutableMonotonicClock()
+    connection, _ = create_connection(websocket, clock=clock)
+    port = connection._audio_port  # noqa: SLF001
+
+    await port.receive_audio(InboundAudioPacket(0, 0, b"first"))
+    queued = await port.queue.get()
+    assert queued is not None
+    port.mark_consumed(queued)
+    clock.advance(0.06)
+
+    with pytest.raises(RvaBindingError, match="invalid_media_timestamp"):
+        await port.receive_audio(InboundAudioPacket(1, 961, b"invalid-cadence"))
+
+    with pytest.raises(RvaBindingError, match="invalid_media_timestamp"):
+        await port.receive_audio(InboundAudioPacket(1, 960 * 20, b"future-jump"))
+
+    accumulated, _ = create_connection(FakeWebSocket(), clock=MutableMonotonicClock())
+    accumulated_port = accumulated._audio_port  # noqa: SLF001
+    await accumulated_port.receive_audio(InboundAudioPacket(0, 0, b"first"))
+    queued = await accumulated_port.queue.get()
+    assert queued is not None
+    accumulated_port.mark_consumed(queued)
+    await accumulated_port.receive_audio(InboundAudioPacket(1, 960 * 10, b"boundary-jump"))
+
+    with pytest.raises(RvaBindingError, match="invalid_media_timestamp"):
+        await accumulated_port.receive_audio(InboundAudioPacket(2, 960 * 20, b"accumulated-jump"))
+
+
+@pytest.mark.integration
+async def test_input_media_timeline_age_fails_closed_before_stale_audio_reaches_runner(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    websocket = FakeWebSocket()
+    clock = MutableMonotonicClock()
+    runners: list[SlowRunner] = []
+
+    def factory(
+        emit: Callable[[AgentOutputSegment], Awaitable[None]],
+        stop: Callable[[int], None],
+    ) -> SlowRunner:
+        runner = SlowRunner(emit, stop)
+        runners.append(runner)
+        return runner
+
+    connection = RvaWssConnection(
+        websocket,  # type: ignore[arg-type]
+        expected_device_id="device-001",
+        session_id="session-001",
+        session_epoch="grant-epoch-001",
+        media_id=bytes.fromhex("0123456789abcdef"),
+        media_epoch=7,
+        runner_factory=factory,
+        limits=RvaRuntimeLimits(
+            input_queue_packets=2,
+            queue_timeout_seconds=0.2,
+            uplink_max_age_seconds=0.6,
+        ),
+        clock=clock,
+    )
+    websocket.feed_open()
+    task = asyncio.create_task(connection.run())
+    await websocket.wait_control("session.opened")
+    packets = uplink_packets(2)
+    websocket.feed_media(packets[0])
+    await wait_until(lambda: runners[0].pushes == 1)
+    clock.advance(0.2)
+    websocket.feed_media(packets[1])
+    await wait_until(lambda: connection._audio_port.queue.qsize() == 1)  # noqa: SLF001
+    clock.advance(0.5)
+
+    with caplog.at_level("INFO"):
+        runners[0].release.set()
+        await asyncio.wait_for(task, timeout=1.0)
+
+    assert runners[0].pushes == 1
+    assert websocket.closed == [(1_013, "media_overloaded")]
+    assert "overload_source=opus_input_stale" in caplog.text
+    assert "overload_media_age_ms=700" in caplog.text
+
+
+@pytest.mark.integration
+async def test_input_queue_overload_fails_connection_explicitly(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    websocket = FakeWebSocket()
+    runners: list[SlowRunner] = []
+
+    def factory(
+        emit: Callable[[AgentOutputSegment], Awaitable[None]],
+        stop: Callable[[int], None],
+    ) -> SlowRunner:
+        runner = SlowRunner(emit, stop)
+        runners.append(runner)
+        return runner
+
+    connection = RvaWssConnection(
+        websocket,  # type: ignore[arg-type]
+        expected_device_id="device-001",
+        session_id="session-001",
+        session_epoch="grant-epoch-001",
+        media_id=bytes.fromhex("0123456789abcdef"),
+        media_epoch=7,
+        runner_factory=factory,
+        limits=RvaRuntimeLimits(input_queue_packets=1, queue_timeout_seconds=0.05),
+    )
+    websocket.feed_open()
+    task = asyncio.create_task(connection.run())
+    await websocket.wait_control("session.opened")
+    with caplog.at_level("INFO"):
+        for packet in uplink_packets(4):
+            websocket.feed_media(packet)
+
+        await asyncio.wait_for(task, timeout=2.0)
 
     assert websocket.closed == [(1_013, "media_overloaded")]
     assert runners[0].close_calls == 1
+    assert "overload_source=opus_input" in caplog.text
+    assert "overload_qsize=1 overload_capacity=1" in caplog.text
+
+
+@pytest.mark.integration
+async def test_runtime_control_ack_timeout_is_not_misclassified_as_handshake_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    websocket = FakeWebSocket()
+    connection, _ = create_connection(
+        websocket,
+        trigger_frames=1_000,
+        limits=RvaRuntimeLimits(queue_timeout_seconds=0.03, wire_send_timeout_seconds=0.03),
+    )
+    websocket.feed_open()
+    task = asyncio.create_task(connection.run())
+    await websocket.wait_control("session.opened")
+
+    send_started = asyncio.Event()
+    send_release = asyncio.Event()
+
+    async def stalled_send_text(_payload: str) -> None:
+        send_started.set()
+        await send_release.wait()
+
+    async def control_with_reply(_raw: str) -> ControlEffect:
+        return ControlEffect(outbound=(json.dumps({"type": "runtime.test"}),))
+
+    monkeypatch.setattr(websocket, "send_text", stalled_send_text)
+    monkeypatch.setattr(connection.binding, "receive_control", control_with_reply)
+    websocket.inbound.put_nowait({"type": "websocket.receive", "text": "{}"})
+    await asyncio.wait_for(send_started.wait(), timeout=1.0)
+    await asyncio.wait_for(task, timeout=1.0)
+
+    assert websocket.closed == [(1_011, "control_timeout")]
+
+
+@pytest.mark.integration
+async def test_stalled_wss_media_send_has_its_own_bounded_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    websocket = FakeWebSocket()
+    connection, _ = create_connection(
+        websocket,
+        trigger_frames=3,
+        output_frames=3,
+        limits=RvaRuntimeLimits(
+            queue_timeout_seconds=0.02,
+            wire_send_timeout_seconds=0.03,
+            playback_prebuffer_packets=0,
+        ),
+    )
+    websocket.feed_open()
+    task = asyncio.create_task(connection.run())
+    await websocket.wait_control("session.opened")
+
+    send_started = asyncio.Event()
+
+    async def stalled_send_bytes(_payload: bytes) -> None:
+        send_started.set()
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(websocket, "send_bytes", stalled_send_bytes)
+    websocket.feed_media(uplink_packets(1)[0])
+    await asyncio.wait_for(send_started.wait(), timeout=1.0)
+    await asyncio.wait_for(task, timeout=1.0)
+
+    assert websocket.closed == [(1_011, "media_send_timeout")]
+
+
+class BlockingStartRunner(FakeRunner):
+    async def start(self) -> None:
+        await asyncio.Event().wait()
+
+
+@pytest.mark.integration
+async def test_runner_start_timeout_is_not_misclassified_as_handshake_timeout() -> None:
+    websocket = FakeWebSocket()
+
+    def factory(
+        emit: Callable[[AgentOutputSegment], Awaitable[None]],
+        stop: Callable[[int], None],
+    ) -> BlockingStartRunner:
+        return BlockingStartRunner(emit, stop, trigger_frames=1_000)
+
+    connection = RvaWssConnection(
+        websocket,  # type: ignore[arg-type]
+        expected_device_id="device-001",
+        session_id="session-001",
+        session_epoch="grant-epoch-001",
+        media_id=bytes.fromhex("0123456789abcdef"),
+        media_epoch=7,
+        runner_factory=factory,
+        limits=RvaRuntimeLimits(runner_timeout_seconds=0.02),
+    )
+    websocket.feed_open()
+
+    await asyncio.wait_for(connection.run(), timeout=1.0)
+
+    assert websocket.closed == [(1_011, "runtime_start_timeout")]
 
 
 class BlockingCloseRunner(FakeRunner):

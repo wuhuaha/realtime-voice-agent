@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import asyncio
+from types import SimpleNamespace
 
 import pytest
 from livekit import rtc
 from livekit.agents import StopResponse
 from pydantic import ValidationError
 from realtime_worker.agent import LiveKitAgentRunner, RoomlessAudioInput, RoomlessAudioOutput, _DefaultAgent
+from realtime_worker.audio import PcmFrame
 from realtime_worker.config import Settings
 
 pytestmark = pytest.mark.unit
@@ -253,16 +255,70 @@ async def test_custom_input_is_bounded_and_closes_iterator() -> None:
 
 
 @pytest.mark.asyncio
-async def test_default_agent_drops_each_marked_overlap_turn_exactly_once() -> None:
-    drops = iter((True, False))
-    agent = _DefaultAgent(lambda: next(drops))
+async def test_custom_input_short_burst_waits_for_capacity_and_propagates_cancellation() -> None:
+    audio_input = RoomlessAudioInput(1, queue_timeout_seconds=0.2)
+    first = PcmFrame(0, 0, 0, b"\x00" * 640)
+    second = PcmFrame(0, 1, 320, b"\x00" * 640)
+    await audio_input.push(first)
+
+    pending = asyncio.create_task(audio_input.push(second))
+    await asyncio.sleep(0.1)
+    assert not pending.done()
+    await audio_input.__anext__()
+    await asyncio.wait_for(pending, timeout=0.1)
+    await audio_input.__anext__()
+
+    await audio_input.push(first)
+    cancelled = asyncio.create_task(audio_input.push(second))
+    await asyncio.sleep(0)
+    cancelled.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await cancelled
+    audio_input.close()
+
+
+@pytest.mark.asyncio
+async def test_custom_input_close_wakes_waiting_producer_without_queueing_after_sentinel() -> None:
+    audio_input = RoomlessAudioInput(1, queue_timeout_seconds=0.1)
+    frame = PcmFrame(0, 0, 0, b"\x00" * 640)
+    await audio_input.push(frame)
+    pending = asyncio.create_task(audio_input.push(frame))
+    await asyncio.sleep(0)
+
+    audio_input.close()
+    await asyncio.wait_for(pending, timeout=0.1)
+
+    with pytest.raises(StopAsyncIteration):
+        await audio_input.__anext__()
+    assert audio_input._queue.empty()  # noqa: SLF001
+
+
+@pytest.mark.asyncio
+async def test_custom_input_sustained_block_reports_bounded_queue_snapshot() -> None:
+    audio_input = RoomlessAudioInput(1, queue_timeout_seconds=0.02)
+    frame = PcmFrame(0, 0, 0, b"\x00" * 640)
+    await audio_input.push(frame)
+
+    with pytest.raises(BufferError, match="LiveKit input queue is full") as captured:
+        await audio_input.push(frame)
+
+    assert captured.value.source == "pcm_input"  # type: ignore[attr-defined]
+    assert captured.value.qsize == 1  # type: ignore[attr-defined]
+    assert captured.value.capacity == 1  # type: ignore[attr-defined]
+
+
+@pytest.mark.asyncio
+async def test_default_agent_uses_message_bound_suppression() -> None:
+    seen: list[object] = []
+    agent = _DefaultAgent(lambda message: seen.append(message) is None and True)
+    message = SimpleNamespace(raw_text_content="echo")
 
     with pytest.raises(StopResponse):
-        await agent.on_user_turn_completed(object(), object())
-    await agent.on_user_turn_completed(object(), object())
+        await agent.on_user_turn_completed(object(), message)
+    assert seen == [message]
 
 
-def test_livekit_runner_marks_next_turn_from_runtime_transcript_callback() -> None:
+def _runner() -> LiveKitAgentRunner:
     async def emit(_segment):  # noqa: ANN001
         return None
 
@@ -271,10 +327,59 @@ def test_livekit_runner_marks_next_turn_from_runtime_transcript_callback() -> No
         runner="livekit",
         deepseek_api_key="test-key",
     )
-    runner = LiveKitAgentRunner(settings, emit, lambda _epoch: None)
-    runner.set_text_sinks(lambda _text, _final: True, lambda _text: None)
+    return LiveKitAgentRunner(settings, emit, lambda _epoch: None)
 
-    runner._handle_user_transcript("overlap", True)  # noqa: SLF001
 
-    assert runner._consume_overlap_turn() is True  # noqa: SLF001
-    assert runner._consume_overlap_turn() is False  # noqa: SLF001
+def test_livekit_runner_suppresses_pre_ack_playback_turn_exactly_once() -> None:
+    runner = _runner()
+    runner.set_text_sinks(lambda _text, _final: None, lambda _text: None)
+    runner.set_response_gate(True)
+    runner._handle_user_state("listening", "speaking")  # noqa: SLF001
+    runner._handle_user_transcript("echo", True)  # noqa: SLF001
+
+    message = SimpleNamespace(raw_text_content="echo")
+    assert runner._response_gate.should_suppress(message) is True  # noqa: SLF001
+    runner.set_response_gate(False)
+    assert runner._response_gate.should_suppress(message) is False  # noqa: SLF001
+
+
+def test_livekit_runner_suppresses_turn_that_ends_after_playback() -> None:
+    runner = _runner()
+    runner.set_response_gate(True)
+    runner._handle_user_state("listening", "speaking")  # noqa: SLF001
+    runner.set_response_gate(False)
+    runner._handle_user_state("speaking", "listening")  # noqa: SLF001
+    runner._handle_user_transcript("late echo", True)  # noqa: SLF001
+
+    assert runner._response_gate.should_suppress(  # noqa: SLF001
+        SimpleNamespace(raw_text_content="late echo")
+    ) is True
+
+
+def test_livekit_runner_skipped_hook_does_not_poison_next_clean_turn() -> None:
+    runner = _runner()
+    runner.set_response_gate(True)
+    runner._handle_user_state("listening", "speaking")  # noqa: SLF001
+    runner._handle_user_transcript("same words", True)  # noqa: SLF001
+    runner.set_response_gate(False)
+
+    # Simulate LiveKit skipping on_user_turn_completed for the contaminated
+    # turn, then starting a genuinely clean turn with identical text.
+    runner._handle_user_state("listening", "speaking")  # noqa: SLF001
+    runner._handle_user_transcript("same words", True)  # noqa: SLF001
+
+    assert runner._response_gate.should_suppress(  # noqa: SLF001
+        SimpleNamespace(raw_text_content="same words")
+    ) is False
+
+
+def test_livekit_runner_multiple_overlap_turns_are_not_collapsed_to_one_bit() -> None:
+    runner = _runner()
+    runner.set_response_gate(True)
+    for text in ("first", "second"):
+        runner._handle_user_state("listening", "speaking")  # noqa: SLF001
+        runner._handle_user_transcript(text, True)  # noqa: SLF001
+
+    runner.set_response_gate(False)
+    assert runner._response_gate.should_suppress(SimpleNamespace(raw_text_content="first")) is True  # noqa: SLF001
+    assert runner._response_gate.should_suppress(SimpleNamespace(raw_text_content="second")) is True  # noqa: SLF001

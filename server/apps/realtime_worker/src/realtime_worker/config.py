@@ -123,6 +123,8 @@ class Settings(BaseSettings):
     rva_input_queue_packets: int = Field(default=8, ge=1, le=64)
     rva_output_queue_items: int = Field(default=12, ge=4, le=64)
     rva_queue_timeout_seconds: float = Field(default=0.2, gt=0, le=1)
+    rva_uplink_max_age_seconds: float = Field(default=0.6, gt=0, le=3)
+    rva_wire_send_timeout_seconds: float = Field(default=1.0, gt=0, le=10)
     rva_handshake_timeout_seconds: float = Field(default=5.0, gt=0, le=10)
     rva_runner_timeout_seconds: float = Field(default=5.0, gt=0, le=30)
     rva_close_timeout_seconds: float = Field(default=5.0, gt=0, le=30)

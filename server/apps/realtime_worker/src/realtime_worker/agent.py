@@ -7,6 +7,7 @@ import logging
 import math
 import struct
 import uuid
+from collections import deque
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from functools import lru_cache
@@ -53,6 +54,8 @@ class AgentRunner(Protocol):
 
     async def commit_text(self, text: str) -> None: ...
 
+    def set_response_gate(self, active: bool) -> None: ...
+
     async def playback_started(self, created_at: float) -> None: ...
 
     async def playback_finished(self, position: float, interrupted: bool) -> None: ...
@@ -60,6 +63,14 @@ class AgentRunner(Protocol):
     async def interrupt(self) -> int: ...
 
     async def close(self) -> None: ...
+
+
+class RoomlessAudioInputOverloadedError(BufferError):
+    def __init__(self, *, qsize: int, capacity: int) -> None:
+        super().__init__("LiveKit input queue is full")
+        self.source = "pcm_input"
+        self.qsize = qsize
+        self.capacity = capacity
 
 
 class DeterministicAgentRunner:
@@ -106,6 +117,10 @@ class DeterministicAgentRunner:
     ) -> None:
         self._assistant_text_sink = assistant_text
 
+    def set_response_gate(self, active: bool) -> None:
+        del active
+        return None
+
     async def playback_started(self, created_at: float) -> None:
         return None
 
@@ -121,10 +136,14 @@ class DeterministicAgentRunner:
 
 
 class RoomlessAudioInput(io.AudioInput):
-    def __init__(self, capacity: int) -> None:
+    def __init__(self, capacity: int, *, queue_timeout_seconds: float = 0.2) -> None:
+        if capacity <= 0 or queue_timeout_seconds <= 0:
+            raise ValueError("Roomless input queue limits must be positive")
         super().__init__(label="roomless-input")
         self._queue: asyncio.Queue[rtc.AudioFrame | None] = asyncio.Queue(capacity)
+        self._queue_timeout_seconds = queue_timeout_seconds
         self._closed = False
+        self._closed_event = asyncio.Event()
 
     async def __anext__(self) -> rtc.AudioFrame:
         item = await self._queue.get()
@@ -132,7 +151,7 @@ class RoomlessAudioInput(io.AudioInput):
             raise StopAsyncIteration
         return item
 
-    def push(self, frame: PcmFrame) -> None:
+    async def push(self, frame: PcmFrame) -> None:
         if self._closed:
             return
         audio = rtc.AudioFrame(
@@ -143,11 +162,32 @@ class RoomlessAudioInput(io.AudioInput):
         )
         try:
             self._queue.put_nowait(audio)
-        except asyncio.QueueFull as exc:
-            raise BufferError("LiveKit input queue is full") from exc
+        except asyncio.QueueFull:
+            put_task = asyncio.create_task(self._queue.put(audio), name="roomless-input-put")
+            close_task = asyncio.create_task(self._closed_event.wait(), name="roomless-input-close-wait")
+            try:
+                done, _ = await asyncio.wait(
+                    {put_task, close_task},
+                    timeout=self._queue_timeout_seconds,
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+                if close_task in done or self._closed:
+                    return
+                if put_task not in done:
+                    raise RoomlessAudioInputOverloadedError(
+                        qsize=self._queue.qsize(),
+                        capacity=self._queue.maxsize,
+                    )
+                await put_task
+            finally:
+                for task in (put_task, close_task):
+                    if not task.done():
+                        task.cancel()
+                await asyncio.gather(put_task, close_task, return_exceptions=True)
 
     def close(self) -> None:
         self._closed = True
+        self._closed_event.set()
         while not self._queue.empty():
             self._queue.get_nowait()
         self._queue.put_nowait(None)
@@ -328,9 +368,69 @@ class RoomlessAudioOutput(io.AudioOutput):
         self._callback_size_overflow = 0
 
 
+class _PlaybackResponseGate:
+    """Suppress LLM replies for user turns contaminated by endpoint playback."""
+
+    def __init__(self, pending_limit: int = 8) -> None:
+        self._response_active = False
+        self._turn_sequence = 0
+        self._active_turn: int | None = None
+        self._active_turn_contaminated = False
+        self._pending: deque[tuple[int, str]] = deque(maxlen=pending_limit)
+
+    def set_response_active(self, active: bool) -> None:
+        self._response_active = active
+
+    def user_state_changed(self, old_state: object, new_state: object) -> None:
+        del old_state
+        if new_state != "speaking":
+            return
+        if not self._response_active:
+            # A clean turn proves any older unconsumed marker belonged to a hook
+            # LiveKit skipped while an uninterruptible response was active.
+            self._pending.clear()
+        self._turn_sequence += 1
+        self._active_turn = self._turn_sequence
+        self._active_turn_contaminated = self._response_active
+
+    def observe_transcript(self, text: str, is_final: bool) -> None:
+        if not text:
+            return
+        if self._active_turn is None:
+            self._turn_sequence += 1
+            self._active_turn = self._turn_sequence
+        if self._response_active:
+            self._active_turn_contaminated = True
+        if not is_final:
+            return
+        if self._active_turn_contaminated:
+            self._pending.append((self._active_turn, text))
+        self._active_turn = None
+        self._active_turn_contaminated = False
+
+    def should_suppress(self, message: object) -> bool:
+        text = getattr(message, "raw_text_content", None)
+        candidate = text if isinstance(text, str) else ""
+        if self._pending:
+            _, expected = self._pending[0]
+            if candidate == expected:
+                self._pending.popleft()
+                return True
+            # Hooks are ordered. A mismatch means the marked hook was skipped;
+            # never let a stale marker suppress an unrelated future turn.
+            self._pending.clear()
+        return self._response_active
+
+    def reset(self) -> None:
+        self._response_active = False
+        self._active_turn = None
+        self._active_turn_contaminated = False
+        self._pending.clear()
+
+
 class _DefaultAgent(Agent):
-    def __init__(self, consume_overlap_turn: Callable[[], bool]) -> None:
-        self._consume_overlap_turn = consume_overlap_turn
+    def __init__(self, should_suppress_turn: Callable[[object], bool]) -> None:
+        self._should_suppress_turn = should_suppress_turn
         super().__init__(
             instructions=(
                 "你是一个简洁、自然的中文语音助手。只输出适合直接朗读的纯文本，不使用 Markdown。"
@@ -339,8 +439,8 @@ class _DefaultAgent(Agent):
         )
 
     async def on_user_turn_completed(self, turn_ctx: Any, new_message: Any) -> None:
-        del turn_ctx, new_message
-        if self._consume_overlap_turn():
+        del turn_ctx
+        if self._should_suppress_turn(new_message):
             raise StopResponse
 
 
@@ -395,7 +495,10 @@ class LiveKitAgentRunner:
     def __init__(self, settings: Settings, emit_segment: SegmentSink, response_end: StopSink) -> None:
         settings.require_livekit()
         self._settings = settings
-        self._input = RoomlessAudioInput(settings.media_queue_frames)
+        self._input = RoomlessAudioInput(
+            settings.media_queue_frames,
+            queue_timeout_seconds=settings.rva_queue_timeout_seconds,
+        )
         self._output = RoomlessAudioOutput(
             emit_segment,
             response_end,
@@ -411,7 +514,7 @@ class LiveKitAgentRunner:
         self._user_transcript_sink: UserTranscriptSink | None = None
         self._assistant_text_sink: AssistantTextSink | None = None
         self._text_output: RoomlessTextOutput | None = None
-        self._drop_next_user_turn = False
+        self._response_gate = _PlaybackResponseGate()
 
     def set_text_sinks(
         self,
@@ -452,6 +555,7 @@ class LiveKitAgentRunner:
             session,
             self._tracer,
             user_transcript=self._handle_user_transcript,
+            user_state=self._handle_user_state,
         )
         session.input.audio = self._input
         session.output.audio = self._output
@@ -459,20 +563,22 @@ class LiveKitAgentRunner:
             self._text_output = RoomlessTextOutput(self._assistant_text_sink)
             session.output.transcription = self._text_output
         self._session = session
-        await session.start(_DefaultAgent(self._consume_overlap_turn))
+        await session.start(_DefaultAgent(self._response_gate.should_suppress))
+
+    def _handle_user_state(self, old_state: object, new_state: object) -> None:
+        self._response_gate.user_state_changed(old_state, new_state)
 
     def _handle_user_transcript(self, text: str, is_final: bool) -> None:
         sink = self._user_transcript_sink
-        if sink is not None and sink(text, is_final):
-            self._drop_next_user_turn = True
+        if sink is not None:
+            sink(text, is_final)
+        self._response_gate.observe_transcript(text, is_final)
 
-    def _consume_overlap_turn(self) -> bool:
-        drop = self._drop_next_user_turn
-        self._drop_next_user_turn = False
-        return drop
+    def set_response_gate(self, active: bool) -> None:
+        self._response_gate.set_response_active(active)
 
     async def push_audio(self, frame: PcmFrame) -> None:
-        self._input.push(frame)
+        await self._input.push(frame)
 
     async def commit_text(self, text: str) -> None:
         if self._session is None:
@@ -497,6 +603,7 @@ class LiveKitAgentRunner:
         return self._output.advance_producer_epoch()
 
     async def close(self) -> None:
+        self._response_gate.reset()
         failures: list[BaseException] = []
         try:
             self._input.close()
@@ -556,6 +663,7 @@ def _register_livekit_observers(
     tracer: Tracer,
     *,
     user_transcript: UserTranscriptSink | None = None,
+    user_state: Callable[[object, object], None] | None = None,
 ) -> _LiveKitPlaybackTrace:
     """Project public AgentSession events into PII-free phase and latency events."""
 
@@ -572,6 +680,8 @@ def _register_livekit_observers(
         nonlocal interim_seen
         new_state = getattr(event, "new_state", None)
         old_state = getattr(event, "old_state", None)
+        if user_state is not None:
+            user_state(old_state, new_state)
         created_at = getattr(event, "created_at", None)
         source_at_ms = round(created_at * 1000) if isinstance(created_at, int | float) else None
         if new_state == "speaking":

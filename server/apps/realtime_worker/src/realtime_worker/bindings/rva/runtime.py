@@ -14,7 +14,7 @@ from typing import Literal, Protocol
 from fastapi import WebSocket
 from starlette.websockets import WebSocketDisconnect
 
-from realtime_worker.agent import AgentOutputSegment, AgentRunner
+from realtime_worker.agent import AgentOutputSegment, AgentRunner, RoomlessAudioInputOverloadedError
 from realtime_worker.interruption import InterruptionContext, InterruptionCoordinator, LayeredInterruptionPolicy
 from realtime_worker.transport.udp_gateway import (
     UdpGrantExpiredError,
@@ -34,6 +34,8 @@ logger = logging.getLogger(__name__)
 RunnerFactory = Callable[[Callable[[AgentOutputSegment], Awaitable[None]], Callable[[int], None]], AgentRunner]
 CodecFactory = Callable[[], RvaOpusCodec]
 Clock = Callable[[], float]
+_TIMELINE_REANCHOR_SECONDS = 30.0
+_TIMELINE_MAX_SKEW_RATIO = 1_000 / 1_000_000
 
 
 class TextAwareRunner(Protocol):
@@ -49,6 +51,35 @@ class RvaRuntimeError(RuntimeError):
 
 
 class RvaOverloadedError(RvaRuntimeError):
+    def __init__(
+        self,
+        message: str,
+        *,
+        source: str,
+        qsize: int,
+        capacity: int,
+        media_age_ms: int = -1,
+    ) -> None:
+        super().__init__(message)
+        self.source = source
+        self.qsize = qsize
+        self.capacity = capacity
+        self.media_age_ms = media_age_ms
+
+
+class RvaHandshakeTimeoutError(RvaRuntimeError):
+    pass
+
+
+class RvaControlTimeoutError(RvaRuntimeError):
+    pass
+
+
+class RvaMediaSendTimeoutError(RvaRuntimeError):
+    pass
+
+
+class RvaRuntimeStartTimeoutError(RvaRuntimeError):
     pass
 
 
@@ -66,6 +97,8 @@ class RvaRuntimeLimits:
     output_queue_items: int = 12
     max_segment_frames: int = 1_500
     queue_timeout_seconds: float = 0.2
+    uplink_max_age_seconds: float = 0.6
+    wire_send_timeout_seconds: float = 1.0
     handshake_timeout_seconds: float = 5.0
     runner_timeout_seconds: float = 5.0
     close_timeout_seconds: float = 5.0
@@ -80,6 +113,8 @@ class RvaRuntimeLimits:
             self.output_queue_items,
             self.max_segment_frames,
             self.queue_timeout_seconds,
+            self.uplink_max_age_seconds,
+            self.wire_send_timeout_seconds,
             self.handshake_timeout_seconds,
             self.runner_timeout_seconds,
             self.close_timeout_seconds,
@@ -99,26 +134,102 @@ class _Outbound:
     assistant_text: str | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class _QueuedAudio:
+    packet: InboundAudioPacket
+    received_at: float
+    expected_at: float
+    deadline_at: float
+
+
 class _AudioQueuePort(AudioInputPort):
     def __init__(self, owner: RvaWssConnection, capacity: int) -> None:
         self._owner = owner
-        self.queue: asyncio.Queue[InboundAudioPacket | None] = asyncio.Queue(capacity)
+        self.queue: asyncio.Queue[_QueuedAudio | None] = asyncio.Queue(capacity)
         self._closed = False
+        self._closed_event = asyncio.Event()
+        self._timeline_timestamp: int | None = None
+        self._timeline_started_at = 0.0
+        self._last_timestamp: int | None = None
+        self._last_received_at = 0.0
 
     async def receive_audio(self, packet: InboundAudioPacket) -> None:
         if self._closed:
             raise RvaRuntimeError("audio input is closed")
+        received_at = self._owner._clock()  # noqa: SLF001
+        if self._timeline_timestamp is None:
+            self._timeline_timestamp = packet.timestamp
+            self._timeline_started_at = received_at
+        if self._last_timestamp is not None:
+            timestamp_delta = (packet.timestamp - self._last_timestamp) & 0xFFFFFFFF
+            arrival_delta = max(0.0, received_at - self._last_received_at)
+            media_delta = timestamp_delta / SAMPLE_RATE
+            if (
+                timestamp_delta == 0
+                or timestamp_delta % SAMPLES_PER_PACKET != 0
+                or media_delta > arrival_delta + self._owner._limits.uplink_max_age_seconds  # noqa: SLF001
+            ):
+                raise RvaBindingError("invalid_media_timestamp")
+        self._last_timestamp = packet.timestamp
+        self._last_received_at = received_at
+        timestamp_delta = (packet.timestamp - self._timeline_timestamp) & 0xFFFFFFFF
+        expected_at = self._timeline_started_at + timestamp_delta / SAMPLE_RATE
+        max_age = self._owner._limits.uplink_max_age_seconds  # noqa: SLF001
+        if expected_at > received_at + max_age:
+            raise RvaBindingError("invalid_media_timestamp")
+        queued = _QueuedAudio(
+            packet=packet,
+            received_at=received_at,
+            expected_at=expected_at,
+            deadline_at=min(received_at, expected_at) + max_age,
+        )
         try:
-            self.queue.put_nowait(packet)
-        except asyncio.QueueFull as exc:
-            raise RvaOverloadedError("input media queue is full") from exc
+            self.queue.put_nowait(queued)
+        except asyncio.QueueFull:
+            put_task = asyncio.create_task(self.queue.put(queued), name="rva-opus-input-put")
+            close_task = asyncio.create_task(self._closed_event.wait(), name="rva-opus-input-close-wait")
+            try:
+                done, _ = await asyncio.wait(
+                    {put_task, close_task},
+                    timeout=self._owner._limits.queue_timeout_seconds,  # noqa: SLF001
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+                if close_task in done or self._closed:
+                    return
+                if put_task not in done:
+                    raise RvaOverloadedError(
+                        "input media queue is full",
+                        source="opus_input",
+                        qsize=self.queue.qsize(),
+                        capacity=self.queue.maxsize,
+                    )
+                await put_task
+            finally:
+                for task in (put_task, close_task):
+                    if not task.done():
+                        task.cancel()
+                await asyncio.gather(put_task, close_task, return_exceptions=True)
+
+    def mark_consumed(self, queued: _QueuedAudio) -> None:
+        if self._timeline_timestamp is None:
+            return
+        timestamp_delta = (queued.packet.timestamp - self._timeline_timestamp) & 0xFFFFFFFF
+        media_elapsed = timestamp_delta / SAMPLE_RATE
+        if media_elapsed >= _TIMELINE_REANCHOR_SECONDS:
+            phase_error = queued.received_at - queued.expected_at
+            max_correction = media_elapsed * _TIMELINE_MAX_SKEW_RATIO
+            correction = max(-max_correction, min(max_correction, phase_error))
+            self._timeline_timestamp = queued.packet.timestamp
+            self._timeline_started_at = queued.expected_at + correction
 
     async def close(self) -> None:
         if self._closed:
             return
         self._closed = True
-        with contextlib.suppress(asyncio.QueueFull):
-            self.queue.put_nowait(None)
+        self._closed_event.set()
+        while not self.queue.empty():
+            self.queue.get_nowait()
+        self.queue.put_nowait(None)
 
 
 class _AgentPort(AgentControlPort):
@@ -247,6 +358,10 @@ class RvaWssConnection:
         self._response_text_sequence = 0
         self.close_code: int | None = None
         self.close_reason: str | None = None
+        self._overload_source = "none"
+        self._overload_qsize = -1
+        self._overload_capacity = -1
+        self._overload_media_age_ms = -1
 
     @property
     def binding(self) -> RvaWssBinding:
@@ -284,12 +399,18 @@ class RvaWssConnection:
                 return_when=asyncio.FIRST_COMPLETED,
             )
             if not done:
-                raise TimeoutError
+                raise RvaHandshakeTimeoutError("session.opened acknowledgement timed out")
             if writer in done:
-                await writer
+                try:
+                    await writer
+                except RvaControlTimeoutError as exc:
+                    raise RvaHandshakeTimeoutError("session.opened send timed out") from exc
                 raise RvaRuntimeError("writer stopped during handshake")
             await handshake_ack
-            await asyncio.wait_for(self._runner.start(), timeout=self._limits.runner_timeout_seconds)
+            try:
+                await asyncio.wait_for(self._runner.start(), timeout=self._limits.runner_timeout_seconds)
+            except TimeoutError as exc:
+                raise RvaRuntimeStartTimeoutError("agent runner start timed out") from exc
             self._tasks.update(
                 {
                     asyncio.create_task(self._reader_loop(), name=f"rva-reader-{self._binding_id}"),
@@ -318,15 +439,25 @@ class RvaWssConnection:
                     raise exception
         except WebSocketDisconnect:
             pass
-        except TimeoutError:
+        except RvaHandshakeTimeoutError:
             close_code, close_reason = 1_008, "handshake_timeout"
+        except RvaControlTimeoutError:
+            close_code, close_reason = 1_011, "control_timeout"
+        except RvaMediaSendTimeoutError:
+            close_code, close_reason = 1_011, "media_send_timeout"
+        except RvaRuntimeStartTimeoutError:
+            close_code, close_reason = 1_011, "runtime_start_timeout"
         except UdpProbeTimeoutError:
             close_code, close_reason = 1_008, "udp_probe_timeout"
         except UdpGrantExpiredError:
             close_code, close_reason = 1_000, "udp_grant_expired"
         except RvaMessageTooLarge:
             close_code, close_reason = 1_009, "message_too_large"
-        except RvaOverloadedError:
+        except RvaOverloadedError as exc:
+            self._overload_source = exc.source
+            self._overload_qsize = exc.qsize
+            self._overload_capacity = exc.capacity
+            self._overload_media_age_ms = exc.media_age_ms
             close_code, close_reason = 1_013, "media_overloaded"
         except RvaIdleTimeoutError:
             close_code, close_reason = 1_000, "idle_timeout"
@@ -353,7 +484,8 @@ class RvaWssConnection:
             logger.info(
                 "rva_session_closing session=%s session_epoch=%s close_code=%d close_reason=%s "
                 "selected_media_profile=%s wss_input_packets=%d udp_input_packets=%d "
-                "decoded_pcm_frames=%d invalid_opus_packets=%d runner_push_frames=%d downlink_packets=%d",
+                "decoded_pcm_frames=%d invalid_opus_packets=%d runner_push_frames=%d downlink_packets=%d "
+                "overload_source=%s overload_qsize=%d overload_capacity=%d overload_media_age_ms=%d",
                 self._binding_id,
                 self._binding.session_epoch,
                 code,
@@ -365,6 +497,10 @@ class RvaWssConnection:
                 self._invalid_opus_packets,
                 self._runner_push_frames,
                 self._downlink_packets,
+                self._overload_source,
+                self._overload_qsize,
+                self._overload_capacity,
+                self._overload_media_age_ms,
             )
             self._close_task = asyncio.create_task(self._close_impl(code, reason), name=f"rva-close-{self._binding_id}")
         try:
@@ -390,8 +526,11 @@ class RvaWssConnection:
             raise
 
     async def _receive_first_control(self) -> str:
-        async with asyncio.timeout(self._limits.handshake_timeout_seconds):
-            frame = await self._websocket.receive()
+        try:
+            async with asyncio.timeout(self._limits.handshake_timeout_seconds):
+                frame = await self._websocket.receive()
+        except TimeoutError as exc:
+            raise RvaHandshakeTimeoutError("session.open was not received") from exc
         if frame.get("type") == "websocket.disconnect":
             raise WebSocketDisconnect(code=int(frame.get("code", 1_000)))
         text = frame.get("text")
@@ -440,6 +579,7 @@ class RvaWssConnection:
                 fact.played_samples / SAMPLE_RATE,
                 fact.outcome != "completed",
             )
+            runner.set_response_gate(False)
             self._playback_started_at = None
             self._interrupt_candidate_started_at = None
             self._active_assistant_text = ""
@@ -453,9 +593,11 @@ class RvaWssConnection:
 
     async def _input_loop(self) -> None:
         while True:
-            packet = await self._audio_port.queue.get()
-            if packet is None:
+            queued = await self._audio_port.queue.get()
+            if queued is None:
                 return
+            self._remaining_uplink_budget(queued)
+            packet = queued.packet
             codec = self._codec
             runner = self._runner
             if codec is None or runner is None:
@@ -494,18 +636,58 @@ class RvaWssConnection:
             self._decoded_pcm_frames += len(frames)
             for frame in frames:
                 try:
-                    await runner.push_audio(frame)
+                    remaining = self._remaining_uplink_budget(queued)
+                    await asyncio.wait_for(
+                        runner.push_audio(frame),
+                        timeout=remaining,
+                    )
                     self._runner_push_frames += 1
+                except TimeoutError as exc:
+                    raise self._stale_uplink_error(queued) from exc
+                except RoomlessAudioInputOverloadedError as exc:
+                    raise RvaOverloadedError(
+                        "agent input is full",
+                        source=exc.source,
+                        qsize=exc.qsize,
+                        capacity=exc.capacity,
+                    ) from exc
                 except BufferError as exc:
-                    raise RvaOverloadedError("agent input is full") from exc
+                    raise RvaOverloadedError(
+                        "agent input is full",
+                        source="agent_input_unknown",
+                        qsize=-1,
+                        capacity=-1,
+                    ) from exc
+            self._audio_port.mark_consumed(queued)
+
+    def _remaining_uplink_budget(self, queued: _QueuedAudio) -> float:
+        remaining = queued.deadline_at - self._clock()
+        if remaining <= 0:
+            raise self._stale_uplink_error(queued)
+        return remaining
+
+    def _stale_uplink_error(self, queued: _QueuedAudio) -> RvaOverloadedError:
+        now = self._clock()
+        media_age_seconds = max(0.0, now - queued.received_at, now - queued.expected_at)
+        return RvaOverloadedError(
+            "input media exceeded freshness budget",
+            source="opus_input_stale",
+            qsize=self._audio_port.queue.qsize(),
+            capacity=self._audio_port.queue.maxsize,
+            media_age_ms=round(media_age_seconds * 1_000),
+        )
 
     async def _writer_loop(self) -> None:
         while True:
             item = await self._output.get()
             if item.kind != "control" or not isinstance(item.payload, str):
                 raise RvaRuntimeError("non-control item entered control queue")
-            async with self._wire_lock:
-                await self._websocket.send_text(item.payload)
+            try:
+                async with self._wire_lock:
+                    async with asyncio.timeout(self._limits.wire_send_timeout_seconds):
+                        await self._websocket.send_text(item.payload)
+            except TimeoutError as exc:
+                raise RvaControlTimeoutError("control send timed out") from exc
             if item.ack is not None and not item.ack.done():
                 item.ack.set_result(None)
 
@@ -541,6 +723,8 @@ class RvaWssConnection:
             producer_epoch=segment.producer_epoch,
         )
         if begin is not None:
+            if self._runner is not None:
+                self._runner.set_response_gate(True)
             await self._send_control_serialized(begin)
             self._assistant_text_sent = ""
             self._active_assistant_text = ""
@@ -588,8 +772,12 @@ class RvaWssConnection:
                         timestamp=self._downlink_timestamp,
                         record=record,
                     )
-                    async with self._wire_lock:
-                        await self._websocket.send_bytes(media)
+                    try:
+                        async with self._wire_lock:
+                            async with asyncio.timeout(self._limits.wire_send_timeout_seconds):
+                                await self._websocket.send_bytes(media)
+                    except TimeoutError as exc:
+                        raise RvaMediaSendTimeoutError("media send timed out") from exc
             except RvaBindingError as exc:
                 if exc.code == "stale_generation":
                     interrupted = True
@@ -652,7 +840,12 @@ class RvaWssConnection:
             )
             return
         if len(segment.frames) > self._limits.max_segment_frames:
-            error = RvaOverloadedError("agent output segment exceeds frame limit")
+            error = RvaOverloadedError(
+                "agent output segment exceeds frame limit",
+                source="agent_output_segment",
+                qsize=len(segment.frames),
+                capacity=self._limits.max_segment_frames,
+            )
             self._report_failure(error)
             raise error
         assistant_text, self._pending_assistant_text = self._pending_assistant_text, None
@@ -667,7 +860,7 @@ class RvaWssConnection:
     def _emit_user_transcript(self, text: str, is_final: bool) -> bool:
         if self._closed:
             return False
-        overlapped_playback = self._playback_started_at is not None
+        overlapped_playback = self._binding.current_playback is not None
         try:
             self._submit_interruption_candidate(text, is_final)
             if self._active_utterance_id is None:
@@ -772,24 +965,45 @@ class RvaWssConnection:
         try:
             await asyncio.wait_for(self._output.put(item), timeout=self._limits.queue_timeout_seconds)
         except TimeoutError as exc:
-            raise RvaOverloadedError("output queue is full") from exc
+            raise RvaOverloadedError(
+                "output queue is full",
+                source="control_output",
+                qsize=self._output.qsize(),
+                capacity=self._output.maxsize,
+            ) from exc
 
     async def _send_control_serialized(self, payload: str) -> None:
         ack = asyncio.get_running_loop().create_future()
         await self._enqueue(_Outbound("control", payload, ack))
-        await asyncio.wait_for(ack, timeout=self._limits.queue_timeout_seconds)
+        try:
+            await asyncio.wait_for(
+                ack,
+                timeout=self._limits.queue_timeout_seconds + self._limits.wire_send_timeout_seconds,
+            )
+        except TimeoutError as exc:
+            raise RvaControlTimeoutError("control acknowledgement timed out") from exc
 
     async def _enqueue_segment(self, item: _Outbound) -> None:
         try:
             await asyncio.wait_for(self._segments.put(item), timeout=self._limits.queue_timeout_seconds)
         except TimeoutError as exc:
-            raise RvaOverloadedError("segment queue is full") from exc
+            raise RvaOverloadedError(
+                "segment queue is full",
+                source="segment_output",
+                qsize=self._segments.qsize(),
+                capacity=self._segments.maxsize,
+            ) from exc
 
     def _enqueue_nowait(self, item: _Outbound) -> None:
         try:
             self._output.put_nowait(item)
         except asyncio.QueueFull as exc:
-            raise RvaOverloadedError("output queue is full") from exc
+            raise RvaOverloadedError(
+                "output queue is full",
+                source="control_output",
+                qsize=self._output.qsize(),
+                capacity=self._output.maxsize,
+            ) from exc
 
     def _report_failure(self, error: BaseException) -> None:
         if self._failures.empty():

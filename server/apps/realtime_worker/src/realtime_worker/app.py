@@ -100,6 +100,8 @@ class RvaSessionRegistry:
                     output_queue_items=self._settings.rva_output_queue_items,
                     max_segment_frames=self._settings.output_segment_max_frames,
                     queue_timeout_seconds=self._settings.rva_queue_timeout_seconds,
+                    uplink_max_age_seconds=self._settings.rva_uplink_max_age_seconds,
+                    wire_send_timeout_seconds=self._settings.rva_wire_send_timeout_seconds,
                     handshake_timeout_seconds=self._settings.rva_handshake_timeout_seconds,
                     runner_timeout_seconds=self._settings.rva_runner_timeout_seconds,
                     close_timeout_seconds=self._settings.rva_close_timeout_seconds,
@@ -385,7 +387,13 @@ class WorkerHeartbeatLoop:
         self._registry = registry
         self._provider_readiness = provider_readiness or ProviderReadiness(settings)
         self._udp_gateway = udp_gateway
-        self._client = client or httpx.AsyncClient(timeout=httpx.Timeout(3.0))
+        # Uvicorn and HTTPX both default to a 5 s keep-alive window. The
+        # default 5 s heartbeat can otherwise race the server closing an idle
+        # connection while the client is reusing it.
+        self._client = client or httpx.AsyncClient(
+            timeout=httpx.Timeout(3.0),
+            limits=httpx.Limits(keepalive_expiry=4.0),
+        )
         self._owns_client = client is None
         self._clock = clock
         self._task: asyncio.Task[None] | None = None
