@@ -1,6 +1,6 @@
 # 故障排查
 
-更新日期：2026-07-24
+更新日期：2026-07-30
 
 ## 1. 排查原则
 
@@ -37,6 +37,11 @@ Invoke-RestMethod "$env:VOICE_WORKER_URL/health/ready"
 `no_capacity` 与“服务宕机”不同。不要盲目提高 `max_sessions`，先看 active session、CPU/RSS/event-loop/provider
 pressure 和未释放 session。
 
+设备 bootstrap 与 Worker 重启窗口重合时，可能连续收到短时 503 或单次请求 timeout；先关联 Worker incarnation、
+heartbeat 和 readiness 时间线。若 Worker ready 后设备通过有界退避自动恢复并成功 `session.opened`，这是启动窗口的
+可恢复失败，不应归因为 Wi-Fi/NVS。若 ready 后仍持续 503，再检查 stale drain、旧 `EnvironmentFile` identity、route
+lease 和 capacity；不要通过无界快速重试制造额外压力。
+
 若设备 bootstrap 得到 200、但 WSS/runtime 本地启动失败后立即重试出现 `route_already_leased`，检查设备是否已在
 lease identity 验证后保留 worker/epoch/fencing、是否执行有界 `/v1/session/release`，以及日志中是否出现
 `route release acknowledged`。重复/stale release 返回成功是预期幂等语义，不能据此推断当前 lease 被删除。
@@ -44,6 +49,11 @@ lease identity 验证后保留 worker/epoch/fencing、是否执行有界 `/v1/se
 Worker 配置 Director 时，`/health/ready` 的 `coordination_ready=false` 表示 heartbeat 尚未成功；先修复
 Director/Redis/internal token/网络，不要只检查 provider。Drain 是单向操作，误 drain 后应停止旧 Worker 并启动
 replacement，不能向 v1 drain API 发送 `false`。
+
+若 systemd unit 中的 `Environment=` 已更新，但 Worker 仍以旧 identity 启动，检查实际加载顺序。后加载的
+`EnvironmentFile` 会覆盖 unit 内同名变量；应更新受控 runtime env 中的 `VOICE_WORKER_ID`，再重启并以 readiness、
+heartbeat 和进程日志三方核对唯一 incarnation。不要只修改 unit 后反复重启，也不要复用已进入 sticky drain 的
+旧 Worker identity。
 
 ## 4. 401 / WSS 1008
 
@@ -64,7 +74,9 @@ replacement，不能向 v1 drain API 发送 `false`。
 - JSON 无 duplicate/unknown field，frame 未超过 hard limit。
 - 后续消息的 `session_id + session_epoch` 必须匹配 `session.opened` 建立的 identity。
 
-Close `1002` 看 protocol category，`1009` 看消息大小，`1013` 看 admission/queue。
+Close `1002` 看 protocol category，`1009` 看消息大小，`1013` 看 admission、queue 与 uplink freshness/backpressure；
+`1011/runtime_failure` 表示 unexpected AgentSession/provider terminal。两者均要求 fresh bootstrap，不表示同 session
+已恢复。
 
 ## 6. WSS 有连接但无 ASR
 
@@ -79,8 +91,20 @@ Close `1002` 看 protocol category，`1009` 看消息大小，`1013` 看 admissi
 
 用固定 Opus/PCM host fixture 区分 transport 与麦克风，不能仅凭 UI“聆听”判定上行正常。
 
+`provider_network=ready` 或 `/health/ready` 只说明 endpoint、配置与探测请求可达，不证明一次真实推理成功。正式
+provider canary 必须使用与 runtime 相同的 stream/final wire contract，并分别确认 ASR final、LLM 输出和 TTS PCM。
+若 readiness 通过但 canary 返回 `invalid_audio`、`unknown` 或缺少 final，先对照 provider 的实际响应字段、终止消息和
+音频格式；不得把网络 readiness 写成 ASR verified，也不得把未知协议错误宽泛降级成 no-speech。
+
 若 host fixture 可触发 ASR，而设备持续上传却没有 ASR，优先检查输入幅度、测试声源耦合、AFE/VAD 门限和
 Opus 解码 PCM peak/RMS，再检查 grant、transport admission 与 provider endpoint。
+
+Standalone FunASR 返回 `no_speech`、空 `final`，或精确的旧协议
+`invalid_audio + "FunASR returned empty text"` 时，应看到 `asr_no_result`，当前 turn 无文本结束，session 不应因此
+关闭。其他 `invalid_audio` 属于实际音频/协议错误，不得宽泛降级为空结果；`busy`、`inference_failed` 才是当前定义的
+retryable provider error。若先看到 LiveKit `session_closed`，再看到 RVA input queue 逐渐填满，说明 Agent terminal
+没有及时上抛或运行 artifact 过旧；正确行为是立刻撤销 input admission，best-effort 发 `session.error`，并以
+`1011/runtime_failure` fresh reopen。
 
 ## 6.1 已有 ASR final，但没有 TTS
 
@@ -105,6 +129,20 @@ LLM 失败时没有 TTS 下行是正常因果链，不应误诊为端侧没有�
 - `media_id/epoch/direction key/salt/nonce/AAD` 与 fixture 规则一致。
 - Replay、wrong source、queue dropped、lost/reordered/expiry 指标属于哪一类。
 - WSS 是否仍连接；WSS 断开会撤销 UDP。
+- 固件实际 build config 是否允许并选择 UDP。UI 显示、NVS preference 或源码默认值不等于最终编译配置；若
+  `session.opened` 始终为 `wss-opus-v3`，先检查 default profile 的 Kconfig/SDKCONFIG 是否被硬编码为 WSS，再分析
+  PROBE 或 GCM。修复后必须以新 artifact identity 重跑，不能沿用旧固件的 UDP 结论。
+
+若设备 `sendto` 连续成功但 PROBE timeout，必须在 Worker advertise endpoint 对应主机抓取目标 UDP 端口：
+
+- 主机能看到 datagram：继续检查 GCM admission、`media_id/epoch`、source binding 和 PROBE_ACK 回程。
+- 主机看不到 datagram：故障边界位于 Worker 进程之前，检查公网 UDP ingress、云防火墙、安全组、NAT 和 advertise
+  映射；`sendto` 成功只表示数据已交给本地网络栈，不表示公网服务端收到。
+- 失败后设备按协议 fresh bootstrap 并安全回退 WSS，可以维持可用性，但不能把 fallback 记作 UDP 通过。
+
+当前已观察到 cold default probe 决定性复测 3/3 timeout、设备 12 次 send 成功而 Worker 主机 90 秒目标端口抓包为 0；
+同时另一已建立 UDP 会话可长时间稳定传输。这证明 UDP media/runtime 可运行，但 cold ingress 尚不可靠。在定位网络
+边界前保持默认 WSS，不通过随机切换端口或放宽 GCM/probe deadline 猜测性修复。
 
 不要在同 session 手工切回 WSS。关闭后 fresh bootstrap，必要时用 `force_wss` 建立对照。
 
@@ -119,6 +157,10 @@ LLM 失败时没有 TTS 下行是正常因果链，不应误诊为端侧没有�
 - 确认播放 queue 既不为零也不通过大预缓冲掩盖延迟。
 - UDP 设备侧 `media_age_dropped` 增长表示 frame 在最终 360 ms gate 被拒绝；先查调度阻塞、reorder 和播放 queue，
   不要简单放宽 gate 来掩盖过时 TTS。
+- Server `overload_source=opus_input_stale` 表示单个 stale 后仍找到 fresh live edge；
+  `opus_input_backpressure` 表示连续 stale、queue pressure 或没有 fresh packet。当前两者都会以
+  `1013/media_overloaded` fresh reopen，因为同 AgentSession reset 尚无 public API 证明；不要把 live-edge drop 误读为
+  same-session recovery，也不要扩大队列保存旧上行。
 
 每次只调整一个 frame/buffer 参数并保留 A/B 音频与 timeline。
 
@@ -152,6 +194,18 @@ LLM 失败时没有 TTS 下行是正常因果链，不应误诊为端侧没有�
 - 核对 artifact SHA-256、target、partition、ESP-IDF、board 和完整 boot log。
 - 先看 reset reason、panic/WDT、PSRAM、LCD init、backlight 与 LVGL task，再看网络。
 - 不用擦 NVS 掩盖启动 bug；只有明确验证配置迁移且已备份时才擦除。
+
+从 fresh commit/worktree 构建设备 HIL artifact 时，不得隐式依赖未跟踪的 `sdkconfig.local`。先生成或注入本轮明确的
+SDKCONFIG 配置，保存脱敏后的配置 identity，再执行 clean build；否则即使源码 commit 相同，也可能得到缺少 board、
+Wi-Fi、bootstrap 或 feature 配置的不可用固件。配置化 variant 与纯默认 variant 必须分别命名，不能共享“同一固件”结论。
+
+该板卡的完整 artifact 包含 bootloader、partition table、app、`srmodels` 和 font assets 五部分。烧录前按 build
+产出的 flash args 核对地址与 hash；遗漏 model/font 分区可能表现为唤醒、降噪或中文显示异常，不应只重刷 app。
+按 CMake 设计，`font-assets` 仅是 `flash`/`font-assets-flash` 的依赖：普通 `idf.py build` 不生成
+`font_assets.bin`，这不属于 app build failure。使用 `idf.py flash` 时会自动生成；若先制作五分区 manifest 或手工
+调用 esptool，必须先显式执行 `idf.py font-assets`，再对生成文件计算 hash 并烧录。
+默认 HIL 保留 NVS，以验证现有配置迁移和重启回读；只有配置 schema 不兼容、NVS 损坏或测试明确要求 clean-state 时
+才擦 NVS，并记录原因。擦除后必须使用配置化 artifact 或 provisioning 流程恢复配置，不能用擦 NVS 掩盖连接状态机问题。
 
 ## 12. 收尾记录
 

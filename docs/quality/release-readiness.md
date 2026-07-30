@@ -1,6 +1,6 @@
 # Release readiness
 
-更新日期：2026-07-28
+更新日期：2026-07-30
 状态：not ready
 
 本文只记录当前 Product source 的发布门禁。历史迁移 artifact、串口、SSID、临时地址和实验日志不构成当前
@@ -10,29 +10,32 @@ release evidence；详细实验材料不进入 Product 仓。
 
 | 范围 | 状态 | 证据 |
 | --- | --- | --- |
-| Product repository | source HEAD `6059b5b7d39e67068fdb80ddc459c770e39661cd` + reviewed dirty candidate；last stable Server `314d6734a306c2735eeefe2ae69b819f8c70a981` | 本轮 Server Ruff 与 `234 passed, 3 skipped`、repository Ruff、secret scan 与根测试 `46 passed` 均通过；dirty candidate 尚须提交并以 clean source 重建 |
+| Product repository | immutable commit `8583ef3947e85ca2bf3260de3f5dcfea99ab4360` | 当前 Product source 在 `eee6113` 的三个原子提交之上增加 `8583ef3`（默认 media profile Kconfig、host contract tests 与 CI matrix）。根测试 `46 passed`；Server `274 passed, 3 skipped`；Desktop `116 passed, 4 deselected`；Windows deterministic host E2E `4 passed`；Ruff、repository verifier 和 secret scan 通过。Server runtime 仍部署未改 Server 代码的 ancestor `eee6113`；3 个 Redis integration skip 与 4 个 deselected 均不计为通过 |
 | `rva-control-v2` schema/fixtures | `contract_verified` | canonical schema、semantic fixtures 与 UDP GCM v2 byte vectors 已由当前根测试覆盖；不替代真实网络/设备闭环 |
 | Director grant/fencing | `unit_verified` / `contract_verified` | 完整 Server suite 覆盖 grant、replay、route 与 fencing；真实 Redis 集成 3 项因未配置测试地址而 skipped，不计为通过 |
 | Worker `/v2/voice`、RVA runtime | `unit_verified` / `contract_verified` | 完整 Server suite 覆盖 v2 control、response identity、playback facts、cancel ledger、provider 和 teardown 边界 |
-| Worker RVA UDP binding | `contract_verified` / `device_verified`（2026-07-26 HIL） | authenticated probe 12 ms；连续两轮完整播放 8190/9360 ms；12m29s 长稳跨一次 fresh lease/epoch/key，旧会话 9902 包、29706 解码/推送帧、queue=0、invalid_opus=0，新会话 probe 22 ms 后继续收包 |
-| Server static analysis/tests | `verified` | 本轮 Server Ruff 与完整 suite `234 passed, 3 skipped`，0 failed；3 个 Redis 环境 skip 仍不计为集成通过。Windows 子进程退出确认用例此前曾偶发 5 秒超时，本轮复跑通过，作为稳定性关注项保留 |
-| Firmware core/session contracts | `contract_verified` / host tests `not_run` | 根测试覆盖协议级约束；本机缺 host compiler，C/C++ host contract test 未执行。本轮修复了 disabled Kconfig bool 被误判为 auto-start 的确定性错误 |
-| WSS protocol/owner | `contract_verified` / current device `not_run` | 下行 media sequence 按方向、按 session 严格单调；当前 MIC-owned artifact 尚未完成物理模式切换与 WSS 双轮真机回归 |
-| Board/audio/UI components | `device_verified` / interaction `partial` | 诊断 artifact 已观察 LCD/LVGL、Qwen 字体、touch driver、双 Wi-Fi fallback、DHCP 与 WakeNet 命中；MIC/mode/provisioning 的完整触摸矩阵仍未执行 |
-| Native ESP-IDF composition | current source `build_passed` / `image_sized`；previous diagnostic artifact `flashed` | 锁定 ESP-IDF 5.5.2 revision `30aaf645...` 构建通过；current candidate app `0x2160f0`、SHA256 `8a49f23fcfcc4d3d339a9ef1f43ea11439ae410da9aa1914dbacea761e1b53cf`、4 MiB app 分区余量 48%。该 candidate 已移除一次性 PCM instrumentation，尚未烧录 |
-| Native WSS/UDP voice loop | diagnostic UDP artifact `device_verified` / WSS `not_run` | 唤醒后连续多轮观察到 `user_speech_started/ended`、FunASR final、LLM、MiMo、完整 playback；用户确认 ASR/TTS 正常。current clean candidate 尚需烧录复核 |
+| Provider chain canary | standalone `host_verified` / Worker runtime `device_verified` | 隔离的 combined FunASR endpoint 完成精确 WebSocket `ready -> started -> final` probe；完整 canary 为 fixture TTS `1517 ms / 199680 bytes`、ASR `398 ms / 20 chars`、LLM `1124 ms / 20 chars`、response TTS `1455 ms / 192000 bytes`。未记录 transcript/answer 内容。Worker 已原子切换到同一 endpoint，实际 runtime env 与 readiness 已确认；真实设备会话观察到 ASR interim/final、DeepSeek、MiMo 和 playback finished，无 provider error 或 OOM |
+| Desktop reference client | commit `eee6113` host verified；distribution `not ready` | unit/contract tests 与 Windows deterministic host E2E 覆盖 `wss-opus-v3`、`udp-opus-gcm-v2`、Opus round trip 和 playback facts；SoundDevice 使用 PortAudio clock + reported latency 的预计 render boundary，真实声卡/DAC/acoustic 仍为 `not_run`。host evidence 不替代目标部署、ESP32、弱网或长稳验证 |
+| Worker RVA UDP binding | current firmware `device_verified` / cold default entry `not_ready` | Firmware `8583ef3` 的 UDP variant 完成约 6m50s 会话：6796 uplink packets、20388 decoded/runner frames、43 downlink packets，invalid 0、无 overload；至少两轮 ASR -> LLM -> MiMo -> playback 为 3690/1980 ms，端侧稳态 deadline miss 0、queue drop 0。cold default UDP probe 的决定性复测 3/3 timeout，设备 12 次 send 均成功但 Worker 主机 90 秒抓包为 0，随后安全回退 WSS 并保持稳定 |
+| Server static analysis/tests | `host_verified`，full suite 仍有外部集成 skip | commit `eee6113` 的完整 Server suite 为 `274 passed, 3 skipped`，Server Ruff 通过；3 项 skip 不计为通过，真实 Redis gate 仍由独立 CI job 强制执行 |
+| Firmware core/session contracts | root/C++ host `host_verified` | 根测试 `46 passed` 覆盖协议级约束；两组 C++ host tests 已在 Linux 原生 `g++` 环境通过；`8583ef3` 另加入 default profile unset/WSS/UDP/conflict contract 与对应 CI matrix |
+| WSS protocol/owner | `contract_verified` / parent artifact `device_verified`（basic loop） / current fallback `device_observed` | Firmware parent `eee6113` 完成 bootstrap、`session.opened(wss-opus-v3)`、上行、ASR、LLM、完整 TTS 与 playback finished：150 packets / 447 frames，ASR 4.032 秒音频 / 0.331 秒推理，TTS playback 1530 ms。`8583ef3` 在 cold UDP probe 失败后安全回退 WSS 并保持稳定 |
+| Board/audio/UI components | current commit device `partial`；historical diagnostic `partial` | 配置化 variant 已观察联网、LCD、字体、audio codec、AFE、AEC 和 UDP/WSS session；touch 完整交互矩阵与 AEC 声学效果仍未验证，不能由组件初始化或媒体闭环推导通过 |
+| Native ESP-IDF composition | Firmware commit `8583ef3` `build_passed` / `image_sized` / device `partial` | ESP-IDF 5.5.2、Xtensa 14.2.0 构建通过；app `2200944` bytes，4 MiB app 分区余 `0x1e6a90`（48%），SHA-256 `2EB804FF10D882602660CE9A913C04EA212CC8799E571CB7B9CC2DC545D06D9F`。bootloader SHA-256 `0275E6BEBDA2FAB766A4D82A1359F179C1989AFFD7921B4029D12529E1520581`，partition table `D6C5D356DECE5D16DB6B87EFB85B62C0D731ACDE8023EBB674F8D8ECD7150B8F`，srmodels `BC56EFEEC122AE9FACDABDB9817BF2F224A8FA7585244B6E351DB84A8AA19088`，font assets `16B19452EAEFA3A6F686BDA60BF459AD64978E3187AC6F04847CB33F6610BD71`。affinity 为 `UNPINNED`，两核 idle Task WDT 均启用，timeout 10 秒 |
+| Native WSS/UDP voice loop | WSS basic loop `device_verified`；UDP media loop `device_verified` / cold entry `not_ready` | Server runtime 为 ancestor `eee6113`，Firmware 为 `8583ef3`。UDP 长会话和至少两轮真实 provider/playback 已通过，但 cold default probe 3/3 未到达 Worker 主机；安全回退 WSS 已观察。默认 Product profile 继续使用 WSS，不对未证实的随机端口/NAT 原因做代码修复 |
 
 以上跨进程闭环只证明当前主机上的 Server 拓扑、协议和 provider 数据路径可运行，不替代目标部署、ESP32 真机、
 声学、弱网或长稳证据。测试过程中使用的临时地址、进程标识、凭据和原始日志不进入 Product 文档。
 
-当前 `ol` 验证环境已部署
-`/home/ubuntu/services/realtime-voice-agent/releases/314d6734a306c2735eeefe2ae69b819f8c70a981`，实际
-`EnvironmentFile` 使用 `VOICE_WORKER_ID=worker-ol-314d673`；Director/Worker readiness 和 UDP ready 已通过。
-部署 archive 为 `rva-314d673.tar.gz`，SHA256
-`2b8483b654d5c6cab6bc727a7547a8436fb8888188786327fecfd70fccb47ca4`。部署 identity 与 readiness 本身不替代
-上表单独记录的 ESP32 HIL，也不证明 WSS、声学、弱网或正式 release gate 已通过。
+当前 `ol` 验证环境已部署 release `rva-20260730T070206Z-eee6113`，Worker identity 为
+`worker-ol-20260730T074700Z-eee6113-asr1112`。Director、Worker、coordination、provider network 与 UDP socket readiness 均为
+ready，容量配置为 5；部署 archive `rva-eee6113.tar.gz` 的 SHA-256 为
+`9f5a892f5c0ce2a0d0fff62a28f4239d35c15f9c05ff1736d25c98c47195a999`。readiness 只证明配置、依赖和网络探测。
+独立 combined FunASR endpoint 上的真实 ASR -> LLM -> TTS canary 已通过；Worker runtime 已原子切换到该 endpoint，
+实际 env、切换后 readiness 和真实设备 provider chain 均已确认。
 
-`314d673` 收敛了三项会造成端云反复断连或第二轮失败的实现问题：
+历史 commit `314d673` 收敛了三项会造成端云反复断连或第二轮失败的实现问题；这些修复已包含在当前
+Product source 中：
 
 - authenticated 但无法解码的单个 Opus 包不再立即升级为 `1002 protocol_error`；单包丢弃，连续 8 个坏包才以
   `1011/media_decode_failed` 关闭，decoder 的其他 `RuntimeError` 仍按 runtime failure 处理。
@@ -61,14 +64,16 @@ release evidence；详细实验材料不进入 Product 仓。
 
 | Gate | 当前状态 | 完成条件 |
 | --- | --- | --- |
-| Native clean build + size | dirty candidate `build_passed` / `image_sized` | 当前 source 已完成 Xtensa build、size 与 artifact hash；提交后仍需 clean source rebuild，证明依赖恢复和制品身份可复现 |
-| Boot/display/touch | `partial` | 当前 artifact 启动、LCD/LVGL、Qwen 中文字体和 touch driver已观察；MIC、mode 与 provisioning触摸流程仍需物理交互闭环 |
-| Wi-Fi/NVS/bootstrap | `partial` | 已观察 primary失败后 fallback、DHCP和公网 bootstrap；新增断线状态清理及 supervisor 重载完整 Wi-Fi plan，Wi-Fi flap与 NVS 保存重启回读仍需实机 |
-| WSS voice loop | current artifact `not_run` | 至少完成两条真实回复，验证 session sequence 跨 response 单调，并覆盖 ASR final、LLM、完整 TTS、explicit cancel 与断线恢复 |
-| UDP voice loop | baseline `passed` / current artifact `partial` | GCM probe、双向媒体、连续两轮和到期 fresh bootstrap已通过；当前 MIC-owned artifact仍需模式选择、loss/jitter/PLC 与显式 cancel |
+| Native clean build + size | `passed` | 已从 immutable Product commit `8583ef3` 使用 ESP-IDF 5.5.2 重建，app/bootloader/partition/srmodels/font assets 的 size 与 SHA-256 已记录 |
+| Boot/display/touch | current commit `partial` | 配置化五分区 variant 已观察启动、LCD、字体、audio codec、AFE 与 AEC；touch 与完整交互矩阵尚未闭环 |
+| Wi-Fi/NVS/bootstrap | current commit `partial` | 配置化 variant 已连接预置网络并完成 bootstrap；Worker 重启窗口的 503/timeout 在 ready 后自动恢复。Wi-Fi flap 与 NVS 保存重启回读仍未执行。首次 fresh worktree 构建遗漏 untracked `sdkconfig.local` 的未配置 artifact 不作为设备结论 |
+| Provider chain | `passed`（当前验证环境） | standalone canary、Worker runtime env/readiness 和真实设备会话均确认 ASR -> LLM -> TTS；仍不替代目标 SLA、provider 故障注入或容量结论 |
+| WSS voice loop | basic loop `passed` / full gate `partial` | parent artifact 已完成真实 ASR final、LLM、完整 TTS 和 playback，当前 firmware 的安全回退 WSS 已观察；仍须补 explicit cancel 与当前 firmware 的完整多轮，才能关闭完整 gate |
+| UDP voice loop | media loop `passed` / cold entry `not_ready` | 当前 firmware 已完成约 6m50s、至少两轮 ASR/LLM/TTS、invalid 0、无 overload；但 cold default probe 决定性复测 3/3 在 Worker 主机前丢失。默认保持 WSS；修复前须先定位公网 UDP ingress/NAT/firewall，不接受未经证据的随机端口改动 |
 | AEC/acoustic | `not_run` | 近讲、远讲、double-talk、自回授与 interrupt tail 评测通过 |
-| Wake word | diagnostic artifact `device_verified` / release candidate `not_run` | `wn9s_hiesp` 已在独立 idle owner 实机启动并命中，feed/fetch task 有界退出后完成音频 owner handoff；current candidate 仍需重复唤醒/退出和异常停止回归 |
-| Stability | 12-minute baseline `passed` / watchdog fix `device_observed` / release gate `not ready` | 修复 `pdMS_TO_TICKS(5)==0` 造成 playback busy loop 后连续约146秒无 task watchdog、断连或持续队列增长；正式发布仍须在最终可复现 artifact 完成20轮和30分钟 |
+| Wake word | historical diagnostic `device_verified` / current commit `not_run` | 旧 artifact 的 `wn9s_hiesp` 命中和 audio owner handoff 保留为历史；当前 commit 仍需重复唤醒/退出和异常停止回归 |
+| Stability | current UDP 6m50s + WSS short observation `partial` / release gate `not ready` | UDP 长会话端侧稳态 deadline miss 0、queue drop 0，服务端 invalid 0、无 overload；WSS 10 秒窗口 max media age 约 22.5 ms、无 Task WDT。当前 commit 尚未执行 20 轮或 30 分钟 HIL |
+| Desktop distribution | `not ready` | 尚未按目标 OS/architecture/artifact 完成 PyAV、FFmpeg、libopus、sounddevice、PortAudio 及传递 native libraries 的分发许可证、notice/适用义务和 SBOM 核查；lockfile 只固定 Python distribution，不能替代 native binary provenance 与构建选项清单 |
 | Security/repository | `not ready` | repository verifier、secret scan、根测试、protocol 测试和 `git diff --check` 通过；`xiaozhi-fonts` 固定包只声明 MIT metadata、未附上游许可证文本，发布前必须完成许可证来源复核 |
 
 ## Clean-slate v2 边界
@@ -82,8 +87,9 @@ Current runtime 不保留 RVA v1/Xiaozhi dual stack。Canonical `udp-opus-gcm-v2
 以下事实用于解释硬件和资源基线，不构成当前 v2 artifact 的 release evidence：
 
 - `esp_audio_codec` 的 Opus encode 在本配置下首帧累计使用约 26 KiB task stack。历史 24 KiB 配置发生
-  `InstrFetchProhibited`；当前 uplink task 配置为 36 KiB，按该次 HIL 数据保留约 10 KiB 余量。该数值仍需在最终
-  artifact 的完整 ASR/TTS 交互和长稳测试中重新采样 high-water mark。
+  `InstrFetchProhibited`；该 v1 artifact 的 legacy 单体 uplink task 当时配置为 36 KiB，按该次 HIL 数据保留约
+  10 KiB 余量。当前拆分后的 framer、encoder、sender task 不能继承该整体余量结论，仍须在最终 artifact 的完整
+  ASR/TTS 交互和长稳测试中分别采样 high-water mark。
 - Worker 的 10 秒 WebSocket PING 会作为零长度 `WEBSOCKET_EVENT_DATA` 到达 ESP-IDF callback，同时由组件自动
   回复 PONG。Transport adapter 必须忽略 PING/PONG/CLOSE data callback，并只通过 CLOSED/DISCONNECTED 事件驱动
   session teardown；否则会稳定形成约 10 秒断连。
