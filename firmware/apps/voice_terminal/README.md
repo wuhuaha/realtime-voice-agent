@@ -74,8 +74,14 @@ glyph descriptor，因此必须启用 `CONFIG_LV_FONT_FMT_TXT_LARGE`。分区未
 
 - `model` 分区包含 WakeNet/NSNet 资产。分区缺失会关闭 idle WakeNet 和 NSNet 神经降噪；会话期 composition 仍启用
   AEC/VAD。日志行为不是声学通过证据，发布前必须验证近讲、播放中 double-talk、上行 PCM 与 ASR。
-- Opus encode 的 task stack 不能按调用前 watermark 估算；内部峰值必须包含在内。当前 uplink task 依据实机首帧
-  encode 后约 26 KiB 的使用量配置为 36 KiB，保留约 10 KiB 余量；后续调整必须继续以 HIL high-water 证据为准。
+- 上行实时链路拆为 capture/AFE owner、60 ms framer、Opus encoder 和 transport sender；相邻阶段只通过容量为 2
+  的固定队列交接。队列满时淘汰最旧实时帧并保留 timestamp gap，不堆积过期语音；各阶段分别记录 queue
+  high-water、drop、最大 media age、执行耗时和 deadline miss。
+- Opus encoder task stack 不能按调用前 watermark 估算；内部峰值必须包含在内。36 KiB 配置沿用旧固件首帧 encode
+  后约 26 KiB 使用量的实机证据，但拆分后的 capture、framer、encoder、sender 和 playback 均须重新采集 HIL
+  high-water 后才能认定余量充分。Host test 和成功构建不能替代该结论。
+- CPU0/CPU1 idle task 的 Task WDT 均保持启用，禁止用关闭 watchdog 或单纯喂狗掩盖 deadline miss。uplink affinity
+  的 unpinned、Opus-on-CPU1、audio-on-CPU1 仅用于 `EXP-RVA-001` 实验；HIL 未完成前不宣布或固化 winner。
 - AEC 后音频按连续 60 ms cadence 进入启用 DTX 的 Opus encoder，本地 VAD 只保留观测用途，不门控上行、清理
   播放队列或发起打断。WSS/UDP 上行 generation 恒为 `0`。
 - `esp_websocket_client` 会自动处理 PING/PONG，并另外派发 CLOSED/DISCONNECTED。Transport callback 不得把

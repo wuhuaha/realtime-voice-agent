@@ -28,12 +28,16 @@ namespace {
 
 constexpr EventBits_t kSupervisorStopped = BIT0;
 constexpr EventBits_t kCaptureStopped = BIT1;
-constexpr EventBits_t kUplinkStopped = BIT2;
-constexpr EventBits_t kPlaybackStopped = BIT3;
+constexpr EventBits_t kUplinkFramerStopped = BIT2;
+constexpr EventBits_t kUplinkEncoderStopped = BIT3;
+constexpr EventBits_t kUplinkSenderStopped = BIT4;
+constexpr EventBits_t kPlaybackStopped = BIT5;
 constexpr uint32_t kAudioFailureLimit = 10;
 // HIL measured about 26 KiB used through the first Opus encode. Keep roughly
 // 10 KiB of headroom while returning scarce internal RAM to the WSS client.
-constexpr uint32_t kUplinkTaskStackBytes = 36 * 1024;
+constexpr uint32_t kUplinkFramerTaskStackBytes = 8 * 1024;
+constexpr uint32_t kUplinkEncoderTaskStackBytes = 36 * 1024;
+constexpr uint32_t kUplinkSenderTaskStackBytes = 12 * 1024;
 // HIL measured roughly 20 KiB unused with the former 24 KiB stack.
 constexpr uint32_t kCaptureTaskStackBytes = 8 * 1024;
 // A 10 KiB stack overflowed on the first Opus decode/resample pass in HIL.
@@ -53,7 +57,53 @@ constexpr int64_t kUdpProbeRetryIntervalUs = 250000;
 constexpr size_t kDecodedSamplesPerFrame = 960;
 constexpr size_t kNominalResampledSamplesPerFrame = 1440;
 constexpr size_t kMaximumResampledSamplesPerFrame = 4096;
+constexpr UBaseType_t kUplinkQueueCapacity = 2;
+constexpr int64_t kUplinkMetricsIntervalUs = 10 * 1000 * 1000;
+constexpr uint32_t kCaptureProcessingDeadlineUs = 16000;
+constexpr uint32_t kFramingProcessingDeadlineUs = 16000;
+constexpr uint32_t kEncodeDeadlineUs = 60000;
+constexpr uint32_t kSendDeadlineUs = 60000;
 constexpr char kLogTag[] = "rva-runtime";
+
+BaseType_t CaptureTaskCore() {
+#if CONFIG_RVA_UPLINK_AFFINITY_AUDIO_CPU1
+    return 1;
+#else
+    return tskNO_AFFINITY;
+#endif
+}
+
+BaseType_t FramerTaskCore() {
+#if CONFIG_RVA_UPLINK_AFFINITY_AUDIO_CPU1
+    return 1;
+#else
+    return tskNO_AFFINITY;
+#endif
+}
+
+BaseType_t EncoderTaskCore() {
+#if CONFIG_RVA_UPLINK_AFFINITY_OPUS_CPU1 || CONFIG_RVA_UPLINK_AFFINITY_AUDIO_CPU1
+    return 1;
+#else
+    return tskNO_AFFINITY;
+#endif
+}
+
+BaseType_t SenderTaskCore() {
+#if CONFIG_RVA_UPLINK_AFFINITY_OPUS_CPU1 || CONFIG_RVA_UPLINK_AFFINITY_AUDIO_CPU1
+    return 0;
+#else
+    return tskNO_AFFINITY;
+#endif
+}
+
+void UpdateMaximum(std::atomic<uint32_t>* maximum, uint32_t value) {
+    uint32_t observed = maximum->load(std::memory_order_relaxed);
+    while (observed < value &&
+           !maximum->compare_exchange_weak(
+               observed, value, std::memory_order_relaxed, std::memory_order_relaxed)) {
+    }
+}
 
 }  // namespace
 
@@ -144,12 +194,14 @@ bool VoiceRuntime::Start(
     }
     started_ = true;
     running_ = true;
-    expected_task_bits_ = 0;
+    expected_task_bits_.store(0, std::memory_order_release);
     bool tasks_started = xTaskCreateWithCaps(
                              SupervisorTask, "rva-supervisor", 8192, this, 6,
                              &supervisor_task_, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) == pdPASS;
     if (!tasks_started) ESP_LOGE(kLogTag, "start failed: supervisor task");
-    if (tasks_started) expected_task_bits_ |= kSupervisorStopped;
+    if (tasks_started) {
+        expected_task_bits_.fetch_or(kSupervisorStopped, std::memory_order_release);
+    }
     ESP_LOGI(kLogTag, "control runtime ready: internal_free=%lu largest=%lu psram_free=%lu",
              static_cast<unsigned long>(heap_caps_get_free_size(MALLOC_CAP_INTERNAL)),
              static_cast<unsigned long>(heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL)),
@@ -188,16 +240,29 @@ void VoiceRuntime::Stop() {
     }
     if (owner_ != nullptr) owner_->RequestClose();
     if (udp_runtime_ != nullptr) udp_runtime_->RequestStop();
-    if (task_events_ != nullptr && expected_task_bits_ != 0) {
-        EventBits_t stopped = xEventGroupWaitBits(
-            task_events_, expected_task_bits_, pdFALSE, pdTRUE,
-            pdMS_TO_TICKS(5000));
-        if ((stopped & expected_task_bits_) != expected_task_bits_) {
-            // Tasks own codec/driver state while running, so forced deletion is unsafe.
-            // A task that cannot leave its bounded loop also makes in-process recovery
-            // unsafe; fail closed with a controlled restart instead of deadlocking the
-            // application supervisor forever.
-            FailClosedRestart("runtime_join_timeout");
+    if (task_events_ != nullptr) {
+        // The supervisor is the sole creator of media tasks. Joining it first
+        // freezes expected_task_bits_ and prevents task creation from racing
+        // queue/codec/pipeline teardown below.
+        const EventBits_t supervisor_bits =
+            expected_task_bits_.load(std::memory_order_acquire) & kSupervisorStopped;
+        if (supervisor_bits != 0) {
+            const EventBits_t stopped = xEventGroupWaitBits(
+                task_events_, supervisor_bits, pdFALSE, pdTRUE, pdMS_TO_TICKS(5000));
+            if ((stopped & supervisor_bits) != supervisor_bits) {
+                FailClosedRestart("supervisor_join_timeout");
+            }
+        }
+        const EventBits_t media_bits =
+            expected_task_bits_.load(std::memory_order_acquire) & ~kSupervisorStopped;
+        if (media_bits != 0) {
+            const EventBits_t stopped = xEventGroupWaitBits(
+                task_events_, media_bits, pdFALSE, pdTRUE, pdMS_TO_TICKS(5000));
+            if ((stopped & media_bits) != media_bits) {
+                // Tasks own codec/driver state while running, so forced deletion
+                // is unsafe. Fail closed while all shared resources remain alive.
+                FailClosedRestart("media_join_timeout");
+            }
         }
     }
     if (owner_ != nullptr && !CloseWebsocketBounded(kWebsocketTeardownTimeoutMs)) {
@@ -222,9 +287,11 @@ void VoiceRuntime::Stop() {
     session_.reset();
     supervisor_task_ = nullptr;
     capture_task_ = nullptr;
-    uplink_task_ = nullptr;
+    uplink_framer_task_ = nullptr;
+    uplink_encoder_task_ = nullptr;
+    uplink_sender_task_ = nullptr;
     playback_task_ = nullptr;
-    expected_task_bits_ = 0;
+    expected_task_bits_.store(0, std::memory_order_release);
     session_opened_ = false;
     media_owner_ = voice::core::MediaOwner::kNone;
 }
@@ -251,14 +318,36 @@ void VoiceRuntime::CaptureTask(void* context) {
     }
 }
 
-void VoiceRuntime::UplinkTask(void* context) {
+void VoiceRuntime::UplinkFramerTask(void* context) {
     auto* runtime = static_cast<VoiceRuntime*>(context);
     try {
-        runtime->RunUplink();
+        runtime->RunUplinkFramer();
     } catch (const std::bad_alloc&) {
-        runtime->HandleTaskAllocationFailure("uplink", kUplinkStopped, true);
+        runtime->HandleTaskAllocationFailure("uplink_framer", kUplinkFramerStopped, true);
     } catch (...) {
-        runtime->HandleTaskAllocationFailure("uplink_exception", kUplinkStopped, true);
+        runtime->HandleTaskAllocationFailure("uplink_framer_exception", kUplinkFramerStopped, true);
+    }
+}
+
+void VoiceRuntime::UplinkEncoderTask(void* context) {
+    auto* runtime = static_cast<VoiceRuntime*>(context);
+    try {
+        runtime->RunUplinkEncoder();
+    } catch (const std::bad_alloc&) {
+        runtime->HandleTaskAllocationFailure("uplink_encoder", kUplinkEncoderStopped, true);
+    } catch (...) {
+        runtime->HandleTaskAllocationFailure("uplink_encoder_exception", kUplinkEncoderStopped, true);
+    }
+}
+
+void VoiceRuntime::UplinkSenderTask(void* context) {
+    auto* runtime = static_cast<VoiceRuntime*>(context);
+    try {
+        runtime->RunUplinkSender();
+    } catch (const std::bad_alloc&) {
+        runtime->HandleTaskAllocationFailure("uplink_sender", kUplinkSenderStopped, true);
+    } catch (...) {
+        runtime->HandleTaskAllocationFailure("uplink_sender_exception", kUplinkSenderStopped, true);
     }
 }
 
@@ -366,6 +455,7 @@ void VoiceRuntime::RunSupervisor() {
     uint32_t observed_udp_jitter_dropped = 0;
     uint32_t observed_udp_media_age_dropped = 0;
     uint32_t observed_wss_queue_dropped = 0;
+    int64_t next_uplink_metrics_us = esp_timer_get_time() + kUplinkMetricsIntervalUs;
     while (running_) {
         if (!DrainPlaybackFacts()) {
             events_.OnFailure("playback_fact_send");
@@ -380,6 +470,10 @@ void VoiceRuntime::RunSupervisor() {
             continue;
         }
         const int64_t now_us = esp_timer_get_time();
+        if (media_started_.load() && now_us >= next_uplink_metrics_us) {
+            LogAndResetUplinkMetrics();
+            next_uplink_metrics_us = now_us + kUplinkMetricsIntervalUs;
+        }
         if (media_owner_ == voice::core::MediaOwner::kUdp && udp_runtime_ != nullptr) {
             const int64_t refresh_deadline_us = udp_refresh_deadline_us_.load();
             const int64_t liveness_timeout_us = udp_liveness_timeout_us_.load();
@@ -460,6 +554,7 @@ void VoiceRuntime::RunSupervisor() {
     if (!DrainPlaybackFacts()) {
         events_.OnFailure("playback_fact_send");
     }
+    if (media_started_.load()) LogAndResetUplinkMetrics();
     ESP_LOGI(kLogTag, "supervisor task minimum free stack: %lu bytes",
              static_cast<unsigned long>(uxTaskGetStackHighWaterMark(nullptr)));
     MarkTaskStopped(kSupervisorStopped);
@@ -862,70 +957,133 @@ bool VoiceRuntime::ConfigureUdp(const protocol::SessionOpened& opened) {
 }
 
 bool VoiceRuntime::StartMediaRuntime() {
+    static_assert(std::is_trivially_copyable_v<EncodedUplinkFrame>);
     if (media_started_.load()) return true;
-    if (task_events_ == nullptr) return false;
+    if (task_events_ == nullptr || !running_.load()) return false;
+    uplink_framer_.Reset(0);
+    uplink_sequence_ = 0;
+    uplink_pcm_queue_dropped_ = 0;
+    uplink_encoded_queue_dropped_ = 0;
+    uplink_pcm_queue_high_water_ = 0;
+    uplink_encoded_queue_high_water_ = 0;
+    uplink_pcm_max_age_us_ = 0;
+    uplink_encoded_max_age_us_ = 0;
+    const auto reset_stage = [](StageCounters* counters) {
+        counters->count = 0;
+        counters->total_us = 0;
+        counters->max_us = 0;
+        counters->deadline_misses = 0;
+    };
+    reset_stage(&capture_stage_);
+    reset_stage(&framing_stage_);
+    reset_stage(&encode_stage_);
+    reset_stage(&send_stage_);
     playback_queue_ = xQueueCreateWithCaps(
         6, sizeof(MediaPacket), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     playback_command_queue_ = xQueueCreateWithCaps(
         8, sizeof(PlaybackCommand), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     playback_fact_queue_ = xQueueCreateWithCaps(
         4, sizeof(QueuedPlaybackFact), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    uplink_pcm_queue_ = xQueueCreateWithCaps(
+        kUplinkQueueCapacity, sizeof(UplinkPcmFrame), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    uplink_encoded_queue_ = xQueueCreateWithCaps(
+        kUplinkQueueCapacity, sizeof(EncodedUplinkFrame), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (playback_queue_ == nullptr || playback_command_queue_ == nullptr ||
-        playback_fact_queue_ == nullptr || !codec_.Start() ||
+        playback_fact_queue_ == nullptr || uplink_pcm_queue_ == nullptr ||
+        uplink_encoded_queue_ == nullptr || !codec_.Start() ||
         !pipeline_.Start().ok() || !StartPlaybackResampler()) {
         ESP_LOGE(kLogTag,
-                 "media start failed: queues=%d/%d/%d internal_free=%lu largest=%lu psram_free=%lu",
+                 "media start failed: queues=%d/%d/%d/%d/%d internal_free=%lu largest=%lu psram_free=%lu",
                  playback_queue_ != nullptr, playback_command_queue_ != nullptr,
-                 playback_fact_queue_ != nullptr,
+                 playback_fact_queue_ != nullptr, uplink_pcm_queue_ != nullptr,
+                 uplink_encoded_queue_ != nullptr,
                  static_cast<unsigned long>(heap_caps_get_free_size(MALLOC_CAP_INTERNAL)),
                  static_cast<unsigned long>(heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL)),
                  static_cast<unsigned long>(heap_caps_get_free_size(MALLOC_CAP_SPIRAM)));
-        StopMediaRuntime();
         return false;
     }
     EventBits_t started_media_bits = 0;
-    bool tasks_started = xTaskCreateWithCaps(
-                             CaptureTask, "rva-capture", kCaptureTaskStackBytes, this, 7,
-                             &capture_task_, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) == pdPASS;
-    if (!tasks_started) ESP_LOGE(kLogTag, "media start failed: capture task");
+    bool tasks_started = running_.load();
     if (tasks_started) {
-        expected_task_bits_ |= kCaptureStopped;
+        tasks_started = xTaskCreatePinnedToCoreWithCaps(
+                            CaptureTask, "rva-capture", kCaptureTaskStackBytes, this, 7,
+                            &capture_task_, CaptureTaskCore(),
+                            MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) == pdPASS;
+        if (!tasks_started) ESP_LOGE(kLogTag, "media start failed: capture task");
+    }
+    if (tasks_started) {
+        expected_task_bits_.fetch_or(kCaptureStopped, std::memory_order_release);
         started_media_bits |= kCaptureStopped;
     }
+    if (tasks_started && !running_.load()) tasks_started = false;
     if (tasks_started) {
-        tasks_started = xTaskCreateWithCaps(
-                            UplinkTask, "rva-uplink", kUplinkTaskStackBytes, this, 6,
-                            &uplink_task_, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) == pdPASS;
-        if (!tasks_started) ESP_LOGE(kLogTag, "media start failed: uplink task");
+        tasks_started = xTaskCreatePinnedToCoreWithCaps(
+                            UplinkFramerTask, "rva-uplink-frame", kUplinkFramerTaskStackBytes,
+                            this, 7, &uplink_framer_task_, FramerTaskCore(),
+                            MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) == pdPASS;
+        if (!tasks_started) ESP_LOGE(kLogTag, "media start failed: uplink framer task");
         if (tasks_started) {
-            expected_task_bits_ |= kUplinkStopped;
-            started_media_bits |= kUplinkStopped;
+            expected_task_bits_.fetch_or(kUplinkFramerStopped, std::memory_order_release);
+            started_media_bits |= kUplinkFramerStopped;
         }
     }
+    if (tasks_started && !running_.load()) tasks_started = false;
+    if (tasks_started) {
+        tasks_started = xTaskCreatePinnedToCoreWithCaps(
+                            UplinkEncoderTask, "rva-uplink-encode", kUplinkEncoderTaskStackBytes,
+                            this, 6, &uplink_encoder_task_, EncoderTaskCore(),
+                            MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) == pdPASS;
+        if (!tasks_started) ESP_LOGE(kLogTag, "media start failed: uplink encoder task");
+        if (tasks_started) {
+            expected_task_bits_.fetch_or(kUplinkEncoderStopped, std::memory_order_release);
+            started_media_bits |= kUplinkEncoderStopped;
+        }
+    }
+    if (tasks_started && !running_.load()) tasks_started = false;
+    if (tasks_started) {
+        tasks_started = xTaskCreatePinnedToCoreWithCaps(
+                            UplinkSenderTask, "rva-uplink-send", kUplinkSenderTaskStackBytes,
+                            this, 5, &uplink_sender_task_, SenderTaskCore(),
+                            MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) == pdPASS;
+        if (!tasks_started) ESP_LOGE(kLogTag, "media start failed: uplink sender task");
+        if (tasks_started) {
+            expected_task_bits_.fetch_or(kUplinkSenderStopped, std::memory_order_release);
+            started_media_bits |= kUplinkSenderStopped;
+        }
+    }
+    if (tasks_started && !running_.load()) tasks_started = false;
     if (tasks_started) {
         tasks_started = xTaskCreateWithCaps(
                             PlaybackTask, "rva-playback", kPlaybackTaskStackBytes, this, 6,
                             &playback_task_, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) == pdPASS;
         if (!tasks_started) ESP_LOGE(kLogTag, "media start failed: playback task");
         if (tasks_started) {
-            expected_task_bits_ |= kPlaybackStopped;
+            expected_task_bits_.fetch_or(kPlaybackStopped, std::memory_order_release);
             started_media_bits |= kPlaybackStopped;
         }
     }
+    if (tasks_started && !running_.load()) tasks_started = false;
     if (!tasks_started) {
-        ESP_LOGE(kLogTag,
-                 "media start failed after partial start bits=0x%lx internal_free=%lu largest=%lu psram_free=%lu",
-                 static_cast<unsigned long>(started_media_bits),
+        ESP_LOGW(kLogTag,
+                 "media start incomplete: bits=0x%lx running=%d internal_free=%lu largest=%lu psram_free=%lu",
+                 static_cast<unsigned long>(started_media_bits), running_.load(),
                  static_cast<unsigned long>(heap_caps_get_free_size(MALLOC_CAP_INTERNAL)),
                  static_cast<unsigned long>(heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL)),
                  static_cast<unsigned long>(heap_caps_get_free_size(MALLOC_CAP_SPIRAM)));
-        // Capture/uplink may already be inside ESP-SR, Opus, websocket, or I2S
-        // code paths. In-process teardown after a partial media start has caused
-        // UAF/heap corruption on target. Restart while objects remain alive; the
-        // fail-closed hook releases the Director lease first.
-        FailClosedRestart("media_task_start_failed");
+        running_ = false;
+        // Stop is the sole join/teardown owner. It first waits for this
+        // supervisor to stop, then joins the stable started_media_bits mask.
+        return false;
     }
-    ESP_LOGI(kLogTag, "media runtime ready: internal_free=%lu largest=%lu psram_free=%lu",
+    ESP_LOGI(kLogTag,
+             "media runtime ready: affinity=%s internal_free=%lu largest=%lu psram_free=%lu",
+#if CONFIG_RVA_UPLINK_AFFINITY_AUDIO_CPU1
+             "audio_cpu1",
+#elif CONFIG_RVA_UPLINK_AFFINITY_OPUS_CPU1
+             "opus_cpu1_sender_cpu0",
+#else
+             "unpinned",
+#endif
              static_cast<unsigned long>(heap_caps_get_free_size(MALLOC_CAP_INTERNAL)),
              static_cast<unsigned long>(heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL)),
              static_cast<unsigned long>(heap_caps_get_free_size(MALLOC_CAP_SPIRAM)));
@@ -950,6 +1108,14 @@ void VoiceRuntime::StopMediaRuntime() {
         vQueueDeleteWithCaps(playback_fact_queue_);
         playback_fact_queue_ = nullptr;
     }
+    if (uplink_pcm_queue_ != nullptr) {
+        vQueueDeleteWithCaps(uplink_pcm_queue_);
+        uplink_pcm_queue_ = nullptr;
+    }
+    if (uplink_encoded_queue_ != nullptr) {
+        vQueueDeleteWithCaps(uplink_encoded_queue_);
+        uplink_encoded_queue_ = nullptr;
+    }
 }
 
 void VoiceRuntime::RunCapture() {
@@ -964,8 +1130,13 @@ void VoiceRuntime::RunCapture() {
         };
         const audio::PortResult captured = pipeline_.ReadCapture(&capture, 100);
         if (captured == audio::PortResult::kOk) {
+            const int64_t started_us = esp_timer_get_time();
             const audio::PortResult fed = pipeline_.FeedFrontend(
                 {capture.samples, capture.sample_count, capture.sample_rate_hz, capture.channel_count});
+            RecordStage(
+                &capture_stage_,
+                static_cast<uint32_t>(std::max<int64_t>(0, esp_timer_get_time() - started_us)),
+                kCaptureProcessingDeadlineUs);
             consecutive_failures = fed == audio::PortResult::kOk ? 0 : consecutive_failures + 1;
             // I2S capture is the real-time pacer. A fixed tick delay here would
             // discard input because one FreeRTOS tick is 10 ms on this target.
@@ -981,18 +1152,10 @@ void VoiceRuntime::RunCapture() {
     vTaskDeleteWithCaps(nullptr);
 }
 
-void VoiceRuntime::RunUplink() {
+void VoiceRuntime::RunUplinkFramer() {
     std::vector<int16_t> fetched(frontend_.fetch_samples_per_channel());
-    std::array<int16_t, 960> accumulated{};
-    size_t accumulated_samples = 0;
-    std::array<uint8_t, protocol::kWssMaxPayloadBytes> opus{};
     uint32_t consecutive_failures = 0;
     bool observed_vad = frontend_.speech_active();
-    uint32_t telemetry_packets = 0;
-    uint32_t telemetry_dtx_packets = 0;
-    uint32_t telemetry_opus_bytes = 0;
-    size_t telemetry_min_opus_bytes = std::numeric_limits<size_t>::max();
-    size_t telemetry_max_opus_bytes = 0;
     ESP_LOGI(kLogTag, "uplink audio state: afe_vad=%s",
              observed_vad ? "speech" : "noise");
     while (running_) {
@@ -1012,106 +1175,168 @@ void VoiceRuntime::RunUplink() {
             ESP_LOGI(kLogTag, "uplink audio state: afe_vad=%s",
                      observed_vad ? "speech" : "noise");
         }
-        size_t offset = 0;
-        while (offset < output.sample_count && running_) {
-            if (accumulated_samples == accumulated.size() && !session_opened_) {
-                // Keep capture bounded while admission is pending. Retaining a full
-                // frame here would make copied == 0 and spin this high-priority task.
-                accumulated_samples = 0;
+        const int64_t captured_at_us = esp_timer_get_time();
+        const int64_t framing_started_us = captured_at_us;
+        uplink_framer_.Consume(
+            output.samples, output.sample_count, captured_at_us,
+            [this](const UplinkPcmFrame& frame) {
+                const LatestEnqueueResult queued = EnqueueLatest(
+                    frame,
+                    [this](const UplinkPcmFrame& value) {
+                        return xQueueSend(uplink_pcm_queue_, &value, 0) == pdTRUE;
+                    },
+                    [this](UplinkPcmFrame* value) {
+                        return xQueueReceive(uplink_pcm_queue_, value, 0) == pdTRUE;
+                    });
+                if (queued == LatestEnqueueResult::kReplacedOldest) {
+                    ++uplink_pcm_queue_dropped_;
+                } else if (queued == LatestEnqueueResult::kFailed) {
+                    events_.OnFailure("uplink_pcm_queue");
+                    running_ = false;
+                }
+                UpdateQueueHighWater(&uplink_pcm_queue_high_water_, uplink_pcm_queue_);
+            });
+        RecordStage(
+            &framing_stage_,
+            static_cast<uint32_t>(std::max<int64_t>(0, esp_timer_get_time() - framing_started_us)),
+            kFramingProcessingDeadlineUs);
+    }
+    ESP_LOGI(kLogTag, "uplink framer task minimum free stack: %lu bytes",
+             static_cast<unsigned long>(uxTaskGetStackHighWaterMark(nullptr)));
+    MarkTaskStopped(kUplinkFramerStopped);
+    vTaskDeleteWithCaps(nullptr);
+}
+
+void VoiceRuntime::RunUplinkEncoder() {
+    UplinkPcmFrame pcm;
+    uint32_t consecutive_failures = 0;
+    uint32_t telemetry_packets = 0;
+    uint32_t telemetry_dtx_packets = 0;
+    uint32_t telemetry_opus_bytes = 0;
+    size_t telemetry_min_opus_bytes = std::numeric_limits<size_t>::max();
+    size_t telemetry_max_opus_bytes = 0;
+    while (running_) {
+        if (xQueueReceive(uplink_pcm_queue_, &pcm, pdMS_TO_TICKS(100)) != pdTRUE) continue;
+        const int64_t started_us = esp_timer_get_time();
+        UpdateMaximum(
+            &uplink_pcm_max_age_us_,
+            static_cast<uint32_t>(std::max<int64_t>(0, started_us - pcm.captured_at_us)));
+        EncodedUplinkFrame encoded;
+        size_t opus_size = 0;
+        const bool succeeded = codec_.Encode60Ms(
+            pcm.samples.data(), pcm.samples.size(), encoded.bytes.data(), encoded.bytes.size(), &opus_size);
+        RecordStage(
+            &encode_stage_,
+            static_cast<uint32_t>(std::max<int64_t>(0, esp_timer_get_time() - started_us)),
+            kEncodeDeadlineUs);
+        if (!succeeded || opus_size == 0 || opus_size > encoded.bytes.size()) {
+            events_.OnFailure(opus_size == 0 && succeeded ? "opus_empty_frame" : "opus_encode");
+            if (++consecutive_failures >= kAudioFailureLimit || opus_size == 0) running_ = false;
+            continue;
+        }
+        consecutive_failures = 0;
+        encoded.size = static_cast<uint16_t>(opus_size);
+        encoded.timestamp = pcm.timestamp;
+        encoded.captured_at_us = pcm.captured_at_us;
+        telemetry_packets++;
+        telemetry_opus_bytes += static_cast<uint32_t>(opus_size);
+        telemetry_min_opus_bytes = std::min(telemetry_min_opus_bytes, opus_size);
+        telemetry_max_opus_bytes = std::max(telemetry_max_opus_bytes, opus_size);
+        if (opus_size <= 64) telemetry_dtx_packets++;
+        if (telemetry_packets == 1000) {
+            ESP_LOGI(
+                kLogTag,
+                "uplink audio window: packets=%lu opus_bytes_avg=%lu min=%u max=%u dtx=%lu",
+                static_cast<unsigned long>(telemetry_packets),
+                static_cast<unsigned long>(telemetry_opus_bytes / telemetry_packets),
+                static_cast<unsigned>(telemetry_min_opus_bytes),
+                static_cast<unsigned>(telemetry_max_opus_bytes),
+                static_cast<unsigned long>(telemetry_dtx_packets));
+            telemetry_packets = 0;
+            telemetry_dtx_packets = 0;
+            telemetry_opus_bytes = 0;
+            telemetry_min_opus_bytes = std::numeric_limits<size_t>::max();
+            telemetry_max_opus_bytes = 0;
+        }
+        const LatestEnqueueResult queued = EnqueueLatest(
+            encoded,
+            [this](const EncodedUplinkFrame& value) {
+                return xQueueSend(uplink_encoded_queue_, &value, 0) == pdTRUE;
+            },
+            [this](EncodedUplinkFrame* value) {
+                return xQueueReceive(uplink_encoded_queue_, value, 0) == pdTRUE;
+            });
+        if (queued == LatestEnqueueResult::kReplacedOldest) {
+            ++uplink_encoded_queue_dropped_;
+        } else if (queued == LatestEnqueueResult::kFailed) {
+            events_.OnFailure("uplink_encoded_queue");
+            running_ = false;
+        }
+        UpdateQueueHighWater(&uplink_encoded_queue_high_water_, uplink_encoded_queue_);
+    }
+    ESP_LOGI(kLogTag, "uplink encoder task minimum free stack: %lu bytes",
+             static_cast<unsigned long>(uxTaskGetStackHighWaterMark(nullptr)));
+    MarkTaskStopped(kUplinkEncoderStopped);
+    vTaskDeleteWithCaps(nullptr);
+}
+
+void VoiceRuntime::RunUplinkSender() {
+    EncodedUplinkFrame encoded;
+    while (running_) {
+        if (xQueueReceive(uplink_encoded_queue_, &encoded, pdMS_TO_TICKS(100)) != pdTRUE) continue;
+        const int64_t started_us = esp_timer_get_time();
+        UpdateMaximum(
+            &uplink_encoded_max_age_us_,
+            static_cast<uint32_t>(std::max<int64_t>(0, started_us - encoded.captured_at_us)));
+        if (media_owner_ == voice::core::MediaOwner::kUdp) {
+            if (udp_runtime_ == nullptr ||
+                !udp_runtime_->SendAudio(encoded.bytes.data(), encoded.size, encoded.timestamp)) {
+                events_.OnFailure("udp_uplink_send");
+                fallback_to_wss_ = true;
+                running_ = false;
             }
-            const size_t copied = std::min(accumulated.size() - accumulated_samples, output.sample_count - offset);
-            std::copy_n(output.samples + offset, copied, accumulated.begin() + accumulated_samples);
-            accumulated_samples += copied;
-            offset += copied;
-            if (accumulated_samples != accumulated.size() || !session_opened_) continue;
-            size_t opus_size = 0;
-            if (!codec_.Encode60Ms(accumulated.data(), accumulated.size(), opus.data(), opus.size(), &opus_size)) {
-                events_.OnFailure("opus_encode");
-                accumulated_samples = 0;
-                continue;
-            }
+        } else if (media_owner_ == voice::core::MediaOwner::kWss) {
             protocol::SessionOpened identity;
             {
                 std::lock_guard<std::mutex> lock(identity_mutex_);
                 identity = opened_;
             }
-            const uint32_t timestamp = uplink_timestamp_;
-            uplink_timestamp_ += 960;
-            if (opus_size == 0) {
-                events_.OnFailure("opus_empty_frame");
+            protocol::MediaHeader header;
+            header.flags = 1;
+            header.media_id = identity.media_id;
+            header.media_epoch = identity.media_epoch;
+            header.sequence = uplink_sequence_++;
+            header.timestamp = encoded.timestamp;
+            header.generation = 0;
+            header.payload_length = encoded.size;
+            std::array<uint8_t, protocol::kWssMaxFrameBytes> frame{};
+            if (protocol::SerializeMediaHeader(
+                    header, protocol::MediaDirection::kUplink, frame.data()) !=
+                protocol::MediaError::kOk) {
+                events_.OnFailure("uplink_header");
                 running_ = false;
-                accumulated_samples = 0;
-                continue;
-            }
-            telemetry_packets++;
-            telemetry_opus_bytes += static_cast<uint32_t>(opus_size);
-            telemetry_min_opus_bytes = std::min(telemetry_min_opus_bytes, opus_size);
-            telemetry_max_opus_bytes = std::max(telemetry_max_opus_bytes, opus_size);
-            if (opus_size <= 64) telemetry_dtx_packets++;
-            if (telemetry_packets == 1000) {
-                ESP_LOGI(
-                    kLogTag,
-                    "uplink audio window: packets=%lu opus_bytes_avg=%lu min=%u max=%u dtx=%lu afe_vad=%s",
-                    static_cast<unsigned long>(telemetry_packets),
-                    static_cast<unsigned long>(telemetry_opus_bytes / telemetry_packets),
-                    static_cast<unsigned>(telemetry_min_opus_bytes),
-                    static_cast<unsigned>(telemetry_max_opus_bytes),
-                    static_cast<unsigned long>(telemetry_dtx_packets),
-                    observed_vad ? "speech" : "noise");
-                telemetry_packets = 0;
-                telemetry_dtx_packets = 0;
-                telemetry_opus_bytes = 0;
-                telemetry_min_opus_bytes = std::numeric_limits<size_t>::max();
-                telemetry_max_opus_bytes = 0;
-            }
-            if (media_owner_ == voice::core::MediaOwner::kUdp) {
-                if (udp_runtime_ == nullptr ||
-                    !udp_runtime_->SendAudio(opus.data(), opus_size, timestamp)) {
-                    events_.OnFailure("udp_uplink_send");
-                    fallback_to_wss_ = true;
-                    running_ = false;
-                }
-            } else if (media_owner_ == voice::core::MediaOwner::kWss) {
-                protocol::MediaHeader header;
-                header.flags = 1;
-                header.media_id = identity.media_id;
-                header.media_epoch = identity.media_epoch;
-                header.sequence = uplink_sequence_++;
-                header.timestamp = timestamp;
-                header.generation = 0;
-                header.payload_length = static_cast<uint32_t>(opus_size);
-                std::array<uint8_t, protocol::kWssMaxFrameBytes> frame{};
-                if (protocol::SerializeMediaHeader(header, protocol::MediaDirection::kUplink, frame.data()) !=
-                        protocol::MediaError::kOk) {
-                    events_.OnFailure("uplink_header");
-                    running_ = false;
-                } else {
-                    std::memcpy(frame.data() + protocol::kMediaHeaderBytes, opus.data(), opus_size);
-                    if (!owner_->SendMedia(frame.data(), protocol::kMediaHeaderBytes + opus_size, 1000)) {
-                        // Stop() clears running_ before requesting the websocket close.
-                        // A frame already in this task may race that close, but it is
-                        // not a transport failure and must not turn a normal UI stop
-                        // into an error/retry state.
-                        if (running_) {
-                            events_.OnFailure("uplink_send");
-                            running_ = false;
-                        }
-                    }
-                }
             } else {
-                if (session_opened_) {
+                std::memcpy(
+                    frame.data() + protocol::kMediaHeaderBytes,
+                    encoded.bytes.data(), encoded.size);
+                if (!owner_->SendMedia(
+                        frame.data(), protocol::kMediaHeaderBytes + encoded.size, 1000) && running_) {
                     events_.OnFailure("uplink_send");
                     running_ = false;
                 }
             }
-            accumulated_samples = 0;
-            // AFE fetch is the real-time pacer. Do not add a fixed tick per
-            // packet or 60 ms of media will take longer than 60 ms to upload.
+        } else if (session_opened_) {
+            events_.OnFailure("uplink_send");
+            running_ = false;
         }
+        RecordStage(
+            &send_stage_,
+            static_cast<uint32_t>(std::max<int64_t>(0, esp_timer_get_time() - started_us)),
+            kSendDeadlineUs);
     }
-    ESP_LOGI(kLogTag, "uplink task minimum free stack: %lu bytes",
+    ESP_LOGI(kLogTag, "uplink sender task minimum free stack: %lu bytes",
              static_cast<unsigned long>(uxTaskGetStackHighWaterMark(nullptr)));
-    MarkTaskStopped(kUplinkStopped);
+    MarkTaskStopped(kUplinkSenderStopped);
     vTaskDeleteWithCaps(nullptr);
 }
 
@@ -1294,6 +1519,73 @@ void VoiceRuntime::StopPlaybackResampler() {
     playback_pcm_.reset();
     playback_resampled_.reset();
     playback_resampled_capacity_ = 0;
+}
+
+void VoiceRuntime::RecordStage(
+    StageCounters* counters, uint32_t duration_us, uint32_t deadline_us) {
+    if (counters == nullptr) return;
+    counters->count.fetch_add(1, std::memory_order_relaxed);
+    counters->total_us.fetch_add(duration_us, std::memory_order_relaxed);
+    UpdateMaximum(&counters->max_us, duration_us);
+    if (duration_us > deadline_us) {
+        counters->deadline_misses.fetch_add(1, std::memory_order_relaxed);
+    }
+}
+
+void VoiceRuntime::UpdateQueueHighWater(
+    std::atomic<uint32_t>* high_water, QueueHandle_t queue) {
+    if (high_water == nullptr || queue == nullptr) return;
+    UpdateMaximum(high_water, static_cast<uint32_t>(uxQueueMessagesWaiting(queue)));
+}
+
+void VoiceRuntime::LogAndResetUplinkMetrics() {
+    struct Snapshot final {
+        uint32_t count;
+        uint32_t average_us;
+        uint32_t max_us;
+        uint32_t deadline_misses;
+    };
+    const auto snapshot = [](StageCounters* counters) {
+        const uint32_t count = counters->count.exchange(0, std::memory_order_relaxed);
+        const uint32_t total_us = counters->total_us.exchange(0, std::memory_order_relaxed);
+        return Snapshot{
+            .count = count,
+            .average_us = count == 0 ? 0 : total_us / count,
+            .max_us = counters->max_us.exchange(0, std::memory_order_relaxed),
+            .deadline_misses = counters->deadline_misses.exchange(0, std::memory_order_relaxed),
+        };
+    };
+    const Snapshot capture = snapshot(&capture_stage_);
+    const Snapshot framing = snapshot(&framing_stage_);
+    const Snapshot encode = snapshot(&encode_stage_);
+    const Snapshot send = snapshot(&send_stage_);
+    ESP_LOGI(
+        kLogTag,
+        "uplink stages(count/avg_us/max_us/miss): capture=%lu/%lu/%lu/%lu frame=%lu/%lu/%lu/%lu "
+        "encode=%lu/%lu/%lu/%lu send=%lu/%lu/%lu/%lu "
+        "queues=%lu/%lu drops=%lu/%lu age_max_us=%lu/%lu",
+        static_cast<unsigned long>(capture.count),
+        static_cast<unsigned long>(capture.average_us),
+        static_cast<unsigned long>(capture.max_us),
+        static_cast<unsigned long>(capture.deadline_misses),
+        static_cast<unsigned long>(framing.count),
+        static_cast<unsigned long>(framing.average_us),
+        static_cast<unsigned long>(framing.max_us),
+        static_cast<unsigned long>(framing.deadline_misses),
+        static_cast<unsigned long>(encode.count),
+        static_cast<unsigned long>(encode.average_us),
+        static_cast<unsigned long>(encode.max_us),
+        static_cast<unsigned long>(encode.deadline_misses),
+        static_cast<unsigned long>(send.count),
+        static_cast<unsigned long>(send.average_us),
+        static_cast<unsigned long>(send.max_us),
+        static_cast<unsigned long>(send.deadline_misses),
+        static_cast<unsigned long>(uplink_pcm_queue_high_water_.exchange(0)),
+        static_cast<unsigned long>(uplink_encoded_queue_high_water_.exchange(0)),
+        static_cast<unsigned long>(uplink_pcm_queue_dropped_.load()),
+        static_cast<unsigned long>(uplink_encoded_queue_dropped_.load()),
+        static_cast<unsigned long>(uplink_pcm_max_age_us_.exchange(0)),
+        static_cast<unsigned long>(uplink_encoded_max_age_us_.exchange(0)));
 }
 
 void VoiceRuntime::MarkTaskStopped(EventBits_t bit) {

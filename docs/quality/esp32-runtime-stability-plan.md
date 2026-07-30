@@ -57,7 +57,7 @@ Idle
 - `SessionOpening` 只发送 `session.open` 并等待 `session.opened`。
 - `MediaProbing` 对 UDP 执行 socket open、session grant、probe/ack；成功后才启动 AudioCore。
 - UDP probe 失败时优雅降级 WSS；降级必须释放当前 UDP media session，不复用无效 UDP key/source。
-- `MediaRunning` 后才启动 capture/uplink/playback task。
+- `MediaRunning` 后才启动 capture/AFE、60 ms framer、Opus encoder、transport sender 和 playback task。
 - `Stopping` 只由 supervisor 执行，callback、UDP rx task、audio task 不销毁 owner 级资源。
 - `Backoff` 用 bounded retry，不把普通连接失败转成设备重启。
 
@@ -68,18 +68,26 @@ Idle
 | WSS control owner | supervisor | control metadata 优先 internal；payload 固定 ring 可用 PSRAM | callback 不阻塞、不 close，只入队或计数丢弃 |
 | UDP session/key/source | UDP supervisor | keyed context 与小状态优先 internal | auth fail 不推进 sequence；source 固定；revoke 只由 supervisor 触发 |
 | UDP rx task | UDP runtime | task stack 可按实测放 PSRAM；socket/lwIP 状态不假设可控 | 只接收入队与 jitter，不做复杂 teardown |
-| playback queue | media runtime | 非 DMA 大 payload 可放 PSRAM；caps create/delete 配对 | 满时丢旧或丢新并计数，不默认杀会话 |
-| capture/uplink/playback task | AudioCore | DMA/I2S buffer 使用外设要求 capability；大 scratch 预分配 | 部分启动失败必须逆序清理并有界 join |
+| capture/AFE task | AudioCore | DMA/I2S buffer 使用外设要求 capability；AFE scratch 预分配 | I2S 阻塞读取负责 pacing；连续失败触发 fail-closed |
+| uplink framer queue/task | AudioCore | 容量 2 的固定 PCM frame queue，非 DMA payload 可放 PSRAM | 满时替换最旧帧并保留 timestamp gap，不积压旧语音 |
+| Opus encoder queue/task | AudioCore | 独占 codec owner；encoder stack 和 scratch 按 high-water 配置 | 阻塞等待完整 60 ms PCM；编码失败或持续 deadline miss 可定位 |
+| transport sender task | media runtime | 容量 2 的固定 encoded queue；不持有 codec | 阻塞等待完整 Opus frame；发送失败由 supervisor 收敛 |
+| playback task/queue | media runtime | 非 DMA 大 payload 可放 PSRAM；caps create/delete 配对 | 满时按 generation/freshness 丢弃并计数，不默认保留旧音频 |
 | UI queue/font | UI owner | font/文本优先 flash/PSRAM | UI 丢事件不影响音频 |
 
 通用规则：
 
 - 热路径不做无界日志、JSON 解析、Flash 写入或外部重连。
 - callback 和音频循环不进行 `new`/`delete`、`std::vector` 增长、front erase。
+- capture、framer、encoder 和 sender 均为单 owner；相邻阶段只经固定容量 queue 通信，慢阶段不得反向阻塞 I2S
+  capture 或通过扩大队列保存过期语音。
 - `std::mutex` 不放在 UDP/WSS/audio teardown 热路径；优先使用单 owner queue、fixed ring 或 ESP-IDF/FreeRTOS
   明确 capability 的同步原语。
 - 所有 `WithCaps` 创建的 FreeRTOS 对象必须用对应 `WithCaps` delete。
 - 所有 queue/event/task 有明确 producer、consumer、容量、停止条件、重复 stop 语义。
+- CPU0/CPU1 idle Task WDT 均保持启用；affinity 的三个 Kconfig variant 只服务 `EXP-RVA-001`。Host test、build 和
+  size 只能证明静态集成，必须以目标板连续语音 HIL 的 WDT、每阶段 deadline、queue pressure、stack high-water 和
+  双核 idle 证据选择 winner。
 
 ## 5. 音频实时性策略
 
@@ -103,7 +111,8 @@ FEC disabled initially
 端侧采集策略：
 
 - AEC/VAD 保持可配置，默认沿当前已验证板级音频配置启用。
-- VAD 主要用于 barge-in；ASR 分段和语义结果仍由服务侧负责。
+- 端侧 VAD 只作为声学观测信号；打断裁决、ASR 分段和语义结果由服务侧负责，端侧不得因 VAD 命中清空播放或
+  发送 cancel。
 - 如果 AEC/VAD 造成资源风险，必须以 HIL 指标证明后再降级，不能凭主观听感关闭。
 
 ## 6. 服务侧配合优化
@@ -142,7 +151,8 @@ FEC disabled initially
 - 修正 `xQueueCreateWithCaps` / `xEventGroupCreateWithCaps` 的 delete API 配对。
 - `xQueueReset(playback_queue_)` 全部判空。
 - `StartMediaRuntime()` 在 `codec/pipeline/resampler` 启动失败且还未创建媒体任务时逆序释放资源；一旦
-  capture/uplink/playback 任一媒体 task 已启动，后续部分启动失败采用 fail-closed restart。原因是实机已观察到
+  capture/framer/encoder/sender/playback 任一媒体 task 已启动，后续部分启动失败采用 fail-closed restart。原因是
+  实机已观察到
   媒体 task 可能已经进入 ESP-SR、Opus、websocket 或 I2S 路径，此时原地 teardown 容易触发 UAF/heap/VFS 崩溃。
 - `UdpRuntime` event group 使用 caps API；析构路径不把普通 bounded close 超时转为默认 abort。
 - 增加关键状态和资源日志：internal free、largest block、PSRAM free、task high-water、queue drop、UDP probe。

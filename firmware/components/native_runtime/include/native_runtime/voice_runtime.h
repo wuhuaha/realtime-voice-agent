@@ -5,6 +5,7 @@
 #include <memory>
 #include <mutex>
 #include <string>
+#include <vector>
 
 #include <freertos/FreeRTOS.h>
 #include <freertos/event_groups.h>
@@ -18,6 +19,7 @@
 #include "native_runtime/opus_codec.h"
 #include "native_runtime/playback_state.h"
 #include "native_runtime/udp_socket_port.h"
+#include "native_runtime/uplink_pipeline.h"
 #include "transport_udp/gcm_crypto.h"
 #include "transport_udp/udp_runtime.h"
 #include "transport_udp/udp_session.h"
@@ -113,6 +115,20 @@ private:
         bool has_media_sequence = false;
     };
 
+    struct EncodedUplinkFrame final {
+        uint16_t size = 0;
+        uint32_t timestamp = 0;
+        int64_t captured_at_us = 0;
+        std::array<uint8_t, protocol::kWssMaxPayloadBytes> bytes{};
+    };
+
+    struct StageCounters final {
+        std::atomic<uint32_t> count{0};
+        std::atomic<uint32_t> total_us{0};
+        std::atomic<uint32_t> max_us{0};
+        std::atomic<uint32_t> deadline_misses{0};
+    };
+
     struct WebsocketTeardownContext final {
         wss::WssOwner* owner = nullptr;
         SemaphoreHandle_t done = nullptr;
@@ -121,12 +137,16 @@ private:
 
     static void SupervisorTask(void* context);
     static void CaptureTask(void* context);
-    static void UplinkTask(void* context);
+    static void UplinkFramerTask(void* context);
+    static void UplinkEncoderTask(void* context);
+    static void UplinkSenderTask(void* context);
     static void PlaybackTask(void* context);
     static void WebsocketTeardownTask(void* context);
     void RunSupervisor();
     void RunCapture();
-    void RunUplink();
+    void RunUplinkFramer();
+    void RunUplinkEncoder();
+    void RunUplinkSender();
     void RunPlayback();
     void HandleControl(const std::vector<uint8_t>& frame);
     void HandleMedia(const std::vector<uint8_t>& frame);
@@ -143,6 +163,9 @@ private:
     void StopMediaRuntime();
     bool StartPlaybackResampler();
     void StopPlaybackResampler();
+    void RecordStage(StageCounters* counters, uint32_t duration_us, uint32_t deadline_us);
+    void LogAndResetUplinkMetrics();
+    void UpdateQueueHighWater(std::atomic<uint32_t>* high_water, QueueHandle_t queue);
     void MarkTaskStopped(EventBits_t bit);
     bool CloseWebsocketBounded(uint32_t timeout_ms);
     [[noreturn]] void FailClosedRestart(const char* category) noexcept;
@@ -171,12 +194,18 @@ private:
     QueueHandle_t playback_queue_ = nullptr;
     QueueHandle_t playback_command_queue_ = nullptr;
     QueueHandle_t playback_fact_queue_ = nullptr;
+    QueueHandle_t uplink_pcm_queue_ = nullptr;
+    QueueHandle_t uplink_encoded_queue_ = nullptr;
     EventGroupHandle_t task_events_ = nullptr;
     TaskHandle_t supervisor_task_ = nullptr;
     TaskHandle_t capture_task_ = nullptr;
-    TaskHandle_t uplink_task_ = nullptr;
+    TaskHandle_t uplink_framer_task_ = nullptr;
+    TaskHandle_t uplink_encoder_task_ = nullptr;
+    TaskHandle_t uplink_sender_task_ = nullptr;
     TaskHandle_t playback_task_ = nullptr;
-    EventBits_t expected_task_bits_ = 0;
+    // Supervisor is the only media-task creator. Stop first joins supervisor,
+    // then reads this final mask and joins every media owner before teardown.
+    std::atomic<EventBits_t> expected_task_bits_{0};
     std::mutex identity_mutex_;
     PlaybackState playback_state_;
     protocol::SessionOpened opened_{};
@@ -201,10 +230,20 @@ private:
     std::atomic<bool> udp_refresh_requested_{false};
     std::atomic<bool> fallback_to_wss_{false};
     std::atomic<uint32_t> wss_playback_queue_dropped_{0};
+    UplinkFramer uplink_framer_;
+    StageCounters capture_stage_;
+    StageCounters framing_stage_;
+    StageCounters encode_stage_;
+    StageCounters send_stage_;
+    std::atomic<uint32_t> uplink_pcm_queue_dropped_{0};
+    std::atomic<uint32_t> uplink_encoded_queue_dropped_{0};
+    std::atomic<uint32_t> uplink_pcm_queue_high_water_{0};
+    std::atomic<uint32_t> uplink_encoded_queue_high_water_{0};
+    std::atomic<uint32_t> uplink_pcm_max_age_us_{0};
+    std::atomic<uint32_t> uplink_encoded_max_age_us_{0};
     FailClosedHook fail_closed_hook_ = nullptr;
     void* fail_closed_context_ = nullptr;
     uint32_t uplink_sequence_ = 0;
-    uint32_t uplink_timestamp_ = 0;
 };
 
 }  // namespace rva::runtime
