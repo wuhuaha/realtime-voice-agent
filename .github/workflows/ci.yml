@@ -149,6 +149,24 @@ jobs:
             firmware/components/ui_lvgl/host_tests/ui_reducer_test.cc \
             -o "$out/ui_reducer_test"
           "$out/ui_reducer_test"
+          profile_test="firmware/apps/voice_terminal/host_tests/default_media_profile_test.cc"
+          profile_include="firmware/apps/voice_terminal/main"
+          g++ -std=c++17 -Wall -Wextra -Werror -O2 \
+            -I "$profile_include" "$profile_test" -o "$out/default_profile_unset"
+          "$out/default_profile_unset"
+          g++ -std=c++17 -Wall -Wextra -Werror -O2 \
+            -DCONFIG_RVA_DEFAULT_MEDIA_PROFILE_WSS=1 \
+            -I "$profile_include" "$profile_test" -o "$out/default_profile_wss"
+          "$out/default_profile_wss"
+          g++ -std=c++17 -Wall -Wextra -Werror -O2 \
+            -DCONFIG_RVA_DEFAULT_MEDIA_PROFILE_UDP=1 -DRVA_EXPECT_UDP=1 \
+            -I "$profile_include" "$profile_test" -o "$out/default_profile_udp"
+          "$out/default_profile_udp"
+          g++ -std=c++17 -Wall -Wextra -Werror -O2 \
+            -DCONFIG_RVA_DEFAULT_MEDIA_PROFILE_WSS=1 \
+            -DCONFIG_RVA_DEFAULT_MEDIA_PROFILE_UDP=1 \
+            -I "$profile_include" "$profile_test" -o "$out/default_profile_conflict"
+          "$out/default_profile_conflict"
           g++ -std=c++17 -fno-exceptions -Wall -Wextra -Werror -O2 -pthread \
             -I firmware/components/voice_protocol/include \
             -I firmware/components/transport_wss/include \

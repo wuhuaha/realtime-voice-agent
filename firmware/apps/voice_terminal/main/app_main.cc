@@ -18,6 +18,7 @@
 #include "board_lichuang_s3/board_audio_control.h"
 #include "board_lichuang_s3/board_display.h"
 #include "device_config/device_config.h"
+#include "default_media_profile.h"
 #include "idle_wake_runtime/idle_wake_runtime.h"
 #include "native_runtime/config_adapters.h"
 #include "native_runtime/director_bootstrap.h"
@@ -83,6 +84,12 @@ constexpr uint32_t RefreshRetryDelayMs(uint32_t consecutive_failures) {
 constexpr rva::ui::Transport ToUiTransport(rva::runtime::MediaPreference preference) {
     return preference == rva::runtime::MediaPreference::kUdp ? rva::ui::Transport::kUdp
                                                               : rva::ui::Transport::kWss;
+}
+
+constexpr rva::runtime::MediaPreference ConfiguredMediaPreference() {
+    return rva::app::ConfiguredDefaultMediaProfile() == rva::app::DefaultMediaProfile::kUdp
+               ? rva::runtime::MediaPreference::kUdp
+               : rva::runtime::MediaPreference::kWss;
 }
 
 constexpr const char* MediaPreferenceLabel(rva::runtime::MediaPreference preference) {
@@ -644,9 +651,9 @@ void RunApplication() {
     rva::runtime::IdleWakeRuntime idle_wake(codec.capture(), frontend);
     rva::runtime::DirectorBootstrap director;
     const bool udp_available = true;
-    // Keep the startup source of truth aligned with UiState. UDP is selectable
-    // from the idle UI and selected only for the session that follows.
-    rva::runtime::MediaPreference preferred_media = rva::runtime::MediaPreference::kWss;
+    // UI state starts from the compile-time preference and remains free to
+    // select a different profile for the next session while idle.
+    rva::runtime::MediaPreference preferred_media = ConfiguredMediaPreference();
     PostUi(ui.get(), {
         rva::ui::CommandKind::kSetPreferredTransport,
         static_cast<uint32_t>(ToUiTransport(preferred_media)),

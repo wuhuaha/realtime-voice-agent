@@ -28,6 +28,22 @@ config RVA_AUTO_START_CONVERSATION
         Wi-Fi and Director provisioning are ready. This keeps the runtime
         lifecycle independent from touch input during bring-up and soak tests.
 
+choice RVA_DEFAULT_MEDIA_PROFILE
+    prompt "Default media profile for a new session"
+    default RVA_DEFAULT_MEDIA_PROFILE_WSS
+    help
+        Selects the initial client preference for each new session. The server
+        still makes the final selection from the advertised profile set, and
+        the idle UI may select another profile for the following session.
+
+config RVA_DEFAULT_MEDIA_PROFILE_WSS
+    bool "WSS Opus v3"
+
+config RVA_DEFAULT_MEDIA_PROFILE_UDP
+    bool "UDP Opus GCM v2"
+
+endchoice
+
 config RVA_MIC_BUTTON_CONTROLS_SESSION
     bool "Allow MIC button to start or stop the voice session"
     default n

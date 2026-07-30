@@ -14,8 +14,16 @@ build input 注入；生成的 `sdkconfig`、`managed_components/`、`build/` �
 生产设备应使用独立 provisioning/credential 流程，不发布开发 token。
 
 本地开发凭据放在 ignored 的 `sdkconfig.local`。未显式传入其他 `SDKCONFIG_DEFAULTS` 时，工程会按顺序自动加载
-`sdkconfig.defaults` 和存在的 `sdkconfig.local`；因此 clean build 与增量 build 使用同一配置来源。烧录前仍需核对
-生成的 `sdkconfig` 和目标 build 目录，禁止从历史 `build-*` 目录烧录未确认身份的镜像。
+`sdkconfig.defaults` 和存在的 `sdkconfig.local`。这些 defaults 只在生成配置时提供初值；已有 `sdkconfig` 会继续作为
+增量构建的权威输入，不会因后来修改 local defaults 而可靠更新。切换 profile、Wi-Fi 或 endpoint 时必须使用新的
+`SDKCONFIG` 与 build目录，或显式重新生成配置。烧录前应检查 `config/sdkconfig.h` 中相关选项的 presence/choice，
+禁止从历史 `build-*` 目录烧录未确认身份的镜像。
+
+编译期 `RVA_DEFAULT_MEDIA_PROFILE` choice 只决定每次启动时的首选媒体 profile：Product 默认
+`RVA_DEFAULT_MEDIA_PROFILE_WSS`，受控环境可在 ignored local build input 中选择
+`RVA_DEFAULT_MEDIA_PROFILE_UDP`。未知、缺失或互相冲突的生成配置一律 fail-safe 到 WSS。该选项不改变设备
+声明的 profile 能力、不改变 server 的最终选择，也不禁用待机 UI 上的 WSS/UDP 切换；UI 选择仍只影响下一次
+session。
 
 设置页只允许编辑 Director bootstrap URL。设备仅会复用与已 provisioned credential 完全相同 origin
 （scheme、host、port）的 token；界面不会显示 token，也不会把 token 拼入 URL。跨 origin 切换必须通过安全的
