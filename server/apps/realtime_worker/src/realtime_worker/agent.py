@@ -10,6 +10,7 @@ import uuid
 from collections import deque
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from enum import StrEnum
 from functools import lru_cache
 from typing import Any, Protocol
 
@@ -41,6 +42,44 @@ class AgentOutputSegment:
     frames: list[PcmFrame]
 
 
+class AgentRunnerTerminalKind(StrEnum):
+    OWNER_CLOSED = "owner_closed"
+    RUNTIME_FAILED = "runtime_failed"
+
+
+@dataclass(frozen=True, slots=True)
+class AgentRunnerTerminal:
+    kind: AgentRunnerTerminalKind
+
+
+class AgentRunnerTerminatedError(RuntimeError):
+    def __init__(self, terminal: AgentRunnerTerminal) -> None:
+        super().__init__("AgentSession terminated unexpectedly")
+        self.terminal = terminal
+
+
+class _TerminalState:
+    def __init__(self) -> None:
+        self._future: asyncio.Future[AgentRunnerTerminal] | None = None
+        self._result: AgentRunnerTerminal | None = None
+
+    @property
+    def future(self) -> asyncio.Future[AgentRunnerTerminal]:
+        if self._future is None:
+            self._future = asyncio.get_running_loop().create_future()
+            if self._result is not None:
+                self._future.set_result(self._result)
+        return self._future
+
+    def publish(self, result: AgentRunnerTerminal) -> bool:
+        if self._result is not None:
+            return False
+        self._result = result
+        if self._future is not None and not self._future.done():
+            self._future.set_result(result)
+        return True
+
+
 SegmentSink = Callable[[AgentOutputSegment], Awaitable[None]]
 StopSink = Callable[[int], None]
 UserTranscriptSink = Callable[[str, bool], bool | None]
@@ -48,6 +87,9 @@ AssistantTextSink = Callable[[str], None]
 
 
 class AgentRunner(Protocol):
+    @property
+    def terminal(self) -> asyncio.Future[AgentRunnerTerminal]: ...
+
     async def start(self) -> None: ...
 
     async def push_audio(self, frame: PcmFrame) -> None: ...
@@ -81,7 +123,14 @@ class DeterministicAgentRunner:
         self._input_frames = 0
         self._responded = False
         self._producer_epoch = 1
+        self._user_transcript_sink: UserTranscriptSink | None = None
         self._assistant_text_sink: AssistantTextSink | None = None
+        self._terminal_state = _TerminalState()
+        self._response_task: asyncio.Task[None] | None = None
+
+    @property
+    def terminal(self) -> asyncio.Future[AgentRunnerTerminal]:
+        return self._terminal_state.future
 
     async def start(self) -> None:
         return None
@@ -90,7 +139,20 @@ class DeterministicAgentRunner:
         self._input_frames += 1
         if self._input_frames >= 3 and not self._responded:
             self._responded = True
-            await self.commit_text("deterministic turn")
+            if self._user_transcript_sink is not None:
+                self._user_transcript_sink("deterministic", False)
+                self._user_transcript_sink("deterministic turn", True)
+            self._response_task = asyncio.create_task(
+                self.commit_text("deterministic turn"),
+                name="deterministic-agent-response",
+            )
+            self._response_task.add_done_callback(self._response_done)
+
+    def _response_done(self, task: asyncio.Task[None]) -> None:
+        if task.cancelled():
+            return
+        if task.exception() is not None:
+            self._terminal_state.publish(AgentRunnerTerminal(AgentRunnerTerminalKind.RUNTIME_FAILED))
 
     async def commit_text(self, text: str) -> None:
         if self._closed or not text.strip():
@@ -115,6 +177,7 @@ class DeterministicAgentRunner:
         user_transcript: UserTranscriptSink,
         assistant_text: AssistantTextSink,
     ) -> None:
+        self._user_transcript_sink = user_transcript
         self._assistant_text_sink = assistant_text
 
     def set_response_gate(self, active: bool) -> None:
@@ -133,6 +196,10 @@ class DeterministicAgentRunner:
 
     async def close(self) -> None:
         self._closed = True
+        if self._response_task is not None and not self._response_task.done():
+            self._response_task.cancel()
+            await asyncio.gather(self._response_task, return_exceptions=True)
+        self._terminal_state.publish(AgentRunnerTerminal(AgentRunnerTerminalKind.OWNER_CLOSED))
 
 
 class RoomlessAudioInput(io.AudioInput):
@@ -144,6 +211,7 @@ class RoomlessAudioInput(io.AudioInput):
         self._queue_timeout_seconds = queue_timeout_seconds
         self._closed = False
         self._closed_event = asyncio.Event()
+        self._closed_terminal: AgentRunnerTerminal | None = None
 
     async def __anext__(self) -> rtc.AudioFrame:
         item = await self._queue.get()
@@ -153,6 +221,8 @@ class RoomlessAudioInput(io.AudioInput):
 
     async def push(self, frame: PcmFrame) -> None:
         if self._closed:
+            if self._closed_terminal is not None:
+                raise AgentRunnerTerminatedError(self._closed_terminal)
             return
         audio = rtc.AudioFrame(
             data=frame.pcm,
@@ -172,6 +242,8 @@ class RoomlessAudioInput(io.AudioInput):
                     return_when=asyncio.FIRST_COMPLETED,
                 )
                 if close_task in done or self._closed:
+                    if self._closed_terminal is not None:
+                        raise AgentRunnerTerminatedError(self._closed_terminal)
                     return
                 if put_task not in done:
                     raise RoomlessAudioInputOverloadedError(
@@ -185,7 +257,11 @@ class RoomlessAudioInput(io.AudioInput):
                         task.cancel()
                 await asyncio.gather(put_task, close_task, return_exceptions=True)
 
-    def close(self) -> None:
+    def close(self, terminal: AgentRunnerTerminal | None = None) -> None:
+        if terminal is not None:
+            self._closed_terminal = terminal
+        if self._closed:
+            return
         self._closed = True
         self._closed_event.set()
         while not self._queue.empty():
@@ -515,6 +591,12 @@ class LiveKitAgentRunner:
         self._assistant_text_sink: AssistantTextSink | None = None
         self._text_output: RoomlessTextOutput | None = None
         self._response_gate = _PlaybackResponseGate()
+        self._terminal_state = _TerminalState()
+        self._owner_closing = False
+
+    @property
+    def terminal(self) -> asyncio.Future[AgentRunnerTerminal]:
+        return self._terminal_state.future
 
     def set_text_sinks(
         self,
@@ -556,6 +638,7 @@ class LiveKitAgentRunner:
             self._tracer,
             user_transcript=self._handle_user_transcript,
             user_state=self._handle_user_state,
+            session_close=self._handle_session_close,
         )
         session.input.audio = self._input
         session.output.audio = self._output
@@ -567,6 +650,13 @@ class LiveKitAgentRunner:
 
     def _handle_user_state(self, old_state: object, new_state: object) -> None:
         self._response_gate.user_state_changed(old_state, new_state)
+
+    def _handle_session_close(self, _event: object) -> None:
+        kind = AgentRunnerTerminalKind.OWNER_CLOSED if self._owner_closing else AgentRunnerTerminalKind.RUNTIME_FAILED
+        terminal = AgentRunnerTerminal(kind)
+        if kind is AgentRunnerTerminalKind.RUNTIME_FAILED:
+            self._input.close(terminal)
+        self._terminal_state.publish(terminal)
 
     def _handle_user_transcript(self, text: str, is_final: bool) -> None:
         sink = self._user_transcript_sink
@@ -603,6 +693,8 @@ class LiveKitAgentRunner:
         return self._output.advance_producer_epoch()
 
     async def close(self) -> None:
+        self._owner_closing = True
+        self._terminal_state.publish(AgentRunnerTerminal(AgentRunnerTerminalKind.OWNER_CLOSED))
         self._response_gate.reset()
         failures: list[BaseException] = []
         try:
@@ -664,6 +756,7 @@ def _register_livekit_observers(
     *,
     user_transcript: UserTranscriptSink | None = None,
     user_state: Callable[[object, object], None] | None = None,
+    session_close: Callable[[object], None] | None = None,
 ) -> _LiveKitPlaybackTrace:
     """Project public AgentSession events into PII-free phase and latency events."""
 
@@ -776,6 +869,8 @@ def _register_livekit_observers(
         tracer.event("provider_metrics", **fields)
 
     def on_close(event: object) -> None:
+        if session_close is not None:
+            session_close(event)
         reason_value = getattr(event, "reason", "unknown")
         reason = getattr(reason_value, "value", str(reason_value))
         tracer.event("session_closed", reason=reason, has_error=getattr(event, "error", None) is not None)

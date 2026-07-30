@@ -7,7 +7,15 @@ import pytest
 from livekit import rtc
 from livekit.agents import StopResponse
 from pydantic import ValidationError
-from realtime_worker.agent import LiveKitAgentRunner, RoomlessAudioInput, RoomlessAudioOutput, _DefaultAgent
+from realtime_worker.agent import (
+    AgentRunnerTerminal,
+    AgentRunnerTerminalKind,
+    AgentRunnerTerminatedError,
+    LiveKitAgentRunner,
+    RoomlessAudioInput,
+    RoomlessAudioOutput,
+    _DefaultAgent,
+)
 from realtime_worker.audio import PcmFrame
 from realtime_worker.config import Settings
 
@@ -288,6 +296,26 @@ async def test_custom_input_close_wakes_waiting_producer_without_queueing_after_
     audio_input.close()
     await asyncio.wait_for(pending, timeout=0.1)
 
+    with pytest.raises(StopAsyncIteration):
+        await audio_input.__anext__()
+    assert audio_input._queue.empty()  # noqa: SLF001
+
+
+@pytest.mark.asyncio
+async def test_custom_input_runtime_terminal_rejects_blocked_and_future_producers() -> None:
+    audio_input = RoomlessAudioInput(1, queue_timeout_seconds=0.1)
+    frame = PcmFrame(0, 0, 0, b"\x00" * 640)
+    await audio_input.push(frame)
+    pending = asyncio.create_task(audio_input.push(frame))
+    await asyncio.sleep(0)
+    terminal = AgentRunnerTerminal(AgentRunnerTerminalKind.RUNTIME_FAILED)
+
+    audio_input.close(terminal)
+
+    with pytest.raises(AgentRunnerTerminatedError):
+        await asyncio.wait_for(pending, timeout=0.1)
+    with pytest.raises(AgentRunnerTerminatedError):
+        await audio_input.push(frame)
     with pytest.raises(StopAsyncIteration):
         await audio_input.__anext__()
     assert audio_input._queue.empty()  # noqa: SLF001

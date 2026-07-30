@@ -4,7 +4,7 @@ import asyncio
 from collections.abc import Awaitable
 
 import pytest
-from realtime_worker.agent import AgentOutputSegment, DeterministicAgentRunner, LiveKitAgentRunner
+from realtime_worker.agent import AgentOutputSegment, DeterministicAgentRunner, LiveKitAgentRunner, PcmFrame
 from realtime_worker.config import Settings
 
 
@@ -61,3 +61,22 @@ async def test_deterministic_interrupt_is_repeatable() -> None:
     runner = DeterministicAgentRunner(discard)
     assert await runner.interrupt() == 2
     assert await runner.interrupt() == 3
+
+
+@pytest.mark.asyncio
+async def test_deterministic_runner_emits_repeatable_transcript_before_response() -> None:
+    transcripts: list[tuple[str, bool]] = []
+    responses: list[str] = []
+    runner = DeterministicAgentRunner(discard)
+    runner.set_text_sinks(
+        lambda text, is_final: transcripts.append((text, is_final)),
+        responses.append,
+    )
+    frame = PcmFrame(0, 0, 0, bytes(640))
+
+    for _ in range(3):
+        await runner.push_audio(frame)
+    await asyncio.sleep(0)
+
+    assert transcripts == [("deterministic", False), ("deterministic turn", True)]
+    assert responses == ["deterministic turn"]

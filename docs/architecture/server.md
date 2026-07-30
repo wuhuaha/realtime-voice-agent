@@ -107,6 +107,17 @@ Connection/Binding
 LiveKit `AgentSession` 提供 VAD、STT、EOU、turn 和 response 的实时语义内核；它不加入 Room，也不承担设备
 transport。Worker 使用自定义 input/output adapter 把选中 profile 的 PCM 流映射到 AgentSession。
 
+`AgentRunner` 还暴露 exactly-once typed terminal future。Owner 主动关闭发布 `owner_closed`；LiveKit public close
+event 在 owner 未发起关闭时发布 `runtime_failed`，同时关闭 audio input 并撤销后续 input admission。已经阻塞或之后
+到达的 `push_audio` 都得到稳定的 terminal error，不能继续向已关闭的 `AgentSession` 写 PCM。RVA supervisor 与
+input/output task 并行等待该 terminal；unexpected terminal 会 best-effort 发送 `session.error`，再以
+`1011/runtime_failure` fresh close/reopen。通知失败或 teardown timeout 不得覆盖已锁定的 primary close cause。
+
+Standalone FunASR 的空识别结果严格限于 `no_speech`、空 `final`，以及兼容旧 provider 的精确
+`invalid_audio + "FunASR returned empty text"`；它们产生空 final 并结束当前 turn，不视为 provider fatal。其他
+`invalid_audio`、malformed event/audio 和协议状态错误仍是 provider contract failure；`busy`、`inference_failed` 才按
+retryable provider failure 分类，不能用宽泛的字符串匹配吞掉真实错误。
+
 `InterruptionCoordinator` 是语音打断的唯一裁决者。播放期间 uplink 不得被 binding 丢弃，必须进入同一个 STT；
 LiveKit automatic interruption 保持关闭，且不得因 response 暂时不可打断而丢弃输入音频。Endpoint AEC 已提供稳定
 reference 时不使用额外 AEC warmup 静音窗口。strict explicit policy 只接受归一化后的完整命令/有限语法匹配，
@@ -146,6 +157,12 @@ TTS provider 的共享并发槽使用单独的排队 deadline；当前 `VOICE_TT
 retryable backpressure，不启动 provider 请求。MiMo SSE 入口按流式增量解析并强制限制：单行与单事件各 1 MiB、
 每事件最多 256 条 `data:`、单个 base64 解码后音频 chunk 512 KiB、整次响应 8 MiB；越界视为不可重试的 provider
 协议错误，避免异常响应造成无界内存增长。
+
+Uplink freshness 超预算时，input owner 先丢弃 stale backlog 到 live edge，并记录 `dropped_packets`、queue size、
+media age 和是否仍有 fresh packet。该动作只阻止旧语音继续进入 ASR，不代表 `AgentSession` 已安全重置。当前 LiveKit
+public API 无法证明 same-session reset 能清除半完成 turn/provider 状态，因此 isolated stale 与 sustained
+backpressure 仅作诊断分类，二者当前都 best-effort 发送 `session.error(media_overloaded)`，锁定
+`1013/media_overloaded` 并由 endpoint fresh reopen；不得通过扩大 queue 保存旧媒体。
 
 ## 6. Health、drain 与关闭
 

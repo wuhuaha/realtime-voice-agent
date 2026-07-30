@@ -36,6 +36,37 @@ class FunASRProtocol(StrEnum):
     STANDALONE = "standalone"
 
 
+class _StandaloneMessageKind(StrEnum):
+    IGNORE = "ignore"
+    INTERIM = "interim"
+    FINAL = "final"
+    NO_RESULT = "no_result"
+    RETRYABLE_ERROR = "retryable_error"
+    FATAL_ERROR = "fatal_error"
+
+
+@dataclass(frozen=True)
+class _StandaloneMessage:
+    kind: _StandaloneMessageKind
+    text: str = ""
+    reason: str = ""
+    safe_code: str = ""
+
+
+_STANDALONE_RETRYABLE_CODES = frozenset({"busy", "inference_failed"})
+_STANDALONE_FATAL_CODES = frozenset(
+    {
+        "already_started",
+        "invalid_audio",
+        "invalid_event",
+        "invalid_json",
+        "invalid_start",
+        "start_required",
+        "streaming_disabled",
+    }
+)
+
+
 def _bundled_hotwords() -> tuple[str, ...]:
     path = Path(__file__).resolve().parents[1] / "resources" / "funasr_hotwords.txt"
     return tuple(line.strip() for line in path.read_text(encoding="utf-8").splitlines() if line.strip())
@@ -640,49 +671,45 @@ class StandaloneFunASRStream:
         while True:
             message = await connection.recv()
             if not isinstance(message, str):
-                continue
-            parsed = json.loads(message)
-            if not isinstance(parsed, dict):
-                continue
-            message_type = parsed.get("type")
-            if message_type == "error":
-                code = parsed.get("code")
-                detail = parsed.get("error")
-                if code == "invalid_audio" and detail == "FunASR returned empty text":
-                    await self._put_event(
-                        RecognitionEvent(
-                            kind=RecognitionKind.FINAL,
-                            text="",
-                            segment_id=segment_id,
-                            request_id=request_id,
-                            raw_mode="standalone-empty-final",
-                        )
-                    )
-                    return
-                known_codes = {
-                    "already_started",
-                    "busy",
-                    "inference_failed",
-                    "invalid_audio",
-                    "invalid_event",
-                    "invalid_json",
-                    "invalid_start",
-                    "start_required",
-                    "streaming_disabled",
-                }
-                safe_code = code if isinstance(code, str) and code in known_codes else "unknown"
-                retryable = safe_code in {"busy", "inference_failed"}
                 raise ProviderError(
                     "funasr",
-                    f"standalone ASR rejected the stream ({safe_code})",
-                    retryable=retryable,
+                    "standalone ASR rejected the stream (malformed_event)",
+                    retryable=False,
                 )
-            if message_type not in {"interim", "final"}:
+            classified = _classify_standalone_message(message)
+            if classified.kind is _StandaloneMessageKind.IGNORE:
                 continue
-            text = parsed.get("text")
-            if isinstance(text, str) and (text.strip() or message_type == "final"):
-                normalized_text = " ".join(text.split())
-                if message_type == "interim" and normalized_text == last_normalized_interim:
+            if classified.kind in {
+                _StandaloneMessageKind.RETRYABLE_ERROR,
+                _StandaloneMessageKind.FATAL_ERROR,
+            }:
+                raise ProviderError(
+                    "funasr",
+                    f"standalone ASR rejected the stream ({classified.safe_code})",
+                    retryable=classified.kind is _StandaloneMessageKind.RETRYABLE_ERROR,
+                )
+            if classified.kind is _StandaloneMessageKind.NO_RESULT:
+                self._trace_no_result(
+                    reason=classified.reason,
+                    request_id=request_id,
+                    segment_id=segment_id,
+                )
+                await self._put_event(
+                    RecognitionEvent(
+                        kind=RecognitionKind.FINAL,
+                        text="",
+                        segment_id=segment_id,
+                        request_id=request_id,
+                        raw_mode=f"standalone-{classified.reason}",
+                    )
+                )
+                return
+
+            normalized_text = " ".join(classified.text.split())
+            if classified.kind is _StandaloneMessageKind.INTERIM:
+                if not normalized_text:
+                    continue
+                if normalized_text == last_normalized_interim:
                     if self._tracer:
                         self._tracer.event(
                             "asr_interim_deduplicated",
@@ -693,19 +720,33 @@ class StandaloneFunASRStream:
                             text_hash=hashlib.sha256(normalized_text.encode("utf-8")).hexdigest()[:12],
                         )
                     continue
-                if message_type == "interim":
-                    last_normalized_interim = normalized_text
-                await self._put_event(
-                    RecognitionEvent(
-                        kind=RecognitionKind.FINAL if message_type == "final" else RecognitionKind.INTERIM,
-                        text=text if normalized_text else "",
-                        segment_id=segment_id,
-                        request_id=request_id,
-                        raw_mode=f"standalone-{message_type}",
-                    )
+                last_normalized_interim = normalized_text
+            await self._put_event(
+                RecognitionEvent(
+                    kind=(
+                        RecognitionKind.FINAL
+                        if classified.kind is _StandaloneMessageKind.FINAL
+                        else RecognitionKind.INTERIM
+                    ),
+                    text=classified.text,
+                    segment_id=segment_id,
+                    request_id=request_id,
+                    raw_mode=f"standalone-{classified.kind}",
                 )
-            if message_type == "final":
+            )
+            if classified.kind is _StandaloneMessageKind.FINAL:
                 return
+
+    def _trace_no_result(self, *, reason: str, request_id: str, segment_id: str) -> None:
+        if self._tracer is None:
+            return
+        self._tracer.event(
+            "asr_no_result",
+            provider="funasr",
+            reason=reason,
+            request_id=request_id,
+            segment_id=segment_id,
+        )
 
     async def _put_event(self, event: RecognitionEvent) -> None:
         try:
@@ -750,6 +791,73 @@ async def _cancel_and_wait(task: asyncio.Task[None] | None) -> None:
         await task
     except asyncio.CancelledError:
         pass
+
+
+def _classify_standalone_message(message: str) -> _StandaloneMessage:
+    try:
+        parsed = json.loads(message)
+    except (json.JSONDecodeError, TypeError):
+        return _StandaloneMessage(
+            kind=_StandaloneMessageKind.FATAL_ERROR,
+            safe_code="malformed_json",
+        )
+    if not isinstance(parsed, dict):
+        return _StandaloneMessage(
+            kind=_StandaloneMessageKind.FATAL_ERROR,
+            safe_code="malformed_event",
+        )
+
+    message_type = parsed.get("type")
+    if message_type in {"ready", "started"}:
+        return _StandaloneMessage(kind=_StandaloneMessageKind.IGNORE)
+    if message_type == "error":
+        code = parsed.get("code")
+        detail = parsed.get("error")
+        if code == "no_speech":
+            return _StandaloneMessage(
+                kind=_StandaloneMessageKind.NO_RESULT,
+                reason="no_speech",
+            )
+        if code == "invalid_audio" and detail == "FunASR returned empty text":
+            return _StandaloneMessage(
+                kind=_StandaloneMessageKind.NO_RESULT,
+                reason="legacy_empty_result",
+            )
+        if isinstance(code, str) and code in _STANDALONE_RETRYABLE_CODES:
+            return _StandaloneMessage(
+                kind=_StandaloneMessageKind.RETRYABLE_ERROR,
+                safe_code=code,
+            )
+        safe_code = code if isinstance(code, str) and code in _STANDALONE_FATAL_CODES else "unknown"
+        return _StandaloneMessage(
+            kind=_StandaloneMessageKind.FATAL_ERROR,
+            safe_code=safe_code,
+        )
+    if message_type not in {"interim", "final"}:
+        return _StandaloneMessage(
+            kind=_StandaloneMessageKind.FATAL_ERROR,
+            safe_code="malformed_event",
+        )
+
+    text = parsed.get("text")
+    if not isinstance(text, str):
+        return _StandaloneMessage(
+            kind=_StandaloneMessageKind.FATAL_ERROR,
+            safe_code="malformed_event",
+        )
+    if message_type == "final" and not text.strip():
+        return _StandaloneMessage(
+            kind=_StandaloneMessageKind.NO_RESULT,
+            reason="empty_final",
+        )
+    return _StandaloneMessage(
+        kind=(
+            _StandaloneMessageKind.FINAL
+            if message_type == "final"
+            else _StandaloneMessageKind.INTERIM
+        ),
+        text=text,
+    )
 
 
 async def _open_websocket(url: str, timeout_seconds: float) -> WebSocketConnection:
@@ -849,7 +957,9 @@ class FunASRSTT(stt.STT):
         except StopAsyncIteration as exc:
             raise APIConnectionError("funasr: standalone ASR returned no final transcript", retryable=True) from exc
         except ProviderError as exc:
-            raise APIConnectionError(str(exc), retryable=exc.retryable) from exc
+            if exc.retryable:
+                raise APIConnectionError(str(exc), retryable=True) from exc
+            raise
         except (OSError, TimeoutError) as exc:
             raise APIConnectionError(
                 f"funasr: {redact_exception(exc)}",
@@ -944,8 +1054,11 @@ class _FunASRRecognizeStream(stt.RecognizeStream):
                 await _cancel_and_wait(input_task)
         except ProviderError as exc:
             # LiveKit retries streaming STT only for its public APIError family.
-            # Preserve the provider's retryability instead of closing AgentSession.
-            raise APIConnectionError(str(exc), retryable=exc.retryable) from exc
+            # In 1.6.5 it retries every APIError regardless of ``retryable``;
+            # fatal provider/protocol errors therefore stay outside that family.
+            if exc.retryable:
+                raise APIConnectionError(str(exc), retryable=True) from exc
+            raise
         except (OSError, TimeoutError) as exc:
             raise APIConnectionError(
                 f"funasr: {redact_exception(exc)}",

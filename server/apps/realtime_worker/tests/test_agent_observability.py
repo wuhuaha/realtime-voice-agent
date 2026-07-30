@@ -7,7 +7,13 @@ from types import SimpleNamespace
 import pytest
 from livekit.agents import vad as vad_api
 from realtime_worker import agent as agent_module
-from realtime_worker.agent import LiveKitAgentRunner, RoomlessTextOutput, _register_livekit_observers
+from realtime_worker.agent import (
+    AgentRunnerTerminalKind,
+    AgentRunnerTerminatedError,
+    LiveKitAgentRunner,
+    RoomlessTextOutput,
+    _register_livekit_observers,
+)
 from realtime_worker.config import Settings
 from realtime_worker.lifecycle import detached_shutdown_task_count
 from realtime_worker.observability.events import (
@@ -330,6 +336,74 @@ async def test_livekit_runner_passes_one_session_tracer_to_stt_tts_and_observers
     assert assistant_texts == ["首个", "首个文本"]
     await runner.close()
     assert fake_session.closed and captured["tts_closed"] is True
+
+
+@pytest.mark.asyncio
+async def test_livekit_runner_unexpected_session_close_is_exactly_once_and_closes_input_admission(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake_session = FakeSession()
+
+    class FakeTTS:
+        async def aclose(self) -> None:
+            return None
+
+    monkeypatch.setattr(agent_module, "configure_trace_logging", lambda: None)
+    monkeypatch.setattr(agent_module, "create_tts", lambda *_args, **_kwargs: asyncio.sleep(0, result=FakeTTS()))
+    monkeypatch.setattr(agent_module, "FunASRSTT", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(agent_module, "create_deepseek_llm", lambda _settings: object())
+    monkeypatch.setattr(
+        agent_module.silero.VAD,
+        "load",
+        lambda **_options: SimpleNamespace(
+            capabilities=vad_api.VADCapabilities(update_interval=0.032),
+            model="fake",
+            provider="fake",
+        ),
+    )
+    monkeypatch.setattr(agent_module, "AgentSession", lambda **_options: fake_session)
+    monkeypatch.setattr(agent_module, "_DefaultAgent", lambda _overlap_consumer: object())
+
+    async def emit_segment(_frames: object) -> None:
+        return None
+
+    runner = LiveKitAgentRunner(
+        Settings(runner="livekit", deepseek_api_key="test-key"),
+        emit_segment,
+        lambda _epoch: None,
+    )
+    await runner.start()
+
+    close_event = SimpleNamespace(reason=SimpleNamespace(value="error"), error=RuntimeError("provider detail"))
+    fake_session.emit("close", close_event)
+    first_terminal = await asyncio.wait_for(asyncio.shield(runner.terminal), timeout=0.1)
+    fake_session.emit("close", close_event)
+    second_terminal = await asyncio.wait_for(asyncio.shield(runner.terminal), timeout=0.1)
+
+    assert first_terminal is second_terminal
+    assert first_terminal.kind is AgentRunnerTerminalKind.RUNTIME_FAILED
+    with pytest.raises(AgentRunnerTerminatedError, match="AgentSession terminated unexpectedly"):
+        await runner.push_audio(agent_module.PcmFrame(0, 0, 0, b"\x00" * 640))
+    await runner.close()
+    assert await runner.terminal is first_terminal
+
+
+@pytest.mark.asyncio
+async def test_livekit_runner_owner_close_has_distinct_terminal_result() -> None:
+    async def emit_segment(_frames: object) -> None:
+        return None
+
+    runner = LiveKitAgentRunner(
+        Settings(runner="livekit", deepseek_api_key="test-key"),
+        emit_segment,
+        lambda _epoch: None,
+    )
+    runner._session = FakeSession()  # noqa: SLF001
+
+    await runner.close()
+
+    terminal = await asyncio.wait_for(asyncio.shield(runner.terminal), timeout=0.1)
+    assert terminal.kind is AgentRunnerTerminalKind.OWNER_CLOSED
 
 
 @pytest.mark.asyncio

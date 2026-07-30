@@ -6,12 +6,13 @@ from collections.abc import Awaitable, Callable
 from types import SimpleNamespace
 
 import pytest
-from realtime_worker.agent import AgentOutputSegment
+from realtime_worker.agent import AgentOutputSegment, AgentRunnerTerminal, AgentRunnerTerminalKind
 from realtime_worker.audio import PCM_SAMPLES, PcmFrame
 from realtime_worker.bindings.rva import (
     RvaBindingError,
     RvaOpusCodec,
     RvaOpusDecodeError,
+    RvaOverloadedError,
     RvaRuntimeLimits,
     RvaWssConnection,
     WssMediaFrame,
@@ -130,6 +131,15 @@ class FakeRunner:
         self.interrupt_release = asyncio.Event()
         self._user_text: Callable[[str, bool], None] | None = None
         self._assistant_text: Callable[[str], None] | None = None
+        self._terminal = asyncio.get_running_loop().create_future()
+
+    @property
+    def terminal(self) -> asyncio.Future[AgentRunnerTerminal]:
+        return self._terminal
+
+    def fail_runtime(self) -> None:
+        if not self._terminal.done():
+            self._terminal.set_result(AgentRunnerTerminal(AgentRunnerTerminalKind.RUNTIME_FAILED))
 
     def set_text_sinks(
         self,
@@ -181,6 +191,8 @@ class FakeRunner:
 
     async def close(self) -> None:
         self.close_calls += 1
+        if not self._terminal.done():
+            self._terminal.set_result(AgentRunnerTerminal(AgentRunnerTerminalKind.OWNER_CLOSED))
 
 
 def create_connection(
@@ -658,8 +670,108 @@ async def test_disconnect_closes_runner_and_every_connection_task() -> None:
     await asyncio.wait_for(task, timeout=2.0)
 
     assert runners[0].close_calls == 1
+    assert runners[0].terminal.result().kind is AgentRunnerTerminalKind.OWNER_CLOSED
     assert websocket.closed == [(1_000, "normal")]
     assert connection.binding.closed is True
+    assert not connection._tasks and not connection._aux_tasks  # noqa: SLF001
+
+
+@pytest.mark.integration
+async def test_agent_runtime_terminal_sends_stable_error_then_closes_for_fresh_reopen() -> None:
+    websocket = FakeWebSocket()
+    connection, runners = create_connection(websocket, trigger_frames=1_000)
+    websocket.feed_open()
+    task = asyncio.create_task(connection.run())
+    await websocket.wait_control("session.opened")
+
+    runners[0].fail_runtime()
+    error = await websocket.wait_control("session.error")
+    await asyncio.wait_for(task, timeout=2.0)
+
+    assert error["code"] == "agent_runtime_failed"
+    assert error["retryable"] is True
+    assert error["message"] == "Agent runtime terminated; reconnect required"
+    assert websocket.closed == [(1_011, "runtime_failure")]
+    assert runners[0].close_calls == 1
+    assert not connection._tasks and not connection._aux_tasks  # noqa: SLF001
+
+
+@pytest.mark.integration
+async def test_agent_runtime_terminal_remains_primary_when_error_notification_send_stalls(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    websocket = FakeWebSocket()
+    connection, runners = create_connection(
+        websocket,
+        trigger_frames=1_000,
+        limits=RvaRuntimeLimits(
+            queue_timeout_seconds=0.03,
+            wire_send_timeout_seconds=0.03,
+            close_timeout_seconds=0.1,
+            agent_close_stage_timeout_seconds=0.05,
+        ),
+    )
+    websocket.feed_open()
+    task = asyncio.create_task(connection.run())
+    await websocket.wait_control("session.opened")
+    send_started = asyncio.Event()
+
+    async def stalled_send_text(_payload: str) -> None:
+        send_started.set()
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(websocket, "send_text", stalled_send_text)
+    runners[0].fail_runtime()
+    await asyncio.wait_for(send_started.wait(), timeout=1.0)
+    await asyncio.wait_for(task, timeout=1.0)
+
+    assert websocket.closed == [(1_011, "runtime_failure")]
+    assert runners[0].close_calls == 1
+    assert not connection._tasks and not connection._aux_tasks  # noqa: SLF001
+
+
+@pytest.mark.integration
+async def test_freshness_close_remains_primary_when_error_notification_send_stalls(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    websocket = FakeWebSocket()
+    connection, runners = create_connection(
+        websocket,
+        trigger_frames=1_000,
+        limits=RvaRuntimeLimits(
+            queue_timeout_seconds=0.03,
+            wire_send_timeout_seconds=0.03,
+            close_timeout_seconds=0.1,
+            agent_close_stage_timeout_seconds=0.05,
+        ),
+    )
+    websocket.feed_open()
+    task = asyncio.create_task(connection.run())
+    await websocket.wait_control("session.opened")
+    send_started = asyncio.Event()
+
+    async def stalled_send_text(_payload: str) -> None:
+        send_started.set()
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(websocket, "send_text", stalled_send_text)
+    connection._report_failure(  # noqa: SLF001
+        RvaOverloadedError(
+            "stale media",
+            source="opus_input_stale",
+            qsize=1,
+            capacity=3,
+            media_age_ms=700,
+            dropped_packets=1,
+            fresh_packet_available=True,
+        )
+    )
+    await asyncio.wait_for(send_started.wait(), timeout=1.0)
+    await asyncio.wait_for(task, timeout=1.0)
+
+    assert websocket.closed == [(1_013, "media_overloaded")]
+    assert runners[0].close_calls == 1
+    assert not connection._tasks and not connection._aux_tasks  # noqa: SLF001
 
 
 @pytest.mark.integration
@@ -879,6 +991,56 @@ async def test_input_timeline_rejects_non_cadenced_or_future_timestamp() -> None
         await accumulated_port.receive_audio(InboundAudioPacket(2, 960 * 20, b"accumulated-jump"))
 
 
+@pytest.mark.unit
+@pytest.mark.parametrize("stall_seconds", [0.1, 0.3])
+async def test_subbudget_input_stall_remains_admissible(stall_seconds: float) -> None:
+    clock = MutableMonotonicClock()
+    connection, _ = create_connection(
+        FakeWebSocket(),
+        limits=RvaRuntimeLimits(uplink_max_age_seconds=0.6),
+        clock=clock,
+    )
+    await connection._audio_port.receive_audio(InboundAudioPacket(0, 0, b"audio"))  # noqa: SLF001
+    queued = connection._audio_port.queue.get_nowait()  # noqa: SLF001
+    assert queued is not None
+    clock.advance(stall_seconds)
+
+    remaining = connection._remaining_uplink_budget(queued)  # noqa: SLF001
+
+    assert remaining == pytest.approx(0.6 - stall_seconds)
+    assert connection._audio_port.queue.empty()  # noqa: SLF001
+
+
+@pytest.mark.unit
+async def test_isolated_stale_head_is_dropped_to_fresh_live_edge_before_runner() -> None:
+    websocket = FakeWebSocket()
+    clock = MutableMonotonicClock()
+    connection, _ = create_connection(
+        websocket,
+        limits=RvaRuntimeLimits(input_queue_packets=3, uplink_max_age_seconds=0.6),
+        clock=clock,
+    )
+    port = connection._audio_port  # noqa: SLF001
+    await port.receive_audio(InboundAudioPacket(0, 0, b"stale"))
+    clock.advance(0.5)
+    await port.receive_audio(InboundAudioPacket(1, 960, b"fresh"))
+    clock.advance(0.11)
+    runner = FakeRunner(connection._emit_segment, connection._request_response_end, trigger_frames=1_000)  # noqa: SLF001
+    connection._runner = runner  # noqa: SLF001
+    connection._codec = ScriptedDecodeCodec([True])  # type: ignore[assignment]  # noqa: SLF001
+
+    with pytest.raises(RvaOverloadedError) as captured:
+        await connection._input_loop()  # noqa: SLF001
+
+    assert captured.value.source == "opus_input_stale"
+    assert captured.value.dropped_packets == 1
+    assert captured.value.fresh_packet_available is True
+    assert runner.pushes == 0
+    live_edge = port.queue.get_nowait()
+    assert live_edge is not None and live_edge.packet.sequence == 1
+    assert port.queue.empty()
+
+
 @pytest.mark.integration
 async def test_input_media_timeline_age_fails_closed_before_stale_audio_reaches_runner(
     caplog: pytest.LogCaptureFixture,
@@ -923,12 +1085,17 @@ async def test_input_media_timeline_age_fails_closed_before_stale_audio_reaches_
 
     with caplog.at_level("INFO"):
         runners[0].release.set()
+        error = await websocket.wait_control("session.error")
         await asyncio.wait_for(task, timeout=1.0)
 
     assert runners[0].pushes == 1
+    assert error["code"] == "media_overloaded"
+    assert error["retryable"] is True
     assert websocket.closed == [(1_013, "media_overloaded")]
-    assert "overload_source=opus_input_stale" in caplog.text
+    assert "overload_source=opus_input_backpressure" in caplog.text
     assert "overload_media_age_ms=700" in caplog.text
+    assert "overload_dropped_packets=2" in caplog.text
+    assert "overload_fresh_packet_available=false" in caplog.text
 
 
 @pytest.mark.integration

@@ -622,22 +622,28 @@ async def test_standalone_funasr_recognize_rejects_non_mono_audio() -> None:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "response",
+    ("response", "reason"),
     [
-        {"type": "final", "text": ""},
-        {"type": "final", "text": "   "},
-        {
-            "type": "error",
-            "code": "invalid_audio",
-            "error": "FunASR returned empty text",
-        },
+        ({"type": "error", "code": "no_speech", "error": "private provider detail"}, "no_speech"),
+        ({"type": "final", "text": ""}, "empty_final"),
+        ({"type": "final", "text": "   "}, "empty_final"),
+        (
+            {
+                "type": "error",
+                "code": "invalid_audio",
+                "error": "FunASR returned empty text",
+            },
+            "legacy_empty_result",
+        ),
     ],
 )
 async def test_standalone_funasr_recognize_accepts_provider_empty_result_without_retry(
     monkeypatch: pytest.MonkeyPatch,
     response: dict[str, str],
+    reason: str,
 ) -> None:
     socket = FakeWebSocket()
+    sink = InMemoryTraceSink()
     monkeypatch.setattr(
         funasr_stt,
         "_open_websocket",
@@ -648,7 +654,8 @@ async def test_standalone_funasr_recognize_accepts_provider_empty_result_without
             url="ws://standalone-funasr.test/v1/asr/stream",
             protocol=FunASRProtocol.STANDALONE,
             timeout_seconds=1.0,
-        )
+        ),
+        tracer=Tracer(TraceContext(trace_id="trace-no-result"), sink),
     )
     frame = rtc.AudioFrame(data=b"a" * 1920, sample_rate=16000, num_channels=1, samples_per_channel=960)
     await socket.incoming.put(json.dumps(response))
@@ -656,6 +663,49 @@ async def test_standalone_funasr_recognize_accepts_provider_empty_result_without
     event = await adapter.recognize(frame, conn_options=APIConnectOptions(max_retry=0))
 
     assert event.alternatives[0].text == ""
+    no_result = [event for event in sink.events if event.name == "asr_no_result"]
+    assert len(no_result) == 1
+    assert no_result[0].fields["reason"] == reason
+    assert "error" not in no_result[0].fields
+    assert socket.closed is True
+
+
+@pytest.mark.asyncio
+async def test_standalone_funasr_legacy_empty_result_requires_exact_detail(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    socket = FakeWebSocket()
+    opened = 0
+
+    async def factory(_url: str, _timeout: float) -> FakeWebSocket:
+        nonlocal opened
+        opened += 1
+        return socket
+
+    monkeypatch.setattr(funasr_stt, "_open_websocket", factory)
+    adapter = FunASRSTT(
+        FunASRStreamConfig(
+            url="ws://standalone-funasr.test/v1/asr/stream",
+            protocol=FunASRProtocol.STANDALONE,
+        )
+    )
+    frame = rtc.AudioFrame(data=b"a" * 1920, sample_rate=16000, num_channels=1, samples_per_channel=960)
+    await socket.incoming.put(
+        json.dumps(
+            {
+                "type": "error",
+                "code": "invalid_audio",
+                "error": "FunASR returned empty text.",
+            }
+        )
+    )
+
+    with pytest.raises(ProviderError) as error:
+        await adapter.recognize(frame, conn_options=APIConnectOptions(max_retry=3, retry_interval=0.0))
+
+    assert error.value.retryable is False
+    assert "FunASR returned empty text" not in str(error.value)
+    assert opened == 1
     assert socket.closed is True
 
 
@@ -692,7 +742,8 @@ async def test_standalone_funasr_recognize_classifies_provider_error_and_closes(
         json.dumps({"type": "error", "code": code, "error": "private provider detail"})
     )
 
-    with pytest.raises(APIConnectionError) as error:
+    expected_error = APIConnectionError if expected_retryable else ProviderError
+    with pytest.raises(expected_error) as error:
         await adapter.recognize(frame, conn_options=APIConnectOptions(max_retry=0))
 
     assert error.value.retryable is expected_retryable
@@ -725,13 +776,119 @@ async def test_standalone_funasr_rejects_non_string_error_code_without_retry_or_
         json.dumps({"type": "error", "code": ["invalid_start"], "error": "private provider detail"})
     )
 
-    with pytest.raises(APIConnectionError) as error:
+    with pytest.raises(ProviderError) as error:
         await adapter.recognize(frame, conn_options=APIConnectOptions(max_retry=0))
 
     assert error.value.retryable is False
     assert "unknown" in str(error.value)
     assert "private provider detail" not in str(error.value)
     assert socket.closed is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "message",
+    [
+        "{private malformed provider body",
+        json.dumps(["private provider body"]),
+        json.dumps({"private": "provider body"}),
+        json.dumps({"type": "final", "text": {"private": "provider body"}}),
+        b"private binary provider body",
+    ],
+)
+async def test_standalone_funasr_malformed_event_is_fatal_without_framework_retry(
+    monkeypatch: pytest.MonkeyPatch,
+    message: str | bytes,
+) -> None:
+    sockets = [FakeWebSocket() for _ in range(3)]
+    opened = 0
+
+    async def factory(_url: str, _timeout: float) -> FakeWebSocket:
+        nonlocal opened
+        socket = sockets[opened]
+        opened += 1
+        return socket
+
+    monkeypatch.setattr(funasr_stt, "_open_websocket", factory)
+    adapter = FunASRSTT(
+        FunASRStreamConfig(
+            url="ws://standalone-funasr.test/v1/asr/stream",
+            protocol=FunASRProtocol.STANDALONE,
+        )
+    )
+    frame = rtc.AudioFrame(data=b"a" * 1920, sample_rate=16000, num_channels=1, samples_per_channel=960)
+    await sockets[0].incoming.put(message)
+
+    with pytest.raises(ProviderError) as error:
+        await adapter.recognize(frame, conn_options=APIConnectOptions(max_retry=2, retry_interval=0.0))
+
+    assert error.value.retryable is False
+    assert "malformed" in str(error.value)
+    assert "private" not in str(error.value)
+    assert opened == 1
+    assert sockets[0].closed is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", [TimeoutError("private timeout detail"), OSError("private connection detail")])
+async def test_standalone_funasr_transport_failure_uses_only_livekit_bounded_retry(
+    monkeypatch: pytest.MonkeyPatch,
+    failure: BaseException,
+) -> None:
+    opened = 0
+
+    async def factory(_url: str, _timeout: float) -> FakeWebSocket:
+        nonlocal opened
+        opened += 1
+        raise failure
+
+    monkeypatch.setattr(funasr_stt, "_open_websocket", factory)
+    adapter = FunASRSTT(
+        FunASRStreamConfig(
+            url="ws://standalone-funasr.test/v1/asr/stream",
+            protocol=FunASRProtocol.STANDALONE,
+        )
+    )
+    frame = rtc.AudioFrame(data=b"a" * 1920, sample_rate=16000, num_channels=1, samples_per_channel=960)
+
+    with pytest.raises(APIConnectionError) as error:
+        await adapter.recognize(frame, conn_options=APIConnectOptions(max_retry=1, retry_interval=0.0))
+
+    assert "private" not in str(error.value)
+    assert opened == 2
+
+
+@pytest.mark.asyncio
+async def test_standalone_funasr_busy_uses_only_livekit_bounded_retry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sockets = [FakeWebSocket(), FakeWebSocket()]
+    opened = 0
+
+    async def factory(_url: str, _timeout: float) -> FakeWebSocket:
+        nonlocal opened
+        socket = sockets[opened]
+        opened += 1
+        await socket.incoming.put(
+            json.dumps({"type": "error", "code": "busy", "error": "private provider detail"})
+        )
+        return socket
+
+    monkeypatch.setattr(funasr_stt, "_open_websocket", factory)
+    adapter = FunASRSTT(
+        FunASRStreamConfig(
+            url="ws://standalone-funasr.test/v1/asr/stream",
+            protocol=FunASRProtocol.STANDALONE,
+        )
+    )
+    frame = rtc.AudioFrame(data=b"a" * 1920, sample_rate=16000, num_channels=1, samples_per_channel=960)
+
+    with pytest.raises(APIConnectionError) as error:
+        await adapter.recognize(frame, conn_options=APIConnectOptions(max_retry=1, retry_interval=0.0))
+
+    assert "private provider detail" not in str(error.value)
+    assert opened == 2
+    assert all(socket.closed for socket in sockets)
 
 
 @pytest.mark.asyncio
@@ -793,6 +950,50 @@ async def test_livekit_funasr_stream_retries_after_provider_disconnect(
         assert len(instances) == 2
     finally:
         keep_second_stream_open.set()
+        await stream.aclose()
+
+
+@pytest.mark.asyncio
+async def test_livekit_funasr_stream_does_not_retry_fatal_provider_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    instances: list[object] = []
+
+    class FatalStream:
+        def __init__(self, *_args: object, **_kwargs: object) -> None:
+            instances.append(self)
+
+        async def start(self) -> None:
+            pass
+
+        def push_audio(self, _pcm_s16le: bytes) -> None:
+            pass
+
+        async def flush(self) -> None:
+            pass
+
+        async def aclose(self) -> None:
+            pass
+
+        async def events(self):  # type: ignore[no-untyped-def]
+            raise ProviderError("funasr", "standalone ASR rejected the stream (invalid_audio)", retryable=False)
+            yield
+
+    monkeypatch.setattr(funasr_stt, "StandaloneFunASRStream", FatalStream)
+    adapter = FunASRSTT(
+        FunASRStreamConfig(
+            url="ws://standalone-funasr.test/v1/asr/stream",
+            protocol=FunASRProtocol.STANDALONE,
+        )
+    )
+    stream = adapter.stream(conn_options=APIConnectOptions(max_retry=3, retry_interval=0.0))
+    try:
+        with pytest.raises(ProviderError) as error:
+            await anext(stream)
+
+        assert error.value.retryable is False
+        assert len(instances) == 1
+    finally:
         await stream.aclose()
 
 

@@ -14,7 +14,13 @@ from typing import Literal, Protocol
 from fastapi import WebSocket
 from starlette.websockets import WebSocketDisconnect
 
-from realtime_worker.agent import AgentOutputSegment, AgentRunner, RoomlessAudioInputOverloadedError
+from realtime_worker.agent import (
+    AgentOutputSegment,
+    AgentRunner,
+    AgentRunnerTerminalKind,
+    AgentRunnerTerminatedError,
+    RoomlessAudioInputOverloadedError,
+)
 from realtime_worker.interruption import InterruptionContext, InterruptionCoordinator, LayeredInterruptionPolicy
 from realtime_worker.transport.udp_gateway import (
     UdpGrantExpiredError,
@@ -59,12 +65,16 @@ class RvaOverloadedError(RvaRuntimeError):
         qsize: int,
         capacity: int,
         media_age_ms: int = -1,
+        dropped_packets: int = 0,
+        fresh_packet_available: bool | None = None,
     ) -> None:
         super().__init__(message)
         self.source = source
         self.qsize = qsize
         self.capacity = capacity
         self.media_age_ms = media_age_ms
+        self.dropped_packets = dropped_packets
+        self.fresh_packet_available = fresh_packet_available
 
 
 class RvaHandshakeTimeoutError(RvaRuntimeError):
@@ -80,6 +90,10 @@ class RvaMediaSendTimeoutError(RvaRuntimeError):
 
 
 class RvaRuntimeStartTimeoutError(RvaRuntimeError):
+    pass
+
+
+class RvaAgentRuntimeFailedError(RvaRuntimeError):
     pass
 
 
@@ -142,14 +156,22 @@ class _QueuedAudio:
     deadline_at: float
 
 
+@dataclass(frozen=True, slots=True)
+class _FreshnessDrop:
+    source: Literal["opus_input_stale", "opus_input_backpressure"]
+    dropped_packets: int
+    live_edge: _QueuedAudio | None
+    backlog_qsize: int
+
+
 class _AudioQueuePort(AudioInputPort):
     def __init__(self, owner: RvaWssConnection, capacity: int) -> None:
         self._owner = owner
         self.queue: asyncio.Queue[_QueuedAudio | None] = asyncio.Queue(capacity)
         self._closed = False
         self._closed_event = asyncio.Event()
-        self._timeline_timestamp: int | None = None
-        self._timeline_started_at = 0.0
+        self._consumer_timeline_timestamp: int | None = None
+        self._consumer_timeline_started_at = 0.0
         self._last_timestamp: int | None = None
         self._last_received_at = 0.0
 
@@ -157,9 +179,9 @@ class _AudioQueuePort(AudioInputPort):
         if self._closed:
             raise RvaRuntimeError("audio input is closed")
         received_at = self._owner._clock()  # noqa: SLF001
-        if self._timeline_timestamp is None:
-            self._timeline_timestamp = packet.timestamp
-            self._timeline_started_at = received_at
+        if self._consumer_timeline_timestamp is None:
+            self._consumer_timeline_timestamp = packet.timestamp
+            self._consumer_timeline_started_at = received_at
         if self._last_timestamp is not None:
             timestamp_delta = (packet.timestamp - self._last_timestamp) & 0xFFFFFFFF
             arrival_delta = max(0.0, received_at - self._last_received_at)
@@ -172,8 +194,8 @@ class _AudioQueuePort(AudioInputPort):
                 raise RvaBindingError("invalid_media_timestamp")
         self._last_timestamp = packet.timestamp
         self._last_received_at = received_at
-        timestamp_delta = (packet.timestamp - self._timeline_timestamp) & 0xFFFFFFFF
-        expected_at = self._timeline_started_at + timestamp_delta / SAMPLE_RATE
+        timestamp_delta = (packet.timestamp - self._consumer_timeline_timestamp) & 0xFFFFFFFF
+        expected_at = self._consumer_timeline_started_at + timestamp_delta / SAMPLE_RATE
         max_age = self._owner._limits.uplink_max_age_seconds  # noqa: SLF001
         if expected_at > received_at + max_age:
             raise RvaBindingError("invalid_media_timestamp")
@@ -211,16 +233,61 @@ class _AudioQueuePort(AudioInputPort):
                 await asyncio.gather(put_task, close_task, return_exceptions=True)
 
     def mark_consumed(self, queued: _QueuedAudio) -> None:
-        if self._timeline_timestamp is None:
+        if self._consumer_timeline_timestamp is None:
             return
-        timestamp_delta = (queued.packet.timestamp - self._timeline_timestamp) & 0xFFFFFFFF
+        timestamp_delta = (queued.packet.timestamp - self._consumer_timeline_timestamp) & 0xFFFFFFFF
         media_elapsed = timestamp_delta / SAMPLE_RATE
         if media_elapsed >= _TIMELINE_REANCHOR_SECONDS:
             phase_error = queued.received_at - queued.expected_at
             max_correction = media_elapsed * _TIMELINE_MAX_SKEW_RATIO
             correction = max(-max_correction, min(max_correction, phase_error))
-            self._timeline_timestamp = queued.packet.timestamp
-            self._timeline_started_at = queued.expected_at + correction
+            self._consumer_timeline_timestamp = queued.packet.timestamp
+            self._consumer_timeline_started_at = queued.expected_at + correction
+
+    def drop_stale_to_live_edge(self, current: _QueuedAudio, *, now: float) -> _FreshnessDrop:
+        backlog_qsize = self.queue.qsize()
+        pending: list[_QueuedAudio] = []
+        closed_sentinel = False
+        while True:
+            try:
+                item = self.queue.get_nowait()
+            except asyncio.QueueEmpty:
+                break
+            if item is None:
+                closed_sentinel = True
+                break
+            pending.append(item)
+
+        candidates = [current, *pending]
+        fresh = [item for item in candidates if item.deadline_at > now]
+        live_edge = fresh[-1] if fresh and not closed_sentinel else None
+        stale_count = sum(item.deadline_at <= now for item in candidates)
+        isolated_stale = (
+            stale_count == 1
+            and live_edge is not None
+            and backlog_qsize < self.queue.maxsize
+        )
+        source: Literal["opus_input_stale", "opus_input_backpressure"] = (
+            "opus_input_stale" if isolated_stale else "opus_input_backpressure"
+        )
+        if live_edge is not None:
+            live_edge = _QueuedAudio(
+                packet=live_edge.packet,
+                received_at=live_edge.received_at,
+                expected_at=live_edge.received_at,
+                deadline_at=live_edge.received_at + self._owner._limits.uplink_max_age_seconds,  # noqa: SLF001
+            )
+            self._consumer_timeline_timestamp = live_edge.packet.timestamp
+            self._consumer_timeline_started_at = live_edge.received_at
+            self.queue.put_nowait(live_edge)
+        if closed_sentinel:
+            self.queue.put_nowait(None)
+        return _FreshnessDrop(
+            source=source,
+            dropped_packets=len(candidates) - (1 if live_edge is not None else 0),
+            live_edge=live_edge,
+            backlog_qsize=backlog_qsize,
+        )
 
     async def close(self) -> None:
         if self._closed:
@@ -362,6 +429,9 @@ class RvaWssConnection:
         self._overload_qsize = -1
         self._overload_capacity = -1
         self._overload_media_age_ms = -1
+        self._overload_dropped_packets = 0
+        self._overload_fresh_packet_available: bool | None = None
+        self._primary_close_cause: tuple[int, str] | None = None
 
     @property
     def binding(self) -> RvaWssBinding:
@@ -417,6 +487,10 @@ class RvaWssConnection:
                     asyncio.create_task(self._input_loop(), name=f"rva-input-{self._binding_id}"),
                     asyncio.create_task(self._segment_loop(), name=f"rva-segments-{self._binding_id}"),
                     asyncio.create_task(self._failure_loop(), name=f"rva-failure-{self._binding_id}"),
+                    asyncio.create_task(
+                        self._runner_terminal_loop(),
+                        name=f"rva-runner-terminal-{self._binding_id}",
+                    ),
                     asyncio.create_task(self._idle_loop(), name=f"rva-idle-{self._binding_id}"),
                 }
             )
@@ -447,6 +521,9 @@ class RvaWssConnection:
             close_code, close_reason = 1_011, "media_send_timeout"
         except RvaRuntimeStartTimeoutError:
             close_code, close_reason = 1_011, "runtime_start_timeout"
+        except RvaAgentRuntimeFailedError:
+            logger.warning("rva_agent_runtime_failed session=%s", self._binding_id)
+            close_code, close_reason = 1_011, "runtime_failure"
         except UdpProbeTimeoutError:
             close_code, close_reason = 1_008, "udp_probe_timeout"
         except UdpGrantExpiredError:
@@ -458,7 +535,15 @@ class RvaWssConnection:
             self._overload_qsize = exc.qsize
             self._overload_capacity = exc.capacity
             self._overload_media_age_ms = exc.media_age_ms
+            self._overload_dropped_packets = exc.dropped_packets
+            self._overload_fresh_packet_available = exc.fresh_packet_available
             close_code, close_reason = 1_013, "media_overloaded"
+            if exc.source in {"opus_input_stale", "opus_input_backpressure"}:
+                self._primary_close_cause = (close_code, close_reason)
+                await self._send_session_error_best_effort(
+                    code="media_overloaded",
+                    message="Media freshness budget exceeded; reconnect required",
+                )
         except RvaIdleTimeoutError:
             close_code, close_reason = 1_000, "idle_timeout"
         except RvaMediaDecodeError:
@@ -474,6 +559,8 @@ class RvaWssConnection:
             logger.exception("RVA WSS session failed session=%s", self._binding_id)
             close_code, close_reason = 1_011, "runtime_failure"
         finally:
+            if self._primary_close_cause is not None:
+                close_code, close_reason = self._primary_close_cause
             await self.close(code=close_code, reason=close_reason)
 
     async def close(self, *, code: int = 1_000, reason: str = "normal") -> None:
@@ -485,7 +572,8 @@ class RvaWssConnection:
                 "rva_session_closing session=%s session_epoch=%s close_code=%d close_reason=%s "
                 "selected_media_profile=%s wss_input_packets=%d udp_input_packets=%d "
                 "decoded_pcm_frames=%d invalid_opus_packets=%d runner_push_frames=%d downlink_packets=%d "
-                "overload_source=%s overload_qsize=%d overload_capacity=%d overload_media_age_ms=%d",
+                "overload_source=%s overload_qsize=%d overload_capacity=%d overload_media_age_ms=%d "
+                "overload_dropped_packets=%d overload_fresh_packet_available=%s",
                 self._binding_id,
                 self._binding.session_epoch,
                 code,
@@ -501,6 +589,12 @@ class RvaWssConnection:
                 self._overload_qsize,
                 self._overload_capacity,
                 self._overload_media_age_ms,
+                self._overload_dropped_packets,
+                (
+                    "unknown"
+                    if self._overload_fresh_packet_available is None
+                    else str(self._overload_fresh_packet_available).lower()
+                ),
             )
             self._close_task = asyncio.create_task(self._close_impl(code, reason), name=f"rva-close-{self._binding_id}")
         try:
@@ -641,6 +735,7 @@ class RvaWssConnection:
                         runner.push_audio(frame),
                         timeout=remaining,
                     )
+                    self._remaining_uplink_budget(queued)
                     self._runner_push_frames += 1
                 except TimeoutError as exc:
                     raise self._stale_uplink_error(queued) from exc
@@ -651,6 +746,8 @@ class RvaWssConnection:
                         qsize=exc.qsize,
                         capacity=exc.capacity,
                     ) from exc
+                except AgentRunnerTerminatedError as exc:
+                    raise RvaAgentRuntimeFailedError("agent runner terminated") from exc
                 except BufferError as exc:
                     raise RvaOverloadedError(
                         "agent input is full",
@@ -669,12 +766,15 @@ class RvaWssConnection:
     def _stale_uplink_error(self, queued: _QueuedAudio) -> RvaOverloadedError:
         now = self._clock()
         media_age_seconds = max(0.0, now - queued.received_at, now - queued.expected_at)
+        dropped = self._audio_port.drop_stale_to_live_edge(queued, now=now)
         return RvaOverloadedError(
             "input media exceeded freshness budget",
-            source="opus_input_stale",
-            qsize=self._audio_port.queue.qsize(),
+            source=dropped.source,
+            qsize=dropped.backlog_qsize,
             capacity=self._audio_port.queue.maxsize,
             media_age_ms=round(media_age_seconds * 1_000),
+            dropped_packets=dropped.dropped_packets,
+            fresh_packet_available=dropped.live_edge is not None,
         )
 
     async def _writer_loop(self) -> None:
@@ -690,6 +790,36 @@ class RvaWssConnection:
                 raise RvaControlTimeoutError("control send timed out") from exc
             if item.ack is not None and not item.ack.done():
                 item.ack.set_result(None)
+
+    async def _runner_terminal_loop(self) -> None:
+        runner = self._runner
+        if runner is None:
+            raise RvaRuntimeError("agent runner is unavailable")
+        terminal = await asyncio.shield(runner.terminal)
+        if terminal.kind is AgentRunnerTerminalKind.OWNER_CLOSED:
+            return
+        self._primary_close_cause = (1_011, "runtime_failure")
+        await self._send_session_error_best_effort(
+            code="agent_runtime_failed",
+            message="Agent runtime terminated; reconnect required",
+        )
+        raise RvaAgentRuntimeFailedError("agent runner terminated unexpectedly")
+
+    async def _send_session_error_best_effort(self, *, code: str, message: str) -> None:
+        try:
+            event = self._binding.session_error(
+                code=code,
+                retryable=True,
+                message=message,
+            )
+            await self._send_control_serialized(event)
+        except Exception as exc:
+            logger.warning(
+                "rva_session_error_notification_failed session=%s code=%s error_type=%s",
+                self._binding_id,
+                code,
+                type(exc).__name__,
+            )
 
     async def _segment_loop(self) -> None:
         while True:

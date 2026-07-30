@@ -29,8 +29,8 @@ stateDiagram-v2
 | bootstrap/grant | HTTP client deadline | 不创建 Worker session，退避后重试 |
 | WSS connect/session.open | connect + handshake timeout | close，best-effort release 当前精确 lease，fresh bootstrap |
 | UDP probe | grant `probe_timeout_ms` | close整个 session，fresh bootstrap |
-| Agent startup | session start timeout | close `runtime_failure` |
-| media queue put | 小于可接受 media age | drop/live-edge 或 `media_overloaded` |
+| Agent startup/terminal | session start timeout；unexpected typed terminal | `session.error` best-effort 后 close `1011/runtime_failure` |
+| media queue/freshness | 小于可接受 media age | 丢弃 stale backlog 到 live edge；当前 close `1013/media_overloaded` 后 fresh reopen |
 | provider request | provider-specific deadline | cancel/close，禁止无界等待 |
 | drain/teardown | process shutdown deadline | 强制撤销并记录未收敛 owner |
 
@@ -65,6 +65,11 @@ reason 必须稳定且有限。
 错误必须映射到明确 owner、retryability 和 close reason。Retryable 不等于 same-session 恢复；除纯 bootstrap
 重试外，媒体/Agent 失败均 fresh session。
 
+LiveKit `AgentSession` unexpected terminal 映射为 `session.error(runtime_failure)`（best-effort）和
+`1011/runtime_failure`。Owner 发起的正常 close 不得误报为 runtime failure。Terminal 发布必须 exactly-once；一旦发布，
+audio input admission 立即失效，已经阻塞和后续的 input push 均快速返回稳定错误，不能等 queue 填满后再归因为
+`media_overloaded`。
+
 ## 5. Freshness fences
 
 - `session_epoch/fencing_token` 防止跨 Worker/route 的旧 owner。
@@ -73,6 +78,12 @@ reason 必须稳定且有限。
 - Server-owned playback `generation + fence_generation` 防止 stop 后旧 TTS 恢复；uplink generation 固定 0。
 
 四层 fence 各自解决不同生命周期，不得互相替代。
+
+Uplink 超过 freshness budget 时，Server 丢弃 stale ingress 到当时 live edge，并重锚 timestamp，只用于阻止旧语音
+继续送入 ASR 和形成可诊断的 isolated-stale/backpressure 指标。当前没有经过 public API 证明的同
+`AgentSession` reset；因此 Server 发送 `session.error(media_overloaded)` 后以 `1013/media_overloaded` 关闭，Endpoint
+重新 bootstrap。这里的 retryable 表示 fresh session，而不是旧 session 内恢复。Close 通知超时不得把 primary cause
+改写成 notification timeout。
 
 ## 6. Reconnect policy
 
