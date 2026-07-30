@@ -32,6 +32,31 @@ jobs:
       - run: uv run --directory server ruff check .
       - run: uv run --directory server pytest
 
+  desktop-reference:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - run: uv sync --directory clients/desktop_reference --locked --extra test
+      - run: uv run --directory clients/desktop_reference ruff check src tests
+      - run: uv run --directory clients/desktop_reference pytest -m "not e2e_host"
+
+  desktop-reference-host-e2e:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - run: uv sync --directory server --locked --all-packages --dev
+      - run: uv sync --directory clients/desktop_reference --locked --extra test
+      - name: Run deterministic Director/Worker WSS and UDP E2E
+        run: >-
+          uv run --directory clients/desktop_reference pytest
+          tests/e2e/test_deterministic_host.py -m e2e_host
+
   redis-integration:
     runs-on: ubuntu-latest
     services:

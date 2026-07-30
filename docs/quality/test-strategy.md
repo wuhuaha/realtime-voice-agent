@@ -1,7 +1,7 @@
 # 测试策略
 
 状态：accepted
-更新日期：2026-07-23
+更新日期：2026-07-30
 
 ## 1. 证据词汇
 
@@ -56,9 +56,14 @@
 
 ### Host E2E
 
-- 独立进程 Director、Worker、Redis 和 reference client。
-- WSS 与 UDP 分 profile，包含 restart、drain、overload、wrong route 和 fresh bootstrap。
-- 使用固定 PCM/Opus，不双发真实用户麦克风。
+- 独立进程 Director、Worker 和 Python Desktop Reference Client；需要多实例语义时另启 Redis。
+- 默认确定性测试逐 profile 覆盖 bootstrap、single-use grant、session.open、transcript、response、下行媒体、
+  playback.started/ended、close；WSS 与 UDP 分开断言 sequence、timestamp、generation 和认证边界。
+- 使用内存生成的固定 PCM 和锁定的 Opus adapter，不提交音频 fixture，不访问真实 provider 或声卡。
+- restart、drain、overload、wrong route 和 fresh bootstrap 属于扩展 host 场景，不得因单轮 happy path 通过而隐含声称。
+- `interactive` 麦克风/扬声器只作为显式 host smoke；其结果记录设备、采样率、backend 和环境，默认 CI 不运行。
+- SoundDevice 的 render fact 只证明 PortAudio 时钟已跨过报告的 output-latency 预计边界；未做真实 DAC/声学采集时，
+  不得升级为 physical/acoustic verified。
 
 ### Real provider
 

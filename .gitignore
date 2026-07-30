@@ -18,6 +18,7 @@ htmlcov/
 .em_skill.json
 .playwright-cli/
 .local-test/
+artifacts/
 external/
 build/
 build-*/

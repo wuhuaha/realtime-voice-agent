@@ -1,7 +1,7 @@
 # 系统架构
 
 状态：accepted target architecture
-更新日期：2026-07-23
+更新日期：2026-07-30
 
 ## 1. 架构目标
 
@@ -10,7 +10,7 @@ endpoint；未来浏览器、手机或其他 MCU 应通过新的 binding/profile
 
 ```mermaid
 flowchart LR
-    E["ESP32 / future endpoints"] -->|"HTTPS bootstrap"| D["Session Director"]
+    E["ESP32 / Desktop reference / future endpoints"] -->|"HTTPS bootstrap"| D["Session Director"]
     D <--> R["Redis coordination store"]
     W1["Realtime Worker A"] -->|"heartbeat / drain"| D
     W2["Realtime Worker B"] -->|"heartbeat / drain"| D
@@ -50,6 +50,17 @@ flowchart LR
 - 连接池、模型资源和 concurrency bulkhead 尽量进程级复用；stream、请求、取消和 conversation 保持 session 级隔离。
 - Provider 失败映射为有界 close/retry policy，不允许旧 generation 输出恢复进入播放。
 
+### Desktop Reference Endpoint
+
+- `clients/desktop_reference` 是 Product 内的 Python RVA reference endpoint，不是第二套协议实现来源。
+- `headless` 使用固定 PCM source 与 recording/null sink，验证 Director bootstrap、WSS/UDP、control、media、
+  generation/fence、fresh reopen 和 playback facts，不访问真实声卡或 provider。
+- `interactive` 在同一 session/transport 核心上组合 `sounddevice` 麦克风与扬声器，只作为显式 host smoke 和桌面体验。
+- interactive playback fact 使用 PortAudio clock 与报告的 output latency 形成 host 预计 render boundary；该边界不等于
+  已测量的 DAC/扬声器输出，也不能替代声学验证。
+- PyAV/libopus 与 PortAudio 是可选 host 依赖；ESP32、Server 和默认无声卡测试不依赖它们。
+- Desktop endpoint 不实现 Xiaozhi wire、MQTT、MCP、OTA、activation、IoT 或视觉能力，也不 vendoring PyXiaozhi。
+
 ## 3. 核心不变量
 
 1. 一个 `tenant_id/device_id/session_epoch` 最多一个 active Worker owner。
@@ -66,7 +77,7 @@ flowchart LR
 
 ```mermaid
 sequenceDiagram
-    participant E as Endpoint
+    participant E as ESP32/Desktop Endpoint
     participant D as Director
     participant S as Shared Store
     participant W as Worker
@@ -124,6 +135,9 @@ Agent runtime 和 providers。当前验证等级与未运行项只在 Release re
 Native ESP-IDF endpoint 已完成 board/audio/config/WSS/UI/UDP 组件化实现，composition 的完整性由 build、
 host test 与 HIL 分层验证。当前实现、构建和发布差距只在
 [Release readiness](../quality/release-readiness.md) 维护，架构文档不记录临时环境或 artifact 编年史。
+
+Python Desktop Reference Client 已提供与 native endpoint 相同的 RVA v2 session/transport 语义。它用于把协议与
+服务端问题从板级资源、声学环境和 UI 中隔离出来；host 通过不能替代 ESP32 HIL 或 acoustic verification。
 
 ## 8. 演进边界
 

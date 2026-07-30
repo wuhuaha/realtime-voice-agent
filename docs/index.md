@@ -12,6 +12,7 @@
 - [Firmware 架构](architecture/firmware.md)
 - [Native ESP-IDF 与 RVA 决策](decisions/0005-native-esp-idf-endpoint-and-rva-protocol.md)
 - [服务端打断裁决与 RVA v2 决策](decisions/0006-server-authoritative-interruption-and-rva-v2.md)
+- [Python Desktop Reference Client 决策](decisions/0007-python-desktop-reference-client.md)
 
 ## 协议与开发
 

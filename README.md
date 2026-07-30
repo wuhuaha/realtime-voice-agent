@@ -12,6 +12,7 @@
 - Director 提供 Worker registry、capacity、route lease、fencing 和单次 connect grant。
 - Worker 统一拥有 active session、Opus、Agent runtime、playback generation 和有界 teardown。
 - Native ESP-IDF endpoint 将 board、audio/AFE、transport、config 和可选 LVGL UI 分离为独立组件。
+- Python Desktop Reference Client 复用同一 RVA wire，提供确定性 headless E2E 和显式启用的本机声卡体验入口。
 - Server 是语音打断的唯一裁决者；Endpoint 只执行带 `response_id + generation` 的播放 fence 并上报物理播放事实。
 - `VOICE_WORKER_MAX_SESSIONS=5` 是可配置启动值，不代表容量 SLO。
 
@@ -24,6 +25,7 @@
 protocol/       canonical control/media contracts and fixtures
 server/         session_director, realtime_worker, shared contracts and tests
 firmware/       native application and reusable endpoint components
+clients/        protocol reference endpoints and deterministic host E2E clients
 docs/           product, architecture, protocol, security, quality and operations
 tests/          repository and cross-endpoint contract gates
 migration/      compatibility evidence and rollback provenance
