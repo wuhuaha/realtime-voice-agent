@@ -8,7 +8,7 @@ import math
 import struct
 import uuid
 from collections import deque
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Coroutine
 from dataclasses import dataclass
 from enum import StrEnum
 from functools import lru_cache
@@ -21,7 +21,7 @@ from livekit.plugins import silero
 
 from .audio import PCM_SAMPLE_RATE, PCM_SAMPLES, PcmFrame
 from .config import Settings
-from .lifecycle import run_with_hard_deadline
+from .lifecycle import retain_shutdown_task
 from .observability.events import (
     BoundedJsonLogTraceSink,
     TraceContext,
@@ -34,6 +34,11 @@ from .providers.tts_factory import create_tts
 from .vad import ResettingVAD
 
 logger = logging.getLogger(__name__)
+
+
+def _consume_task_result(task: asyncio.Future[None]) -> None:
+    if not task.cancelled():
+        task.exception()
 
 
 @dataclass(frozen=True, slots=True)
@@ -307,6 +312,7 @@ class RoomlessAudioOutput(io.AudioOutput):
         self._tasks: set[asyncio.Task[None]] = set()
         self._segment_rejected = False
         self._closed = False
+        self._close_task: asyncio.Task[None] | None = None
 
     async def capture_frame(self, frame: rtc.AudioFrame) -> None:
         if self._closed:
@@ -396,7 +402,12 @@ class RoomlessAudioOutput(io.AudioOutput):
     async def wait_for_playout(self) -> io.PlaybackFinishedEvent:
         producer_epoch = self._producer_epoch
         if self._tasks:
-            await asyncio.gather(*tuple(self._tasks))
+            try:
+                await asyncio.gather(*tuple(self._tasks))
+            except asyncio.CancelledError:
+                current = asyncio.current_task()
+                if not self._closed or (current is not None and current.cancelling()):
+                    raise
         self._response_end(producer_epoch)
         result = await super().wait_for_playout()
         if self._producer_epoch == producer_epoch:
@@ -430,14 +441,39 @@ class RoomlessAudioOutput(io.AudioOutput):
 
     async def close(self) -> None:
         self._closed = True
+        if self._close_task is None:
+            self._close_task = asyncio.create_task(
+                self._close_once(),
+                name="roomless-audio-output-close",
+            )
+            self._close_task.add_done_callback(_consume_task_result)
+        try:
+            await asyncio.shield(self._close_task)
+        except asyncio.CancelledError:
+            current = asyncio.current_task()
+            if current is not None and current.cancelling():
+                retain_shutdown_task(
+                    self._close_task,
+                    task_name="roomless-audio-output-close",
+                    cancel_requested=False,
+                )
+            raise
+
+    async def _close_once(self) -> None:
+        self._closed = True
         self._frames.clear()
         self._pending_pcm.clear()
         self._reset_callback_diagnostics()
         self._frames_epoch = None
         self._segment_rejected = False
         if self._tasks:
-            await asyncio.gather(*self._tasks, return_exceptions=True)
+            tasks = tuple(self._tasks)
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
             self._tasks.clear()
+        while self._pending_playback_count > 0:
+            self.on_playback_finished(playback_position=0.0, interrupted=True)
 
     def _reset_callback_diagnostics(self) -> None:
         self._callback_sizes.clear()
@@ -593,6 +629,8 @@ class LiveKitAgentRunner:
         self._response_gate = _PlaybackResponseGate()
         self._terminal_state = _TerminalState()
         self._owner_closing = False
+        self._close_owner_task: asyncio.Task[None] | None = None
+        self._close_result: asyncio.Future[None] | None = None
 
     @property
     def terminal(self) -> asyncio.Future[AgentRunnerTerminal]:
@@ -693,6 +731,41 @@ class LiveKitAgentRunner:
         return self._output.advance_producer_epoch()
 
     async def close(self) -> None:
+        if self._close_owner_task is None:
+            self._close_result = asyncio.get_running_loop().create_future()
+            self._close_result.add_done_callback(_consume_task_result)
+            self._close_owner_task = asyncio.create_task(
+                self._close_once(),
+                name="livekit-agent-runner-close",
+            )
+            self._close_owner_task.add_done_callback(self._close_owner_done)
+        assert self._close_result is not None
+        try:
+            await asyncio.shield(self._close_result)
+        except asyncio.CancelledError:
+            current = asyncio.current_task()
+            if current is not None and current.cancelling():
+                retain_shutdown_task(
+                    self._close_owner_task,
+                    task_name="livekit-agent-runner-close",
+                    cancel_requested=False,
+                )
+            raise
+
+    def _close_owner_done(self, task: asyncio.Task[None]) -> None:
+        exception: BaseException | None
+        if task.cancelled():
+            exception = asyncio.CancelledError()
+        else:
+            exception = task.exception()
+        if self._close_result is None or self._close_result.done():
+            return
+        if exception is not None:
+            self._close_result.set_exception(exception)
+        else:
+            self._close_result.set_result(None)
+
+    async def _close_once(self) -> None:
         self._owner_closing = True
         self._terminal_state.publish(AgentRunnerTerminal(AgentRunnerTerminalKind.OWNER_CLOSED))
         self._response_gate.reset()
@@ -702,46 +775,71 @@ class LiveKitAgentRunner:
         except BaseException as exc:
             failures.append(exc)
 
+        await self._close_stage(
+            self._output.close(),
+            task_name="livekit-agent-output-close",
+            timeout_error=TimeoutError("LiveKit output close timed out"),
+            failures=failures,
+        )
+
         session, self._session = self._session, None
         if session is not None:
-            try:
-                closed = await run_with_hard_deadline(
-                    session.aclose(),
-                    timeout=self._settings.agent_close_stage_timeout_seconds,
-                    task_name="livekit-agent-session-close",
-                )
-                if not closed.completed:
-                    failures.append(TimeoutError("LiveKit AgentSession close timed out"))
-            except BaseException as exc:
-                failures.append(exc)
-
-        try:
-            closed = await run_with_hard_deadline(
-                self._output.close(),
-                timeout=self._settings.agent_close_stage_timeout_seconds,
-                task_name="livekit-agent-output-close",
+            await self._close_stage(
+                session.aclose(),
+                task_name="livekit-agent-session-close",
+                timeout_error=TimeoutError("LiveKit AgentSession close timed out"),
+                failures=failures,
             )
-            if not closed.completed:
-                failures.append(TimeoutError("LiveKit output close timed out"))
-        except BaseException as exc:
-            failures.append(exc)
 
         tts, self._tts = self._tts, None
         closer = getattr(tts, "aclose", None)
         if closer is not None:
-            try:
-                closed = await run_with_hard_deadline(
-                    closer(),
-                    timeout=self._settings.agent_close_stage_timeout_seconds,
-                    task_name="livekit-agent-tts-close",
-                )
-                if not closed.completed:
-                    failures.append(TimeoutError("LiveKit TTS close timed out"))
-            except BaseException as exc:
-                failures.append(exc)
+            await self._close_stage(
+                closer(),
+                task_name="livekit-agent-tts-close",
+                timeout_error=TimeoutError("LiveKit TTS close timed out"),
+                failures=failures,
+            )
+
+        assert self._close_result is not None
+        if not self._close_result.done():
+            if failures:
+                self._close_result.set_exception(failures[0])
+            else:
+                self._close_result.set_result(None)
 
         if failures:
             raise failures[0]
+
+    async def _close_stage(
+        self,
+        operation: Coroutine[object, object, None],
+        *,
+        task_name: str,
+        timeout_error: TimeoutError,
+        failures: list[BaseException],
+    ) -> None:
+        task = asyncio.create_task(operation, name=task_name)
+        done, _ = await asyncio.wait(
+            {task},
+            timeout=self._settings.agent_close_stage_timeout_seconds,
+        )
+        if not done:
+            assert self._close_result is not None
+            if not self._close_result.done():
+                self._close_result.set_exception(failures[0] if failures else timeout_error)
+            owner = asyncio.current_task()
+            assert owner is not None
+            retain_shutdown_task(
+                owner,
+                task_name=task_name,
+                cancel_requested=False,
+            )
+
+        try:
+            await task
+        except BaseException as exc:
+            failures.append(exc)
 
 
 def create_runner(settings: Settings, emit_segment: SegmentSink, response_end: StopSink) -> AgentRunner:

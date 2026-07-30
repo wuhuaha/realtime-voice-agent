@@ -34,12 +34,12 @@ async def test_public_custom_io_tracks_segment_and_physical_completion() -> None
     frame = rtc.AudioFrame(data=b"\x00" * 640, sample_rate=16_000, num_channels=1, samples_per_channel=320)
     await output.capture_frame(frame)
     output.flush()
-    await output.close()
-    assert len(segments) == 1 and segments[0].producer_epoch == 1 and len(segments[0].frames) == 1
     output.on_playback_started(created_at=1.0)
     output.on_playback_finished(playback_position=0.02, interrupted=False)
     result = await output.wait_for_playout()
+    assert len(segments) == 1 and segments[0].producer_epoch == 1 and len(segments[0].frames) == 1
     assert result.playback_position == 0.02 and not result.interrupted
+    await output.close()
     output.clear_buffer()
     assert stop_calls == [True]
 
@@ -225,6 +225,33 @@ async def test_output_close_discards_an_unflushed_segment() -> None:
     output.flush()
 
     assert segments == []
+
+
+@pytest.mark.asyncio
+async def test_output_close_releases_pending_wait_for_playout() -> None:
+    response_ends = []
+
+    async def emit(_segment):  # noqa: ANN001
+        return None
+
+    output = RoomlessAudioOutput(emit, response_ends.append)
+    frame = rtc.AudioFrame(data=b"\x00" * 640, sample_rate=16_000, num_channels=1, samples_per_channel=320)
+    await output.capture_frame(frame)
+    output.flush()
+
+    waiter = asyncio.create_task(
+        output.wait_for_playout(),
+        name="RoomlessAudioOutput.wait_for_playout",
+    )
+    await asyncio.sleep(0)
+    assert not waiter.done()
+
+    await output.close()
+    result = await asyncio.wait_for(waiter, timeout=0.1)
+
+    assert result.interrupted
+    assert response_ends == [1]
+    assert not any(task.get_name() == "RoomlessAudioOutput.wait_for_playout" for task in asyncio.all_tasks())
 
 
 def test_output_segment_limit_is_configured_in_seconds_and_converted_to_pcm_frames() -> None:

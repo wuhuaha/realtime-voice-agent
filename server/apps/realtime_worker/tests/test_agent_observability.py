@@ -441,22 +441,25 @@ async def test_livekit_runner_close_releases_output_and_tts_after_session_failur
     with pytest.raises(failure_type):
         await runner.close()
 
-    assert events == ["session", "output", "tts"]
+    assert events == ["output", "session", "tts"]
     assert runner._session is None and runner._tts is None  # noqa: SLF001
 
 
 @pytest.mark.asyncio
-async def test_livekit_runner_hard_deadline_continues_after_non_cooperative_session() -> None:
+async def test_livekit_runner_timeout_retains_session_before_closing_tts() -> None:
     release = asyncio.Event()
     events: list[str] = []
+    session_cancellations = 0
     baseline = detached_shutdown_task_count()
 
     class NonCooperativeSession:
         async def aclose(self) -> None:
+            nonlocal session_cancellations
             while not release.is_set():
                 try:
                     await release.wait()
                 except asyncio.CancelledError:
+                    session_cancellations += 1
                     continue
 
     class FakeOutput:
@@ -486,11 +489,102 @@ async def test_livekit_runner_hard_deadline_continues_after_non_cooperative_sess
     with pytest.raises(TimeoutError, match="AgentSession close timed out"):
         await runner.close()
 
-    assert events == ["output", "tts"]
+    assert events == ["output"]
+    assert session_cancellations == 0
     assert detached_shutdown_task_count() == baseline + 1
     release.set()
     for _ in range(20):
-        if detached_shutdown_task_count() == baseline:
+        if detached_shutdown_task_count() == baseline and events == ["output", "tts"]:
             break
         await asyncio.sleep(0)
+    assert events == ["output", "tts"]
+    assert detached_shutdown_task_count() == baseline
+
+
+@pytest.mark.asyncio
+async def test_livekit_runner_concurrent_close_uses_one_resource_owner() -> None:
+    session_started = asyncio.Event()
+    release_session = asyncio.Event()
+    events: list[str] = []
+
+    class BlockingSession:
+        async def aclose(self) -> None:
+            events.append("session")
+            session_started.set()
+            await release_session.wait()
+
+    class FakeOutput:
+        async def close(self) -> None:
+            events.append("output")
+
+    class FakeTTS:
+        async def aclose(self) -> None:
+            events.append("tts")
+
+    async def emit_segment(_frames: object) -> None:
+        return None
+
+    runner = LiveKitAgentRunner(
+        Settings(runner="livekit", deepseek_api_key="test-key"),
+        emit_segment,
+        lambda _epoch: None,
+    )
+    runner._session = BlockingSession()  # type: ignore[assignment]  # noqa: SLF001
+    runner._output = FakeOutput()  # type: ignore[assignment]  # noqa: SLF001
+    runner._tts = FakeTTS()  # noqa: SLF001
+
+    first_close = asyncio.create_task(runner.close())
+    await asyncio.wait_for(session_started.wait(), timeout=0.1)
+    second_close = asyncio.create_task(runner.close())
+    await asyncio.sleep(0)
+    release_session.set()
+    await asyncio.gather(first_close, second_close)
+
+    assert events == ["output", "session", "tts"]
+
+
+@pytest.mark.asyncio
+async def test_livekit_runner_close_owner_survives_caller_cancellation() -> None:
+    output_started = asyncio.Event()
+    release_output = asyncio.Event()
+    events: list[str] = []
+    baseline = detached_shutdown_task_count()
+
+    class FakeSession:
+        async def aclose(self) -> None:
+            events.append("session")
+
+    class BlockingOutput:
+        async def close(self) -> None:
+            events.append("output")
+            output_started.set()
+            await release_output.wait()
+
+    class FakeTTS:
+        async def aclose(self) -> None:
+            events.append("tts")
+
+    async def emit_segment(_frames: object) -> None:
+        return None
+
+    runner = LiveKitAgentRunner(
+        Settings(runner="livekit", deepseek_api_key="test-key"),
+        emit_segment,
+        lambda _epoch: None,
+    )
+    runner._session = FakeSession()  # type: ignore[assignment]  # noqa: SLF001
+    runner._output = BlockingOutput()  # type: ignore[assignment]  # noqa: SLF001
+    runner._tts = FakeTTS()  # noqa: SLF001
+
+    cancelled_caller = asyncio.create_task(runner.close())
+    await asyncio.wait_for(output_started.wait(), timeout=0.1)
+    cancelled_caller.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await cancelled_caller
+    assert detached_shutdown_task_count() == baseline + 1
+
+    release_output.set()
+    await asyncio.wait_for(runner.close(), timeout=0.1)
+
+    assert events == ["output", "session", "tts"]
     assert detached_shutdown_task_count() == baseline

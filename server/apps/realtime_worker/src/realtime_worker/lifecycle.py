@@ -57,17 +57,41 @@ async def cancel_and_reap[ResultT](
             task.exception()
         return True
 
+    retain_shutdown_task(task, task_name=task_name, cancel_requested=True)
+    return False
+
+
+def retain_shutdown_task[ResultT](
+    task: asyncio.Task[ResultT],
+    *,
+    task_name: str,
+    cancel_requested: bool,
+) -> None:
+    """Keep unfinished shutdown work strongly referenced and consume its result."""
+
     detached = task
+    if detached in _DETACHED_TASKS:
+        return
     _DETACHED_TASKS.add(detached)  # type: ignore[arg-type]
-    logger.critical("detached non-cooperative shutdown task task=%s", task_name)
+    logger.critical(
+        "detached unfinished shutdown task task=%s cancel_requested=%s",
+        task_name,
+        cancel_requested,
+    )
 
     def consume(completed: asyncio.Task[ResultT]) -> None:
         _DETACHED_TASKS.discard(completed)  # type: ignore[arg-type]
-        if not completed.cancelled():
-            completed.exception()
+        if completed.cancelled():
+            return
+        exception = completed.exception()
+        if exception is not None:
+            logger.error(
+                "detached shutdown task failed task=%s error_type=%s",
+                task_name,
+                type(exception).__name__,
+            )
 
     detached.add_done_callback(consume)
-    return False
 
 
 def detached_shutdown_task_count() -> int:
@@ -78,5 +102,6 @@ __all__ = [
     "HardDeadlineResult",
     "cancel_and_reap",
     "detached_shutdown_task_count",
+    "retain_shutdown_task",
     "run_with_hard_deadline",
 ]

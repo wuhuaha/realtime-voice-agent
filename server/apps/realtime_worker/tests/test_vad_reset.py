@@ -112,3 +112,89 @@ async def test_vad_defers_idle_reset_while_speaking_and_resets_after_end() -> No
     await asyncio.sleep(0)
     assert inner.flush_count == 1
     await stream.aclose()
+
+
+@pytest.mark.asyncio
+async def test_vad_close_survives_caller_cancellation_and_reuses_one_close_owner() -> None:
+    class BlockingVADStream(FakeVADStream):
+        def __init__(self) -> None:
+            super().__init__()
+            self.close_started = asyncio.Event()
+            self.release_close = asyncio.Event()
+            self.close_calls = 0
+            self.close_finished = False
+
+        async def aclose(self) -> None:
+            self.close_calls += 1
+            self.close_started.set()
+            await self.release_close.wait()
+            self.close_finished = True
+            await super().aclose()
+
+    class BlockingVAD(FakeVAD):
+        def stream(self) -> BlockingVADStream:
+            stream = BlockingVADStream()
+            self.last_stream = stream
+            return stream
+
+    delegate = BlockingVAD()
+    stream = ResettingVAD(  # type: ignore[arg-type]
+        delegate,
+        idle_reset_seconds=30.0,
+    ).stream()
+    inner = delegate.last_stream
+    assert isinstance(inner, BlockingVADStream)
+
+    first_close = asyncio.create_task(stream.aclose())
+    await asyncio.wait_for(inner.close_started.wait(), timeout=0.1)
+    first_close.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await first_close
+
+    second_close = asyncio.create_task(stream.aclose())
+    await asyncio.sleep(0)
+    assert not second_close.done()
+
+    inner.release_close.set()
+    await asyncio.wait_for(second_close, timeout=0.1)
+
+    assert inner.close_calls == 1
+    assert inner.close_finished
+    assert not any(task.get_name() == "vad-reset-input" for task in asyncio.all_tasks())
+
+
+@pytest.mark.asyncio
+async def test_vad_concurrent_close_serializes_non_reentrant_generator_close() -> None:
+    class NonReentrantCloseProbe:
+        def __init__(self) -> None:
+            self.started = asyncio.Event()
+            self.release = asyncio.Event()
+            self.calls = 0
+            self.running = False
+
+        async def aclose(self) -> None:
+            if self.running:
+                raise RuntimeError("aclose(): asynchronous generator is already running")
+            self.running = True
+            self.calls += 1
+            self.started.set()
+            await self.release.wait()
+            self.running = False
+
+    delegate = FakeVAD()
+    stream = ResettingVAD(  # type: ignore[arg-type]
+        delegate,
+        idle_reset_seconds=30.0,
+    ).stream()
+    close_probe = NonReentrantCloseProbe()
+    stream._tee_aiter = close_probe  # type: ignore[attr-defined]  # noqa: SLF001
+
+    first_close = asyncio.create_task(stream.aclose())
+    await asyncio.wait_for(close_probe.started.wait(), timeout=0.1)
+    second_close = asyncio.create_task(stream.aclose())
+    await asyncio.sleep(0)
+
+    assert not second_close.done()
+    close_probe.release.set()
+    await asyncio.gather(first_close, second_close)
+    assert close_probe.calls == 1

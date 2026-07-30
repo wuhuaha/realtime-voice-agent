@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import time
 from collections.abc import Callable
 
 from livekit.agents import vad as vad_api
+
+from .lifecycle import retain_shutdown_task
 
 
 class ResettingVAD(vad_api.VAD):
@@ -59,7 +60,27 @@ class _ResettingVADStream(vad_api.VADStream):
         self._last_reset_at = clock()
         self._speaking = False
         self._reset_pending = False
+        self._close_task: asyncio.Task[None] | None = None
         super().__init__(vad)
+
+    async def aclose(self) -> None:
+        if self._close_task is None:
+            self._close_task = asyncio.create_task(
+                super().aclose(),
+                name="vad-reset-close",
+            )
+            self._close_task.add_done_callback(_consume_task_result)
+        try:
+            await asyncio.shield(self._close_task)
+        except asyncio.CancelledError:
+            current = asyncio.current_task()
+            if current is not None and current.cancelling():
+                retain_shutdown_task(
+                    self._close_task,
+                    task_name="vad-reset-close",
+                    cancel_requested=False,
+                )
+            raise
 
     async def _main_task(self) -> None:
         forward_task = asyncio.create_task(self._forward_input(), name="vad-reset-input")
@@ -73,8 +94,7 @@ class _ResettingVADStream(vad_api.VADStream):
                 self._event_ch.send_nowait(event)
         finally:
             forward_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await forward_task
+            await asyncio.gather(forward_task, return_exceptions=True)
             await self._delegate.aclose()
 
     async def _forward_input(self) -> None:
@@ -95,3 +115,8 @@ class _ResettingVADStream(vad_api.VADStream):
         self._delegate.flush()
         self._last_reset_at = self._clock()
         self._reset_pending = False
+
+
+def _consume_task_result(task: asyncio.Task[None]) -> None:
+    if not task.cancelled():
+        task.exception()
