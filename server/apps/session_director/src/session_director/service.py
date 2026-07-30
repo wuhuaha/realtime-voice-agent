@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import secrets
 import time
 import uuid
@@ -19,6 +20,8 @@ from voice_contracts import (
 )
 
 from .store import CoordinationStorePort, WorkerCapacityError
+
+logger = logging.getLogger(__name__)
 
 
 class NoCapacityError(RuntimeError):
@@ -50,9 +53,11 @@ class DirectorService:
     async def heartbeat(self, heartbeat: WorkerHeartbeat) -> WorkerHeartbeatResponse:
         now = self._clock()
         snapshot = await self._store.heartbeat(heartbeat, expires_at=now + self._heartbeat_ttl_seconds)
+        release_matches = 0
         for release in heartbeat.released_leases:
-            await self._store.release_route_claim(heartbeat.worker_id, release)
+            release_matches += int(await self._store.release_route_claim(heartbeat.worker_id, release))
         rejected: list[str] = []
+        renewal_matches = 0
         for renewal in heartbeat.active_leases:
             accepted = await self._store.renew_route(
                 heartbeat.worker_id,
@@ -62,6 +67,37 @@ class DirectorService:
             )
             if not accepted:
                 rejected.append(renewal.session_epoch)
+            else:
+                renewal_matches += 1
+        if heartbeat.released_leases or heartbeat.active_leases:
+            released_routes = {(item.tenant_id, item.device_id) for item in heartbeat.released_leases}
+            active_routes = {(item.tenant_id, item.device_id) for item in heartbeat.active_leases}
+            released_claims = {
+                (item.tenant_id, item.device_id, item.session_epoch, item.fencing_token)
+                for item in heartbeat.released_leases
+            }
+            active_claims = {
+                (item.tenant_id, item.device_id, item.session_epoch, item.fencing_token)
+                for item in heartbeat.active_leases
+            }
+            if rejected:
+                log = logger.warning
+            elif released_routes.intersection(active_routes):
+                log = logger.info
+            else:
+                log = logger.debug
+            log(
+                "director_lease_heartbeat worker_id=%s release_claims=%d release_matches=%d "
+                "active_claims=%d renewal_matches=%d renewal_rejected=%d route_overlap=%d exact_overlap=%d",
+                heartbeat.worker_id,
+                len(heartbeat.released_leases),
+                release_matches,
+                len(heartbeat.active_leases),
+                renewal_matches,
+                len(rejected),
+                len(released_routes.intersection(active_routes)),
+                len(released_claims.intersection(active_claims)),
+            )
         return WorkerHeartbeatResponse(
             draining=snapshot.draining,
             heartbeat_expires_at=snapshot.heartbeat_expires_at,

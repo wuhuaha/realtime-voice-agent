@@ -3,6 +3,7 @@
 #include <cassert>
 #include <cstring>
 
+#include "transport_udp/endpoint_diagnostics.h"
 #include "transport_udp/udp_session.h"
 
 namespace rva::udp {
@@ -124,6 +125,19 @@ size_t Downlink(FakeAead& crypto, const SessionGrant& grant, wire::DatagramType 
 }  // namespace
 
 int main() {
+    char endpoint_address[40]{};
+    assert(FormatEndpointAddressForLog(Server(), endpoint_address, sizeof(endpoint_address)));
+    assert(std::strcmp(endpoint_address, "192.0.2.x") == 0);
+    Endpoint ipv6{.address = {}, .address_bytes = 16, .port = 9000};
+    ipv6.address[0] = 0x20;
+    ipv6.address[1] = 0x01;
+    ipv6.address[2] = 0x0d;
+    ipv6.address[3] = 0xb8;
+    ipv6.address[4] = 0xab;
+    ipv6.address[5] = 0xcd;
+    assert(FormatEndpointAddressForLog(ipv6, endpoint_address, sizeof(endpoint_address)));
+    assert(std::strcmp(endpoint_address, "2001:0db8:abcd::/48") == 0);
+
     Endpoint malformed = Server();
     malformed.address_bytes = 255;
     assert(!(malformed == Server()));

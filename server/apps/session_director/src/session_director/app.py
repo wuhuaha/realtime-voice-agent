@@ -106,6 +106,10 @@ def create_app(
         except NoCapacityError as exc:
             raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="no_capacity") from exc
         except LeaseConflictError as exc:
+            logger.info(
+                "director_bootstrap_conflict reason=route_already_leased device_ref=%s",
+                _device_ref(request.tenant_id, request.device_id, settings),
+            )
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="route_already_leased") from exc
 
     @app.post("/v1/session/release", response_model=RouteReleaseResponse)
@@ -115,7 +119,15 @@ def create_app(
     ) -> RouteReleaseResponse:
         if not _device_matches(authorization, request, settings):
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid_credentials")
-        await service().release(request)
+        released = await service().release(request)
+        logger.info(
+            "director_route_release worker_id=%s device_ref=%s session_epoch=%s fencing_token=%d matched=%s",
+            request.worker_id,
+            _device_ref(request.tenant_id, request.device_id, settings),
+            request.session_epoch,
+            request.fencing_token,
+            str(released).lower(),
+        )
         # A stale or repeated release is intentionally indistinguishable from a successful release.
         return RouteReleaseResponse()
 

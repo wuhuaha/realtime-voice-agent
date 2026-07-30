@@ -13,7 +13,8 @@ public:
     ~UdpSocketPort() override;
 
     bool Open(const std::string& host, uint16_t port, udp::Endpoint* endpoint);
-    int Send(const udp::Endpoint& destination, const uint8_t* data, size_t size) override;
+    udp::DatagramSendOutcome Send(
+        const udp::Endpoint& destination, const uint8_t* data, size_t size) override;
     bool Receive(uint8_t* data, size_t capacity, size_t* size,
                  udp::Endpoint* source, uint32_t timeout_ms) override;
     void Interrupt() override;
@@ -21,6 +22,8 @@ public:
 
 private:
     std::atomic<int> socket_{-1};
+    uint32_t generation_ = 0;
+    uint16_t local_source_port_ = 0;
 };
 
 }  // namespace rva::runtime

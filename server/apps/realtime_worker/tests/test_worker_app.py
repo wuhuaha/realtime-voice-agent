@@ -669,20 +669,90 @@ async def test_rva_registry_does_not_drop_release_claims_above_heartbeat_batch_s
 
 
 @pytest.mark.asyncio
-async def test_heartbeat_enforces_local_deadline_before_unavailable_director() -> None:
-    checked: list[float] = []
+async def test_successful_heartbeat_renews_lease_at_local_deadline_without_closing() -> None:
+    registry = RvaSessionRegistry(settings(), SharedSessionAdmission(5))
+    closed: list[tuple[int, str]] = []
 
-    class FakeRegistry:
-        async def revoke_expired_leases(self, now: float) -> None:
-            checked.append(now)
+    class FakeConnection:
+        async def close(self, *, code: int, reason: str) -> None:
+            closed.append((code, reason))
 
-        def pending_lease_releases(self) -> tuple[LeaseRenewal, ...]:
-            return ()
+        async def wait_closed(self) -> None:
+            return None
 
-        def active_lease_renewals(self) -> tuple[LeaseRenewal, ...]:
-            return ()
+    auth = AuthContext(
+        tenant_id="tenant-1",
+        device_id="device-1",
+        session_epoch="epoch-1",
+        fencing_token=1,
+        expires_at=100.0,
+    )
+    registry._connections[("tenant-1", "device-1")] = (FakeConnection(), auth)  # type: ignore[assignment]  # noqa: SLF001
+    registry._lease_deadlines["epoch-1"] = 100.0  # noqa: SLF001
+
+    def renewed(request: httpx.Request) -> httpx.Response:
+        payload = json.loads(request.read())
+        assert payload["active_leases"] == [
+            {
+                "tenant_id": "tenant-1",
+                "device_id": "device-1",
+                "session_epoch": "epoch-1",
+                "fencing_token": 1,
+            }
+        ]
+        return httpx.Response(
+            200,
+            json={
+                "accepted": True,
+                "draining": False,
+                "heartbeat_expires_at": 115.0,
+                "lease_expires_at": 130.0,
+                "rejected_session_epochs": [],
+            },
+        )
+
+    clock = MutableClock(100.0)
+    worker_settings = settings(director_url="http://director.test", heartbeat_enabled=True)
+    async with httpx.AsyncClient(transport=httpx.MockTransport(renewed)) as client:
+        heartbeat = WorkerHeartbeatLoop(
+            worker_settings,
+            SharedSessionAdmission(5),
+            registry,
+            client=client,
+            clock=clock,
+        )
+        await heartbeat.send_once()
+
+    assert closed == []
+    assert registry._lease_deadlines == {"epoch-1": 130.0}  # noqa: SLF001
+
+
+@pytest.mark.asyncio
+async def test_failed_heartbeat_enforces_local_deadline_after_renewal_attempt() -> None:
+    registry = RvaSessionRegistry(settings(), SharedSessionAdmission(5))
+    events: list[str] = []
+    closed: list[tuple[int, str]] = []
+
+    class FakeConnection:
+        async def close(self, *, code: int, reason: str) -> None:
+            events.append("close")
+            closed.append((code, reason))
+
+        async def wait_closed(self) -> None:
+            return None
+
+    auth = AuthContext(
+        tenant_id="tenant-1",
+        device_id="device-1",
+        session_epoch="epoch-1",
+        fencing_token=1,
+        expires_at=100.0,
+    )
+    registry._connections[("tenant-1", "device-1")] = (FakeConnection(), auth)  # type: ignore[assignment]  # noqa: SLF001
+    registry._lease_deadlines["epoch-1"] = 100.0  # noqa: SLF001
 
     def unavailable(_request: httpx.Request) -> httpx.Response:
+        events.append("renew")
         raise httpx.ConnectError("director unavailable")
 
     clock = MutableClock(200.0)
@@ -691,13 +761,57 @@ async def test_heartbeat_enforces_local_deadline_before_unavailable_director() -
         heartbeat = WorkerHeartbeatLoop(
             worker_settings,
             SharedSessionAdmission(5),
-            FakeRegistry(),  # type: ignore[arg-type]
+            registry,
             client=client,
             clock=clock,
         )
         with pytest.raises(httpx.ConnectError):
             await heartbeat.send_once()
-    assert checked == [200.0]
+    assert events == ["renew", "close"]
+    assert closed == [(1008, "stale_route_lease")]
+
+
+@pytest.mark.asyncio
+async def test_malformed_success_heartbeat_expires_locally_without_acknowledging_releases() -> None:
+    release = LeaseRenewal(
+        tenant_id="tenant-1",
+        device_id="device-1",
+        session_epoch="epoch-1",
+        fencing_token=1,
+    )
+    events: list[str] = []
+
+    class FakeRegistry:
+        def pending_lease_releases(self) -> tuple[LeaseRenewal, ...]:
+            return (release,)
+
+        def active_lease_renewals(self) -> tuple[LeaseRenewal, ...]:
+            return ()
+
+        def acknowledge_lease_releases(self, _releases: tuple[LeaseRenewal, ...]) -> None:
+            events.append("acknowledge")
+
+        async def revoke_expired_leases(self, now: float) -> None:
+            assert now == 200.0
+            events.append("expire")
+
+    def malformed(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"accepted": True, "draining": False})
+
+    clock = MutableClock(200.0)
+    worker_settings = settings(director_url="http://director.test", heartbeat_enabled=True)
+    async with httpx.AsyncClient(transport=httpx.MockTransport(malformed)) as client:
+        heartbeat = WorkerHeartbeatLoop(
+            worker_settings,
+            SharedSessionAdmission(5),
+            FakeRegistry(),  # type: ignore[arg-type]
+            client=client,
+            clock=clock,
+        )
+        with pytest.raises(ValueError):
+            await heartbeat.send_once()
+
+    assert events == ["expire"]
 
 
 @pytest.mark.asyncio

@@ -8,6 +8,8 @@
 #include <esp_timer.h>
 #include <freertos/idf_additions.h>
 
+#include "transport_udp/endpoint_diagnostics.h"
+
 namespace rva::udp {
 namespace {
 
@@ -79,7 +81,7 @@ bool UdpRuntime::SendProbe() {
     std::array<uint8_t, wire::kMaxDatagramBytes> datagram{};
     size_t size = 0;
     return session_.BuildProbe(datagram.data(), datagram.size(), &size) &&
-           SendDatagram(datagram.data(), size);
+           SendDatagram(datagram.data(), size, true);
 }
 
 bool UdpRuntime::SendKeepalive() {
@@ -88,7 +90,7 @@ bool UdpRuntime::SendKeepalive() {
     size_t size = 0;
     if (stop_requested_.load()) return false;
     return session_.BuildKeepalive(datagram.data(), datagram.size(), &size) &&
-           SendDatagram(datagram.data(), size);
+           SendDatagram(datagram.data(), size, false);
 }
 
 bool UdpRuntime::SendAudio(
@@ -99,7 +101,7 @@ bool UdpRuntime::SendAudio(
     if (stop_requested_.load()) return false;
     return session_.BuildAudio(opus, opus_size, timestamp,
                                datagram.data(), datagram.size(), &size) &&
-           SendDatagram(datagram.data(), size);
+           SendDatagram(datagram.data(), size, false);
 }
 
 bool UdpRuntime::FenceGeneration(uint32_t generation) {
@@ -182,9 +184,25 @@ void UdpRuntime::Run() {
     xEventGroupSetBits(events_, kExited);
 }
 
-bool UdpRuntime::SendDatagram(const uint8_t* data, size_t size) {
-    const int sent = io_.Send(session_.server(), data, size);
-    return sent == static_cast<int>(size);
+bool UdpRuntime::SendDatagram(
+    const uint8_t* data, size_t size, bool log_probe_outcome) {
+    const DatagramSendOutcome outcome = io_.Send(session_.server(), data, size);
+    const bool sent = outcome.sent_bytes == static_cast<int>(size);
+    if (log_probe_outcome) {
+        char peer_address[40]{};
+        const bool peer_valid = FormatEndpointAddressForLog(
+            session_.server(), peer_address, sizeof(peer_address));
+        ESP_LOGI(kLogTag,
+                 "udp_probe_send peer_address=%s peer_port=%u local_source_port=%u "
+                 "socket_generation=%lu requested_bytes=%u sent_bytes=%d send_errno=%d outcome=%s",
+                 peer_valid ? peer_address : "invalid",
+                 static_cast<unsigned>(session_.server().port),
+                 static_cast<unsigned>(outcome.local_source_port),
+                 static_cast<unsigned long>(outcome.socket_generation),
+                 static_cast<unsigned>(size), outcome.sent_bytes, outcome.error_code,
+                 sent ? "sent" : "failed");
+    }
+    return sent;
 }
 
 }  // namespace rva::udp

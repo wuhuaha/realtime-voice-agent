@@ -15,10 +15,18 @@
 
 namespace rva::udp {
 
+struct DatagramSendOutcome final {
+    int sent_bytes = -1;
+    int error_code = 0;
+    uint32_t socket_generation = 0;
+    uint16_t local_source_port = 0;
+};
+
 class DatagramIoPort {
 public:
     virtual ~DatagramIoPort() = default;
-    virtual int Send(const Endpoint& destination, const uint8_t* data, size_t size) = 0;
+    virtual DatagramSendOutcome Send(
+        const Endpoint& destination, const uint8_t* data, size_t size) = 0;
     virtual bool Receive(uint8_t* data, size_t capacity, size_t* size,
                          Endpoint* source, uint32_t timeout_ms) = 0;
     virtual void Interrupt() = 0;
@@ -64,7 +72,7 @@ private:
     static constexpr EventBits_t kExited = BIT0;
     static void TaskEntry(void* context);
     void Run();
-    bool SendDatagram(const uint8_t* data, size_t size);
+    bool SendDatagram(const uint8_t* data, size_t size, bool log_probe_outcome);
 
     UdpSession& session_;
     DatagramIoPort& io_;

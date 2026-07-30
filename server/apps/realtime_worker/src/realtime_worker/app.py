@@ -4,6 +4,7 @@ import asyncio
 import contextlib
 import hmac
 import logging
+import math
 import secrets
 import ssl
 import time
@@ -16,7 +17,7 @@ from urllib.parse import urlsplit
 import httpx
 from fastapi import FastAPI, Header, HTTPException, WebSocket, status
 from fastapi.responses import JSONResponse
-from voice_contracts import BindingAdvertisement, LeaseRenewal, WorkerHeartbeat
+from voice_contracts import BindingAdvertisement, LeaseRenewal, WorkerHeartbeat, WorkerHeartbeatResponse
 
 from .admission import SharedSessionAdmission
 from .agent import create_runner
@@ -413,8 +414,6 @@ class WorkerHeartbeatLoop:
             await self._client.aclose()
 
     async def send_once(self) -> None:
-        if self._registry is not None:
-            await self._registry.revoke_expired_leases(self._clock())
         udp_ready = self._udp_gateway is not None and self._udp_gateway.is_ready
         udp_required = self._settings.rva_udp_enabled
         udp_unavailable = udp_required and not udp_ready
@@ -448,21 +447,40 @@ class WorkerHeartbeatLoop:
             active_leases=self._registry.active_lease_renewals() if self._registry is not None else (),
             released_leases=pending_releases,
         )
-        response = await self._client.post(
-            f"{self._settings.director_url.rstrip('/')}/internal/v1/workers/heartbeat",
-            headers={"X-Internal-Token": self._settings.internal_token.get_secret_value()},
-            json=payload.model_dump(mode="json"),
-        )
-        response.raise_for_status()
-        body = response.json()
+        try:
+            response = await self._client.post(
+                f"{self._settings.director_url.rstrip('/')}/internal/v1/workers/heartbeat",
+                headers={"X-Internal-Token": self._settings.internal_token.get_secret_value()},
+                json=payload.model_dump(mode="json"),
+            )
+            response.raise_for_status()
+            heartbeat_response = WorkerHeartbeatResponse.model_validate(response.json())
+            if (
+                not heartbeat_response.accepted
+                or not math.isfinite(heartbeat_response.heartbeat_expires_at)
+                or not math.isfinite(heartbeat_response.lease_expires_at)
+            ):
+                raise ValueError("Director returned an invalid lease renewal response")
+        except Exception:
+            if self._registry is not None:
+                await self._registry.revoke_expired_leases(self._clock())
+            raise
         if self._registry is not None:
             self._registry.acknowledge_lease_releases(pending_releases)
-        if bool(body.get("draining", False)):
+        if heartbeat_response.draining:
             self._admission.set_draining(True)
         if self._registry is not None:
-            rejected = {str(value) for value in body.get("rejected_session_epochs", [])}
-            lease_expires_at = float(body["lease_expires_at"])
+            rejected = set(heartbeat_response.rejected_session_epochs)
+            lease_expires_at = heartbeat_response.lease_expires_at
             self._registry.extend_lease_deadlines(lease_expires_at, rejected)
+            if rejected:
+                logger.warning(
+                    "worker_lease_renewal_rejected worker_id=%s active_claims=%d released_claims=%d rejected=%d",
+                    self._settings.worker_id,
+                    len(payload.active_leases),
+                    len(payload.released_leases),
+                    len(rejected),
+                )
             await self._registry.revoke_session_epochs(rejected)
         self.last_success = True
 

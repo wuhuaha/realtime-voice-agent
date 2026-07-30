@@ -1,11 +1,17 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import time
 
 import pytest
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
-from realtime_worker.transport.udp_gateway import UdpGrant, UdpGrantExpiredError, UdpMediaSession
+from realtime_worker.transport.udp_gateway import (
+    UdpGrant,
+    UdpGrantExpiredError,
+    UdpMediaGateway,
+    UdpMediaSession,
+)
 from realtime_worker.transport.udp_wire import (
     UDP_FLAG_AUDIO,
     UDP_FLAG_PROBE,
@@ -73,7 +79,8 @@ async def test_expiry_reports_planned_grant_expiration() -> None:
 
 
 @pytest.mark.asyncio
-async def test_probe_ack_uses_zero_generation_required_by_v2_wire() -> None:
+async def test_probe_ack_uses_zero_generation_required_by_v2_wire(caplog: pytest.LogCaptureFixture) -> None:
+    caplog.set_level(logging.INFO, logger="realtime_worker.transport.udp_gateway")
     gateway = FakeGateway()
     grant = UdpGrant(
         media_id=bytes.fromhex("0102030405060708"),
@@ -130,6 +137,17 @@ async def test_probe_ack_uses_zero_generation_required_by_v2_wire() -> None:
         assert ack.timestamp == 0
         assert ack.generation == 0
         assert payload == b""
+        assert session.stats.received == 1
+        assert session.stats.media_identity_matched == 1
+        assert session.stats.authentication_attempted == 1
+        assert session.stats.authenticated == 1
+        assert session.stats.source_pinned == 1
+        assert session.stats.probe_ack_sent == 1
+        assert "datagram_arrived=1" in caplog.text
+        assert "media_identity_matched=1" in caplog.text
+        assert "authentication_attempted=1" in caplog.text
+        assert "source_pinned=1" in caplog.text
+        assert "probe_ack_sent=1" in caplog.text
 
         # The endpoint retransmits the exact sequence-zero probe when the first
         # ACK is lost. Before audio starts, this authenticated replay is
@@ -158,6 +176,7 @@ async def test_probe_ack_uses_zero_generation_required_by_v2_wire() -> None:
         assert retry_datagram == datagram
         assert session.stats.authenticated == 2
         assert session.stats.replayed == 2
+        assert session.stats.probe_ack_sent == 2
 
         downlink_sequence = await session.send_audio(b"\xf8", timestamp=960, generation=1)
         assert downlink_sequence == 1
@@ -214,3 +233,38 @@ async def test_probe_ack_uses_zero_generation_required_by_v2_wire() -> None:
         assert received_audio == [(audio_payload, 960, 0), (reordered_payload, 1920, 0)]
     finally:
         await session.close()
+
+
+def test_gateway_rate_limits_unknown_datagram_aggregate_without_peer_or_media_id(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    gateway = UdpMediaGateway(
+        bind_host="127.0.0.1",
+        bind_port=8093,
+        advertised_host="voice.example.test",
+        lifetime_seconds=60,
+        probe_timeout_seconds=0.5,
+        queue_size=2,
+        reorder_wait_seconds=0.01,
+    )
+    protocol = object()
+    gateway._protocol = protocol  # type: ignore[assignment]  # noqa: SLF001
+    gateway._transport_generation = 1  # noqa: SLF001
+    peer = ("203.0.113.9", 45678)
+    unknown_media_id = bytes.fromhex("0102030405060708")
+    unknown = bytes(4) + unknown_media_id + bytes(UDP_HEADER_BYTES - 12)
+    caplog.set_level(logging.INFO, logger="realtime_worker.transport.udp_gateway")
+
+    gateway.route_datagram(protocol, 1, b"short", peer)  # type: ignore[arg-type]
+    for _ in range(3):
+        gateway.route_datagram(protocol, 1, unknown, peer)  # type: ignore[arg-type]
+
+    assert gateway.stats.datagram_arrived == 4
+    assert gateway.stats.undersized == 1
+    assert gateway.stats.media_identity_unknown == 3
+    assert gateway.stats.media_identity_matched == 0
+    aggregate_logs = [record.message for record in caplog.records if "udp_gateway_unknown_datagrams" in record.message]
+    assert len(aggregate_logs) == 1
+    assert "transport_generation=1" in aggregate_logs[0]
+    assert "203.0.113.9" not in caplog.text
+    assert unknown_media_id.hex() not in caplog.text

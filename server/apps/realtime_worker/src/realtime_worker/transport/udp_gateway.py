@@ -35,6 +35,7 @@ AudioReceiver = Callable[[bytes, int, int], Awaitable[None]]
 FailureReceiver = Callable[[BaseException], None]
 _PROBE_RETRY_INTERVAL_SECONDS = 0.25
 _PROBE_RETRY_INTERVAL_MS = 250
+_UNKNOWN_DATAGRAM_LOG_INTERVAL_SECONDS = 5.0
 
 
 class UdpMediaError(RuntimeError):
@@ -84,7 +85,11 @@ class UdpGrant:
 @dataclass(slots=True)
 class UdpMediaStats:
     received: int = 0
+    media_identity_matched: int = 0
+    authentication_attempted: int = 0
     authenticated: int = 0
+    source_pinned: int = 0
+    probe_ack_sent: int = 0
     invalid: int = 0
     replayed: int = 0
     wrong_source: int = 0
@@ -92,6 +97,14 @@ class UdpMediaStats:
     sent: int = 0
     lost: int = 0
     reordered: int = 0
+
+
+@dataclass(slots=True)
+class UdpGatewayStats:
+    datagram_arrived: int = 0
+    undersized: int = 0
+    media_identity_matched: int = 0
+    media_identity_unknown: int = 0
 
 
 class _GatewayProtocol(asyncio.DatagramProtocol):
@@ -157,6 +170,7 @@ class UdpMediaSession:
         if self._closed:
             return
         self.stats.received += 1
+        self.stats.media_identity_matched += 1
         try:
             self._queue.put_nowait((data, addr))
         except asyncio.QueueFull:
@@ -175,12 +189,17 @@ class UdpMediaSession:
         except TimeoutError as exc:
             logger.warning(
                 "udp_wait_ready_failed reason=udp_probe_timeout media_id=%s media_epoch=%d timeout_ms=%d "
-                "received=%d authenticated=%d invalid=%d replayed=%d wrong_source=%d queue_dropped=%d",
+                "datagram_arrived=%d media_identity_matched=%d authentication_attempted=%d authenticated=%d "
+                "source_pinned=%d probe_ack_sent=%d invalid=%d replayed=%d wrong_source=%d queue_dropped=%d",
                 self.grant.media_id.hex(),
                 self.grant.media_epoch,
                 int(timeout * 1000),
                 self.stats.received,
+                self.stats.media_identity_matched,
+                self.stats.authentication_attempted,
                 self.stats.authenticated,
+                self.stats.source_pinned,
+                self.stats.probe_ack_sent,
                 self.stats.invalid,
                 self.stats.replayed,
                 self.stats.wrong_source,
@@ -188,11 +207,18 @@ class UdpMediaSession:
             )
             raise UdpProbeTimeoutError("UDP media probe timed out") from exc
         logger.info(
-            "udp_wait_ready_completed media_id=%s media_epoch=%d elapsed_ms=%d authenticated=%d invalid=%d",
+            "udp_wait_ready_completed media_id=%s media_epoch=%d elapsed_ms=%d datagram_arrived=%d "
+            "media_identity_matched=%d authentication_attempted=%d authenticated=%d source_pinned=%d "
+            "probe_ack_sent=%d invalid=%d",
             self.grant.media_id.hex(),
             self.grant.media_epoch,
             int((time.monotonic() - started_at) * 1000),
+            self.stats.received,
+            self.stats.media_identity_matched,
+            self.stats.authentication_attempted,
             self.stats.authenticated,
+            self.stats.source_pinned,
+            self.stats.probe_ack_sent,
             self.stats.invalid,
         )
 
@@ -286,6 +312,7 @@ class UdpMediaSession:
             else:
                 self.stats.replayed += 1
             return
+        self.stats.authentication_attempted += 1
         try:
             payload = self._uplink.decrypt(
                 self.grant.uplink_salt + header.sequence.to_bytes(4, "big"),
@@ -306,6 +333,7 @@ class UdpMediaSession:
                 return
             transport.sendto(self._probe_ack_datagram, self._source)
             self.stats.sent += 1
+            self.stats.probe_ack_sent += 1
             self._probe_reack_remaining -= 1
             self._probe_reack_next_at = now_monotonic + _PROBE_RETRY_INTERVAL_SECONDS
             return
@@ -330,7 +358,9 @@ class UdpMediaSession:
                     self.stats.queue_dropped += 1
                     return
             self._replay.commit(header.sequence)
-            self._source = addr
+            if self._source is None:
+                self._source = addr
+                self.stats.source_pinned += 1
             await self._send(UDP_FLAG_PROBE_ACK, b"", timestamp=0, generation=0)
             if expected is None:
                 self._next_audio_sequence = header.sequence
@@ -470,6 +500,8 @@ class UdpMediaSession:
         transport.sendto(datagram, source)
         if flags == UDP_FLAG_PROBE_ACK and self._probe_ack_datagram is None:
             self._probe_ack_datagram = datagram
+        if flags == UDP_FLAG_PROBE_ACK:
+            self.stats.probe_ack_sent += 1
         self.stats.sent += 1
         return sequence
 
@@ -501,6 +533,9 @@ class UdpMediaGateway:
         self._protocol: _GatewayProtocol | None = None
         self._transport_generation = 0
         self._sessions: dict[bytes, UdpMediaSession] = {}
+        self.stats = UdpGatewayStats()
+        self._unknown_datagrams_since_log = 0
+        self._unknown_datagram_last_log_at: float | None = None
         self._failure: BaseException | None = None
         self._closing = False
 
@@ -601,12 +636,40 @@ class UdpMediaGateway:
     ) -> None:
         if not self._is_current_transport(protocol, generation):
             return
+        self.stats.datagram_arrived += 1
         if len(data) < UDP_HEADER_BYTES:
+            self.stats.undersized += 1
+            self._log_unknown_datagrams_if_due(generation)
             return
         media_id = data[4:12]
         session = self._sessions.get(media_id)
-        if session is not None:
-            session.enqueue(data, addr)
+        if session is None:
+            self.stats.media_identity_unknown += 1
+            self._log_unknown_datagrams_if_due(generation)
+            return
+        self.stats.media_identity_matched += 1
+        session.enqueue(data, addr)
+
+    def _log_unknown_datagrams_if_due(self, generation: int) -> None:
+        self._unknown_datagrams_since_log += 1
+        now = time.monotonic()
+        if (
+            self._unknown_datagram_last_log_at is not None
+            and now - self._unknown_datagram_last_log_at < _UNKNOWN_DATAGRAM_LOG_INTERVAL_SECONDS
+        ):
+            return
+        logger.info(
+            "udp_gateway_unknown_datagrams transport_generation=%d since_last=%d datagram_arrived=%d "
+            "undersized=%d media_identity_unknown=%d media_identity_matched=%d",
+            generation,
+            self._unknown_datagrams_since_log,
+            self.stats.datagram_arrived,
+            self.stats.undersized,
+            self.stats.media_identity_unknown,
+            self.stats.media_identity_matched,
+        )
+        self._unknown_datagrams_since_log = 0
+        self._unknown_datagram_last_log_at = now
 
     def transport_error(
         self,

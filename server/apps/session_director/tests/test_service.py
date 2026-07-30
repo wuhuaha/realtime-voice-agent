@@ -310,6 +310,52 @@ async def test_active_session_heartbeat_renews_lease_and_rejects_stale_fence() -
 
 
 @pytest.mark.asyncio
+async def test_heartbeat_stale_release_cannot_remove_new_epoch_on_same_route() -> None:
+    clock = MutableClock()
+    store = InMemoryCoordinationStore()
+    service = DirectorService(
+        store,
+        GrantCodec("test-signing-key-with-32-bytes", clock=clock),
+        heartbeat_ttl_seconds=30,
+        lease_ttl_seconds=20,
+        clock=clock,
+    )
+    await service.heartbeat(heartbeat("worker-a", 0))
+    first = await service.bootstrap(BootstrapRequest(tenant_id="tenant-1", device_id="device-1"))
+    first_claim = LeaseRenewal(
+        tenant_id="tenant-1",
+        device_id="device-1",
+        session_epoch=first.session_epoch,
+        fencing_token=first.fencing_token,
+    )
+    assert await store.release_route_claim(first.worker_id, first_claim)
+    second = await service.bootstrap(BootstrapRequest(tenant_id="tenant-1", device_id="device-1"))
+    second_claim = LeaseRenewal(
+        tenant_id="tenant-1",
+        device_id="device-1",
+        session_epoch=second.session_epoch,
+        fencing_token=second.fencing_token,
+    )
+
+    result = await service.heartbeat(
+        heartbeat("worker-a", 1).model_copy(
+            update={
+                "active_leases": (second_claim,),
+                "released_leases": (first_claim,),
+            }
+        )
+    )
+
+    assert result.rejected_session_epochs == ()
+    with pytest.raises(LeaseConflictError):
+        await service.bootstrap(BootstrapRequest(tenant_id="tenant-1", device_id="device-1"))
+    assert await store.release_route_claim(second.worker_id, second_claim)
+    assert not await store.release_route_claim(second.worker_id, second_claim)
+    third = await service.bootstrap(BootstrapRequest(tenant_id="tenant-1", device_id="device-1"))
+    assert third.fencing_token == second.fencing_token + 1
+
+
+@pytest.mark.asyncio
 async def test_grant_consumption_is_shared_single_use_and_route_bound() -> None:
     clock = MutableClock()
     store = InMemoryCoordinationStore()
