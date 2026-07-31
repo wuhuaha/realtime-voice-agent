@@ -660,6 +660,70 @@ async def test_rva_registry_holds_admission_until_connection_cleanup_finishes(
 
 
 @pytest.mark.asyncio
+async def test_registry_reserve_cancellation_releases_untransferred_admission() -> None:
+    release_started = asyncio.Event()
+    release_allowed = asyncio.Event()
+    released_tokens: list[str] = []
+
+    class BlockingReleaseAdmission(SharedSessionAdmission):
+        async def release(self, token: str) -> None:
+            released_tokens.append(token)
+            release_started.set()
+            await release_allowed.wait()
+            await super().release(token)
+
+    class SecondAcquireGate:
+        def __init__(self) -> None:
+            self.acquire_count = 0
+            self.second_acquire_started = asyncio.Event()
+            self.second_acquire_allowed = asyncio.Event()
+
+        async def __aenter__(self) -> SecondAcquireGate:
+            self.acquire_count += 1
+            if self.acquire_count == 2:
+                self.second_acquire_started.set()
+                await self.second_acquire_allowed.wait()
+            return self
+
+        async def __aexit__(
+            self,
+            _exc_type: object,
+            _exc: object,
+            _traceback: object,
+        ) -> None:
+            return None
+
+    admission = BlockingReleaseAdmission(1)
+    registry = RvaSessionRegistry(settings(), admission)
+    registry_lock = SecondAcquireGate()
+    registry._lock = registry_lock  # type: ignore[assignment]  # noqa: SLF001
+    auth = AuthContext(tenant_id="tenant-1", device_id="device-1")
+
+    reservation = asyncio.create_task(registry.reserve(auth))
+    await asyncio.wait_for(registry_lock.second_acquire_started.wait(), timeout=1.0)
+    assert admission.active_count == 1
+
+    reservation.cancel()
+    await asyncio.wait_for(release_started.wait(), timeout=1.0)
+    reservation.cancel()
+    await asyncio.sleep(0)
+    assert not reservation.done()
+
+    release_allowed.set()
+    with pytest.raises(asyncio.CancelledError):
+        await reservation
+
+    assert admission.active_count == 0
+    assert len(released_tokens) == 1
+
+    next_reservation = await registry.reserve(auth)
+    assert next_reservation is not None
+    await registry.release_reservation(next_reservation)
+    assert admission.active_count == 0
+    assert released_tokens.count(next_reservation) == 1
+
+
+@pytest.mark.asyncio
 async def test_registry_close_fences_concurrent_registration_and_is_idempotent(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

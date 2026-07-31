@@ -95,11 +95,32 @@ class RvaSessionRegistry:
         token = await self._admission.reserve(principal)
         if token is None:
             return None
-        async with self._lock:
-            if not self._closing and not self._closed:
+        transferred = False
+        try:
+            async with self._lock:
+                can_transfer = not self._closing and not self._closed
+            if can_transfer:
+                transferred = True
                 return token
-        await self._admission.release(token)
-        return None
+            return None
+        finally:
+            if not transferred:
+                await self._release_untransferred_reservation(token)
+
+    async def _release_untransferred_reservation(self, token: str) -> None:
+        release_task = asyncio.create_task(
+            self._admission.release(token),
+            name="rva-reservation-release",
+        )
+        cancellation: asyncio.CancelledError | None = None
+        while not release_task.done():
+            try:
+                await asyncio.shield(release_task)
+            except asyncio.CancelledError as exc:
+                cancellation = exc
+        release_task.result()
+        if cancellation is not None:
+            raise cancellation
 
     async def release_reservation(self, token: str) -> None:
         await self._admission.release(token)
