@@ -660,6 +660,108 @@ async def test_rva_registry_holds_admission_until_connection_cleanup_finishes(
 
 
 @pytest.mark.asyncio
+async def test_registry_close_fences_concurrent_registration_and_is_idempotent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    retirement_started = asyncio.Event()
+    retirement_release = asyncio.Event()
+    websocket_closes: list[tuple[int, str]] = []
+    constructed = 0
+    owned_close_calls = 0
+
+    class OwnedConnection:
+        async def close(self, *, code: int, reason: str) -> None:
+            nonlocal owned_close_calls
+            assert (code, reason) == (1001, "server_shutdown")
+            owned_close_calls += 1
+            retirement_started.set()
+
+        async def wait_closed(self) -> None:
+            await retirement_release.wait()
+
+    class AcceptedWebSocket:
+        async def close(self, *, code: int, reason: str) -> None:
+            websocket_closes.append((code, reason))
+
+    def build_connection(*_args: object, **_kwargs: object) -> object:
+        nonlocal constructed
+        constructed += 1
+        raise AssertionError("late run must not construct a connection")
+
+    admission = SharedSessionAdmission(2)
+    registry = RvaSessionRegistry(settings(), admission)
+    owned_auth = AuthContext(tenant_id="tenant-0", device_id="device-0")
+    registry._connections[("tenant-0", "device-0")] = (  # type: ignore[assignment]  # noqa: SLF001
+        OwnedConnection(),
+        owned_auth,
+    )
+    late_auth = AuthContext(
+        tenant_id="tenant-1",
+        device_id="device-1",
+        session_epoch="epoch-1",
+        fencing_token=7,
+        expires_at=200.0,
+    )
+    reservation = await registry.reserve(late_auth)
+    assert reservation is not None
+    monkeypatch.setattr(app_module, "RvaWssConnection", build_connection)
+
+    first_close = asyncio.create_task(registry.close())
+    await asyncio.wait_for(retirement_started.wait(), timeout=1.0)
+    first_close.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await first_close
+    assert registry._close_task is not None  # noqa: SLF001
+    assert not registry._close_task.done()  # noqa: SLF001
+    second_close = asyncio.create_task(registry.close())
+    try:
+        await registry.run(AcceptedWebSocket(), late_auth, reservation)  # type: ignore[arg-type]
+        await asyncio.sleep(0)
+        assert not second_close.done()
+        assert constructed == 0
+        assert websocket_closes == [(1001, "server_shutdown")]
+        assert admission.active_count == 0
+        assert registry.pending_lease_releases() == (
+            LeaseRenewal(
+                tenant_id="tenant-1",
+                device_id="device-1",
+                session_epoch="epoch-1",
+                fencing_token=7,
+            ),
+        )
+        assert registry._connections == {}  # noqa: SLF001
+        assert registry._lease_deadlines == {}  # noqa: SLF001
+        assert registry._expiry_task is None  # noqa: SLF001
+    finally:
+        retirement_release.set()
+        await asyncio.gather(first_close, second_close, return_exceptions=True)
+
+    assert owned_close_calls == 1
+    assert registry._closed is True  # noqa: SLF001
+    assert registry._retirement_tasks == {}  # noqa: SLF001
+
+
+@pytest.mark.asyncio
+async def test_registry_close_owner_exception_is_consumed_and_logged(caplog: pytest.LogCaptureFixture) -> None:
+    registry = RvaSessionRegistry(settings(), SharedSessionAdmission(1))
+
+    async def fail() -> None:
+        raise RuntimeError("close owner failed")
+
+    with caplog.at_level(logging.ERROR):
+        task = asyncio.create_task(fail())
+        task.add_done_callback(registry._close_owner_done)  # noqa: SLF001
+        await asyncio.gather(task, return_exceptions=True)
+        await asyncio.sleep(0)
+
+    assert any(
+        record.message
+        == "worker_registry_close_owner_failed action=fail_closed error_type=RuntimeError"
+        for record in caplog.records
+    )
+
+
+@pytest.mark.asyncio
 async def test_rva_registry_does_not_drop_release_claims_above_heartbeat_batch_size(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -755,11 +857,13 @@ async def test_failed_heartbeat_enforces_local_deadline_after_renewal_attempt() 
     registry = RvaSessionRegistry(settings(), SharedSessionAdmission(5), clock=clock)
     events: list[str] = []
     closed: list[tuple[int, str]] = []
+    connection_closed = asyncio.Event()
 
     class FakeConnection:
         async def close(self, *, code: int, reason: str) -> None:
             events.append("close")
             closed.append((code, reason))
+            connection_closed.set()
 
         async def wait_closed(self) -> None:
             return None
@@ -790,6 +894,7 @@ async def test_failed_heartbeat_enforces_local_deadline_after_renewal_attempt() 
         )
         with pytest.raises(httpx.ConnectError):
             await heartbeat.send_once()
+    await asyncio.wait_for(connection_closed.wait(), timeout=1.0)
     assert events == ["renew", "close"]
     assert closed == [(1008, "stale_route_lease")]
 
@@ -853,6 +958,69 @@ async def test_blocked_heartbeat_cannot_outlive_submitted_lease_deadline() -> No
         await registry.close()
 
     assert registry._expiry_task is None  # noqa: SLF001
+
+
+@pytest.mark.asyncio
+async def test_expiry_loop_does_not_wait_for_previous_connection_retirement() -> None:
+    clock = MutableClock(100.0)
+    registry = RvaSessionRegistry(settings(), SharedSessionAdmission(2), clock=clock)
+    first_close_started = asyncio.Event()
+    first_retirement_release = asyncio.Event()
+    second_close_started = asyncio.Event()
+
+    class FirstConnection:
+        async def close(self, *, code: int, reason: str) -> None:
+            assert (code, reason) == (1008, "stale_route_lease")
+            first_close_started.set()
+
+        async def wait_closed(self) -> None:
+            await first_retirement_release.wait()
+
+    class SecondConnection:
+        async def close(self, *, code: int, reason: str) -> None:
+            assert (code, reason) == (1008, "stale_route_lease")
+            second_close_started.set()
+
+        async def wait_closed(self) -> None:
+            return None
+
+    first_auth = AuthContext(
+        tenant_id="tenant-1",
+        device_id="device-1",
+        session_epoch="epoch-1",
+        fencing_token=1,
+        expires_at=100.0,
+    )
+    second_auth = AuthContext(
+        tenant_id="tenant-2",
+        device_id="device-2",
+        session_epoch="epoch-2",
+        fencing_token=2,
+        expires_at=200.0,
+    )
+    registry._connections[("tenant-1", "device-1")] = (  # type: ignore[assignment]  # noqa: SLF001
+        FirstConnection(),
+        first_auth,
+    )
+    registry._connections[("tenant-2", "device-2")] = (  # type: ignore[assignment]  # noqa: SLF001
+        SecondConnection(),
+        second_auth,
+    )
+    registry._lease_deadlines[("tenant-1", "device-1", "epoch-1", 1)] = 100.0  # noqa: SLF001
+    registry._lease_deadlines[("tenant-2", "device-2", "epoch-2", 2)] = 200.0  # noqa: SLF001
+    registry.start_expiry_enforcement()
+
+    try:
+        await asyncio.wait_for(first_close_started.wait(), timeout=1.0)
+        assert not second_close_started.is_set()
+        clock.advance(100.0)
+        registry._expiry_changed.set()  # noqa: SLF001
+        await asyncio.wait_for(second_close_started.wait(), timeout=1.0)
+        assert registry._connections == {}  # noqa: SLF001
+        assert registry._lease_deadlines == {}  # noqa: SLF001
+    finally:
+        first_retirement_release.set()
+        await registry.close()
 
 
 @pytest.mark.asyncio
@@ -976,10 +1144,12 @@ async def test_heartbeat_response_at_deadline_cannot_resurrect_expired_claim() -
     clock = MutableClock(99.0)
     registry = RvaSessionRegistry(settings(), SharedSessionAdmission(5), clock=clock)
     closed: list[tuple[int, str]] = []
+    connection_closed = asyncio.Event()
 
     class FakeConnection:
         async def close(self, *, code: int, reason: str) -> None:
             closed.append((code, reason))
+            connection_closed.set()
 
         async def wait_closed(self) -> None:
             return None
@@ -1018,6 +1188,7 @@ async def test_heartbeat_response_at_deadline_cannot_resurrect_expired_claim() -
         )
         await heartbeat.send_once()
 
+    await asyncio.wait_for(connection_closed.wait(), timeout=1.0)
     assert closed == [(1008, "stale_route_lease")]
     assert registry._lease_deadlines == {}  # noqa: SLF001
 
@@ -1154,6 +1325,7 @@ async def test_registry_closes_connection_after_local_lease_deadline() -> None:
     clock = MutableClock(100.0)
     registry = RvaSessionRegistry(settings(), SharedSessionAdmission(5), clock=clock)
     closed: list[tuple[int, str]] = []
+    connection_closed = asyncio.Event()
 
     class FakeConnection:
         auth_context = AuthContext(
@@ -1166,6 +1338,7 @@ async def test_registry_closes_connection_after_local_lease_deadline() -> None:
 
         async def close(self, *, code: int, reason: str) -> None:
             closed.append((code, reason))
+            connection_closed.set()
 
         async def wait_closed(self) -> None:
             return None
@@ -1174,6 +1347,7 @@ async def test_registry_closes_connection_after_local_lease_deadline() -> None:
     registry._connections[("tenant-1", "device-1")] = (FakeConnection(), auth)  # type: ignore[assignment]  # noqa: SLF001
     registry._lease_deadlines[("tenant-1", "device-1", "epoch-1", 1)] = 100.0  # noqa: SLF001
     await registry.revoke_expired_leases(100.0)
+    await asyncio.wait_for(connection_closed.wait(), timeout=1.0)
     assert closed == [(1008, "stale_route_lease")]
 
 

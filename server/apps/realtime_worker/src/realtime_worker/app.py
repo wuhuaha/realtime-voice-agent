@@ -79,21 +79,34 @@ class RvaSessionRegistry:
         self._lease_deadlines: dict[LeaseClaimKey, float] = {}
         self._pending_releases: deque[LeaseRenewal] = deque()
         self._lock = asyncio.Lock()
-        self._close_lock = asyncio.Lock()
         self._clock = clock
         self._expiry_changed = asyncio.Event()
         self._expiry_task: asyncio.Task[None] | None = None
         self._closing = False
+        self._closed = False
+        self._close_task: asyncio.Task[None] | None = None
         self._retirement_tasks: dict[int, asyncio.Task[None]] = {}
 
     async def reserve(self, auth: AuthContext) -> str | None:
-        return await self._admission.reserve((auth.tenant_id, auth.device_id))
+        principal = (auth.tenant_id, auth.device_id)
+        async with self._lock:
+            if self._closing or self._closed:
+                return None
+        token = await self._admission.reserve(principal)
+        if token is None:
+            return None
+        async with self._lock:
+            if not self._closing and not self._closed:
+                return token
+        await self._admission.release(token)
+        return None
 
     async def release_reservation(self, token: str) -> None:
         await self._admission.release(token)
 
     async def abort_startup(self, auth: AuthContext, token: str) -> None:
-        self._queue_lease_release(auth)
+        async with self._lock:
+            self._queue_lease_release(auth)
         await self._admission.release(token)
 
     async def run(self, websocket: WebSocket, auth: AuthContext, token: str) -> None:
@@ -102,43 +115,50 @@ class RvaSessionRegistry:
         enabled_profiles = {"wss-opus-v3"}
         if self._settings.rva_udp_enabled and self._udp_gateway is not None:
             enabled_profiles.add("udp-opus-gcm-v2")
+        claim = self._lease_claim(auth)
+        connection: RvaWssConnection | None = None
         try:
-            connection = RvaWssConnection(
-                websocket,
-                expected_device_id=auth.device_id,
-                session_id=f"sess-{secrets.token_hex(16)}",
-                session_epoch=session_epoch,
-                media_id=secrets.token_bytes(8),
-                media_epoch=secrets.randbits(32) or 1,
-                allowed_profiles=frozenset(enabled_profiles.intersection(auth.allowed_profiles)),
-                udp_gateway=self._udp_gateway,
-                runner_factory=lambda emit, stop: create_runner(self._settings, emit, stop),
-                limits=RvaRuntimeLimits(
-                    input_queue_packets=self._settings.rva_input_queue_packets,
-                    output_queue_items=self._settings.rva_output_queue_items,
-                    max_segment_frames=self._settings.output_segment_max_frames,
-                    queue_timeout_seconds=self._settings.rva_queue_timeout_seconds,
-                    uplink_max_age_seconds=self._settings.rva_uplink_max_age_seconds,
-                    wire_send_timeout_seconds=self._settings.rva_wire_send_timeout_seconds,
-                    handshake_timeout_seconds=self._settings.rva_handshake_timeout_seconds,
-                    runner_timeout_seconds=self._settings.rva_runner_timeout_seconds,
-                    close_timeout_seconds=self._settings.rva_close_timeout_seconds,
-                    agent_close_stage_timeout_seconds=self._settings.agent_close_stage_timeout_seconds,
-                    playback_prebuffer_packets=self._settings.rva_playback_prebuffer_packets,
-                ),
-                interruption_policy=_create_interruption_policy(self._settings),
-            )
-            claim = self._lease_claim(auth)
             async with self._lock:
-                self._connections[principal] = (connection, auth)
-                if claim is not None and auth.expires_at is not None:
-                    self._lease_deadlines[self._lease_claim_key(claim)] = auth.expires_at
+                if self._closing or self._closed:
+                    self._queue_lease_release(auth)
+                else:
+                    connection = RvaWssConnection(
+                        websocket,
+                        expected_device_id=auth.device_id,
+                        session_id=f"sess-{secrets.token_hex(16)}",
+                        session_epoch=session_epoch,
+                        media_id=secrets.token_bytes(8),
+                        media_epoch=secrets.randbits(32) or 1,
+                        allowed_profiles=frozenset(enabled_profiles.intersection(auth.allowed_profiles)),
+                        udp_gateway=self._udp_gateway,
+                        runner_factory=lambda emit, stop: create_runner(self._settings, emit, stop),
+                        limits=RvaRuntimeLimits(
+                            input_queue_packets=self._settings.rva_input_queue_packets,
+                            output_queue_items=self._settings.rva_output_queue_items,
+                            max_segment_frames=self._settings.output_segment_max_frames,
+                            queue_timeout_seconds=self._settings.rva_queue_timeout_seconds,
+                            uplink_max_age_seconds=self._settings.rva_uplink_max_age_seconds,
+                            wire_send_timeout_seconds=self._settings.rva_wire_send_timeout_seconds,
+                            handshake_timeout_seconds=self._settings.rva_handshake_timeout_seconds,
+                            runner_timeout_seconds=self._settings.rva_runner_timeout_seconds,
+                            close_timeout_seconds=self._settings.rva_close_timeout_seconds,
+                            agent_close_stage_timeout_seconds=self._settings.agent_close_stage_timeout_seconds,
+                            playback_prebuffer_packets=self._settings.rva_playback_prebuffer_packets,
+                        ),
+                        interruption_policy=_create_interruption_policy(self._settings),
+                    )
+                    self._connections[principal] = (connection, auth)
+                    if claim is not None and auth.expires_at is not None:
+                        self._lease_deadlines[self._lease_claim_key(claim)] = auth.expires_at
+                        self.start_expiry_enforcement()
                 self._expiry_changed.set()
-            if claim is not None and auth.expires_at is not None:
-                self.start_expiry_enforcement()
         except BaseException:
             await self.abort_startup(auth, token)
             raise
+        if connection is None:
+            await self._admission.release(token)
+            await websocket.close(code=1_001, reason="server_shutdown")
+            return
         try:
             await connection.run()
         finally:
@@ -161,27 +181,51 @@ class RvaSessionRegistry:
                 await self._admission.release(token)
 
     async def close(self) -> None:
-        async with self._close_lock:
-            self._closing = True
-            await self._stop_expiry_enforcement()
-            async with self._lock:
-                owned = tuple(self._connections.values())
-                for _, auth in owned:
-                    self._queue_lease_release(auth)
-                connections = tuple(connection for connection, _ in owned)
-                self._connections.clear()
-                self._lease_deadlines.clear()
-                self._expiry_changed.set()
+        async with self._lock:
+            task = self._close_task
+            if task is None:
+                if self._closed:
+                    return
+                self._closing = True
+                task = asyncio.create_task(
+                    self._close_owner(),
+                    name="rva-registry-close",
+                )
+                task.add_done_callback(self._close_owner_done)
+                self._close_task = task
+        await asyncio.shield(task)
+
+    async def _close_owner(self) -> None:
+        async with self._lock:
+            expiry_task, self._expiry_task = self._expiry_task, None
+            owned = tuple(self._connections.values())
+            for _, auth in owned:
+                self._queue_lease_release(auth)
+            connections = tuple(connection for connection, _ in owned)
+            self._connections.clear()
+            self._lease_deadlines.clear()
+            self._expiry_changed.set()
             self._schedule_retirements(connections, code=1_001, reason="server_shutdown")
-            tasks = tuple(self._retirement_tasks.values())
-            try:
-                await asyncio.gather(*tasks, return_exceptions=True)
-            except asyncio.CancelledError:
-                tasks = tuple(self._retirement_tasks.values())
-                for task in tasks:
-                    task.cancel()
-                await asyncio.gather(*tasks, return_exceptions=True)
-                raise
+            retirement_tasks = tuple(self._retirement_tasks.values())
+        if expiry_task is not None:
+            expiry_task.cancel()
+            await asyncio.gather(expiry_task, return_exceptions=True)
+        await asyncio.gather(*retirement_tasks, return_exceptions=True)
+        async with self._lock:
+            self._closing = False
+            self._closed = True
+
+    def _close_owner_done(self, task: asyncio.Task[None]) -> None:
+        if task.cancelled():
+            logger.error("worker_registry_close_owner_cancelled action=fail_closed")
+            return
+        exception = task.exception()
+        if exception is None:
+            return
+        logger.error(
+            "worker_registry_close_owner_failed action=fail_closed error_type=%s",
+            type(exception).__name__,
+        )
 
     def snapshot_active_lease_releases(self) -> None:
         for _, auth in self._connections.values():
@@ -201,17 +245,16 @@ class RvaSessionRegistry:
             return
         async with self._lock:
             connections = self._remove_claims_locked(claim_keys)
+            tasks = self._schedule_retirements(connections, code=1_008, reason="stale_route_lease")
             self._expiry_changed.set()
-        tasks = self._schedule_retirements(connections, code=1_008, reason="stale_route_lease")
         await self._await_retirements(tasks)
 
     async def revoke_expired_leases(self, now: float) -> None:
         async with self._lock:
             expired = {claim for claim, deadline in self._lease_deadlines.items() if deadline <= now}
             connections = self._remove_claims_locked(expired)
+            self._schedule_retirements(connections, code=1_008, reason="stale_route_lease")
             self._expiry_changed.set()
-        tasks = self._schedule_retirements(connections, code=1_008, reason="stale_route_lease")
-        await self._await_retirements(tasks)
 
     async def extend_lease_deadlines(
         self,
@@ -286,7 +329,7 @@ class RvaSessionRegistry:
             self._pending_releases.append(release)
 
     def start_expiry_enforcement(self) -> None:
-        if self._closing:
+        if self._closing or self._closed:
             return
         task = self._expiry_task
         if task is not None and not task.done():
@@ -297,13 +340,6 @@ class RvaSessionRegistry:
         )
         self._expiry_task = task
         task.add_done_callback(self._expiry_enforcement_done)
-
-    async def _stop_expiry_enforcement(self) -> None:
-        task, self._expiry_task = self._expiry_task, None
-        if task is None:
-            return
-        task.cancel()
-        await asyncio.gather(task, return_exceptions=True)
 
     async def _enforce_lease_expiry(self) -> None:
         while True:
