@@ -130,6 +130,8 @@ jobs:
         with:
           repository: espressif/esp-idf
           ref: 30aaf64524299d3bde422ca9a2848090d1bc5d0f
+          fetch-depth: 0
+          fetch-tags: true
           path: .ci/esp-idf
           submodules: recursive
       - name: Verify native firmware composition
@@ -210,12 +212,12 @@ jobs:
         run: |
           set -euo pipefail
           test "$(git -c safe.directory="$IDF_PATH" -C "$IDF_PATH" rev-parse HEAD)" = "30aaf64524299d3bde422ca9a2848090d1bc5d0f"
-          idf.py -B build-ci build
+          /opt/esp/entrypoint.sh idf.py -B build-ci build
       - name: Enforce image size and partition fit
         working-directory: firmware/apps/voice_terminal
         shell: bash
         run: |
           set -euo pipefail
-          idf.py -B build-ci size
+          /opt/esp/entrypoint.sh idf.py -B build-ci size
           test -s build-ci/rva_voice_terminal.bin
       # Build/size proves toolchain reproducibility only; target-board HIL remains a release gate.
