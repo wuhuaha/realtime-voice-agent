@@ -5,6 +5,10 @@
 #include <new>
 #include <utility>
 
+#ifndef ESP_PLATFORM
+#include <atomic>
+#endif
+
 #ifdef ESP_PLATFORM
 #include <esp_heap_caps.h>
 #endif
@@ -18,13 +22,26 @@ size_t MaximumPayload(ClientEventType type) {
     return 0;
 }
 
+#ifndef ESP_PLATFORM
+std::atomic<size_t> g_payload_allocation_attempts{0};
+std::atomic<size_t> g_payload_allocation_failure_attempt{0};
+std::atomic<size_t> g_outstanding_payload_allocations{0};
+#endif
+
 }  // namespace
 
 CallbackPayloadBuffer::~CallbackPayloadBuffer() {
+    Release();
+}
+
+void CallbackPayloadBuffer::Release() noexcept {
 #ifdef ESP_PLATFORM
     heap_caps_free(data_);
 #else
-    delete[] data_;
+    if (data_ != nullptr) {
+        delete[] data_;
+        g_outstanding_payload_allocations.fetch_sub(1, std::memory_order_relaxed);
+    }
 #endif
     data_ = nullptr;
     capacity_ = 0;
@@ -32,29 +49,60 @@ CallbackPayloadBuffer::~CallbackPayloadBuffer() {
 
 bool CallbackPayloadBuffer::Allocate(size_t capacity) noexcept {
     if (data_ != nullptr && capacity_ >= capacity) return true;
+    Release();
 #ifdef ESP_PLATFORM
-    heap_caps_free(data_);
     data_ = static_cast<uint8_t*>(heap_caps_malloc(capacity, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
 #else
-    delete[] data_;
-    data_ = new (std::nothrow) uint8_t[capacity];
+    const size_t attempt =
+        g_payload_allocation_attempts.fetch_add(1, std::memory_order_relaxed) + 1;
+    const size_t failure_attempt =
+        g_payload_allocation_failure_attempt.load(std::memory_order_relaxed);
+    if (failure_attempt == 0 || attempt != failure_attempt) {
+        data_ = new (std::nothrow) uint8_t[capacity];
+        if (data_ != nullptr) {
+            g_outstanding_payload_allocations.fetch_add(1, std::memory_order_relaxed);
+        }
+    }
 #endif
     capacity_ = data_ == nullptr ? 0 : capacity;
     return data_ != nullptr;
 }
+
+#ifndef ESP_PLATFORM
+void CallbackPayloadBuffer::SetAllocationFailureForTest(size_t fail_on_attempt) noexcept {
+    g_payload_allocation_attempts.store(0, std::memory_order_relaxed);
+    g_payload_allocation_failure_attempt.store(fail_on_attempt, std::memory_order_relaxed);
+}
+
+size_t CallbackPayloadBuffer::allocation_attempts_for_test() noexcept {
+    return g_payload_allocation_attempts.load(std::memory_order_relaxed);
+}
+
+size_t CallbackPayloadBuffer::outstanding_allocations_for_test() noexcept {
+    return g_outstanding_payload_allocations.load(std::memory_order_relaxed);
+}
+#endif
 
 CallbackEventQueue::CallbackEventQueue(size_t capacity, size_t byte_capacity)
     : capacity_(std::min(capacity, kMaximumCallbackEvents)),
       byte_capacity_(std::min(byte_capacity, kMaximumQueuedCallbackBytes)),
       slot_capacity_(std::min(
           kMaximumCallbackFragmentBytes,
-          capacity_ == 0 ? size_t{0} : std::max<size_t>(1, byte_capacity_ / capacity_))) {
+          capacity_ == 0 ? size_t{0} : byte_capacity_ / capacity_)) {
+    if (capacity_ == 0 || slot_capacity_ == 0) {
+        capacity_ = 0;
+        return;
+    }
     for (size_t index = 0; index < capacity_; ++index) {
         if (!slots_[index].data.Allocate(slot_capacity_)) {
-            capacity_ = index;
-            break;
+            for (size_t allocated = 0; allocated < index; ++allocated) {
+                slots_[allocated].data.Release();
+            }
+            capacity_ = 0;
+            return;
         }
     }
+    ready_ = true;
 }
 
 bool CallbackEventQueue::TryPush(const ClientEventView& event) noexcept {
@@ -73,8 +121,28 @@ bool CallbackEventQueue::TryPush(const ClientEventView& event) noexcept {
     }
 
     std::lock_guard<std::mutex> lock(mutex_);
-    if (capacity_ == 0 || size_ >= capacity_ ||
+    if (capacity_ == 0 ||
         event.data_size > byte_capacity_ - std::min(byte_capacity_, queued_bytes_)) {
+        ++dropped_events_;
+        return false;
+    }
+    if (carries_data && size_ > 0) {
+        Slot& previous = slots_[(head_ + size_ - 1) % capacity_];
+        if (previous.used && previous.type == event.type &&
+            previous.payload_size == event.payload_size &&
+            previous.payload_offset + previous.data_size == event.payload_offset &&
+            previous.data_size <= slot_capacity_ &&
+            event.data_size <= slot_capacity_ - previous.data_size) {
+            std::memcpy(
+                previous.data.data() + previous.data_size,
+                event.data,
+                event.data_size);
+            previous.data_size += event.data_size;
+            queued_bytes_ += event.data_size;
+            return true;
+        }
+    }
+    if (size_ >= capacity_) {
         ++dropped_events_;
         return false;
     }
@@ -170,15 +238,24 @@ WssOwner::~WssOwner() {
     if (!destroyed_) SupervisorClose(1000);
 }
 
+void WssOwner::BindCallbackReadyNotifier(CallbackReadyNotifier notifier, void* context) noexcept {
+    callback_ready_notifier_ = notifier;
+    callback_ready_context_ = context;
+}
+
 bool WssOwner::Start() {
     std::lock_guard<std::mutex> lock(state_mutex_);
-    if (started_ || close_requested_ || destroyed_) return false;
+    if (!events_.ready() || started_ || close_requested_ || destroyed_) return false;
     started_ = client_.Start();
     return started_;
 }
 
 bool WssOwner::OnClientCallback(const ClientEventView& event) noexcept {
-    return events_.TryPush(event);
+    const bool accepted = events_.TryPush(event);
+    if (callback_ready_notifier_ != nullptr) {
+        callback_ready_notifier_(callback_ready_context_);
+    }
+    return accepted;
 }
 
 bool WssOwner::Poll(OwnedClientEvent* event) {

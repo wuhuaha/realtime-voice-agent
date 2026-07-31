@@ -142,6 +142,7 @@ private:
     static void UplinkSenderTask(void* context);
     static void PlaybackTask(void* context);
     static void WebsocketTeardownTask(void* context);
+    static void NotifySupervisorWork(void* context) noexcept;
     void RunSupervisor();
     void RunCapture();
     void RunUplinkFramer();
@@ -197,6 +198,7 @@ private:
     QueueHandle_t uplink_pcm_queue_ = nullptr;
     QueueHandle_t uplink_encoded_queue_ = nullptr;
     EventGroupHandle_t task_events_ = nullptr;
+    SemaphoreHandle_t supervisor_work_signal_ = nullptr;
     TaskHandle_t supervisor_task_ = nullptr;
     TaskHandle_t capture_task_ = nullptr;
     TaskHandle_t uplink_framer_task_ = nullptr;
@@ -215,6 +217,7 @@ private:
     std::string authorization_headers_;
     std::atomic<bool> running_{false};
     std::atomic<bool> started_{false};
+    std::atomic<bool> websocket_started_{false};
     std::atomic<bool> media_started_{false};
     std::atomic<bool> session_opened_{false};
     std::atomic<MediaPreference> preferred_media_{MediaPreference::kWss};

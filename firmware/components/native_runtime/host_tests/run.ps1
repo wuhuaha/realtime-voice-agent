@@ -5,6 +5,8 @@ $componentsRoot = (Resolve-Path (Join-Path $runtimeRoot "..")).Path
 $cpp = Get-Command g++, clang++ -ErrorAction SilentlyContinue | Select-Object -First 1
 if ($null -eq $cpp) { throw "A C++ host compiler is required" }
 
+& (Join-Path $PSScriptRoot "runtime_lifecycle_source_test.ps1")
+
 $temporaryDirectory = Join-Path ([IO.Path]::GetTempPath()) ("rva-runtime-test-" + [guid]::NewGuid().ToString("N"))
 New-Item -ItemType Directory -Path $temporaryDirectory | Out-Null
 try {

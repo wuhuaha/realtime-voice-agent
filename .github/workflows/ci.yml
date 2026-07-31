@@ -196,6 +196,9 @@ jobs:
             firmware/components/transport_udp/host_tests/playout_queue_test.cc \
             -o "$out/playout_queue_test"
           "$out/playout_queue_test"
+      - name: Run native runtime lifecycle contracts
+        shell: pwsh
+        run: ./firmware/components/native_runtime/host_tests/run.ps1
 
   native-firmware-build-size:
     runs-on: ubuntu-latest

@@ -172,11 +172,25 @@ bool VoiceRuntime::Start(
         esp_websocket_client_destroy(handle);
         return false;
     }
-    owner_.reset(new (std::nothrow) wss::WssOwner(*client_port_, 8, 65536));
+    owner_.reset(new (std::nothrow) wss::WssOwner(
+        *client_port_, wss::kMaximumCallbackEvents, wss::kMaximumQueuedCallbackBytes));
     if (owner_ == nullptr) {
         client_port_.reset();
         return false;
     }
+    supervisor_work_signal_ = xSemaphoreCreateBinary();
+    if (supervisor_work_signal_ == nullptr) {
+        ESP_LOGE(kLogTag, "start failed: websocket event semaphore allocation");
+        // The client has not started and no callback can be in flight. Keep this
+        // OOM cleanup synchronous so it does not require another semaphore/task.
+        if (!owner_->SupervisorClose(0)) {
+            FailClosedRestart("websocket_partial_start_teardown_failed");
+        }
+        owner_.reset();
+        client_port_.reset();
+        return false;
+    }
+    owner_->BindCallbackReadyNotifier(NotifySupervisorWork, this);
     client_port_->BindEventSink(owner_.get());
     task_events_ = xEventGroupCreateWithCaps(MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (task_events_ == nullptr) {
@@ -185,9 +199,14 @@ bool VoiceRuntime::Start(
                  static_cast<unsigned long>(heap_caps_get_free_size(MALLOC_CAP_INTERNAL)),
                  static_cast<unsigned long>(heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL)),
                  static_cast<unsigned long>(heap_caps_get_free_size(MALLOC_CAP_SPIRAM)));
-        if (!CloseWebsocketBounded(kWebsocketTeardownTimeoutMs)) {
+        // Owner::Start has not run yet, so synchronous destroy cannot race a
+        // WebSocket callback and avoids allocating while already under OOM.
+        if (!owner_->SupervisorClose(0)) {
             FailClosedRestart("websocket_partial_start_teardown_failed");
         }
+        owner_->BindCallbackReadyNotifier(nullptr, nullptr);
+        vSemaphoreDelete(supervisor_work_signal_);
+        supervisor_work_signal_ = nullptr;
         owner_.reset();
         client_port_.reset();
         return false;
@@ -206,8 +225,10 @@ bool VoiceRuntime::Start(
              static_cast<unsigned long>(heap_caps_get_free_size(MALLOC_CAP_INTERNAL)),
              static_cast<unsigned long>(heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL)),
              static_cast<unsigned long>(heap_caps_get_free_size(MALLOC_CAP_SPIRAM)));
-    if (!tasks_started || !owner_->Start()) {
-        if (tasks_started) ESP_LOGE(kLogTag, "start failed: websocket owner start");
+    const bool owner_started = tasks_started && owner_->Start();
+    websocket_started_.store(owner_started, std::memory_order_release);
+    if (!tasks_started || !owner_started) {
+        if (tasks_started && !owner_started) ESP_LOGE(kLogTag, "start failed: websocket owner start");
         ESP_LOGE(kLogTag, "start memory: internal_free=%lu largest=%lu psram_free=%lu",
                  static_cast<unsigned long>(heap_caps_get_free_size(MALLOC_CAP_INTERNAL)),
                  static_cast<unsigned long>(heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL)),
@@ -221,6 +242,11 @@ bool VoiceRuntime::Start(
 void VoiceRuntime::Stop() {
     if (!started_.exchange(false)) return;
     const bool was_running = running_.exchange(false);
+    const bool websocket_was_started =
+        websocket_started_.exchange(false, std::memory_order_acq_rel);
+    if (supervisor_work_signal_ != nullptr) {
+        xSemaphoreGive(supervisor_work_signal_);
+    }
     if ((was_running || udp_refresh_requested_.load()) && session_opened_ && owner_ != nullptr) {
         protocol::SessionOpened identity;
         {
@@ -265,8 +291,20 @@ void VoiceRuntime::Stop() {
             }
         }
     }
-    if (owner_ != nullptr && !CloseWebsocketBounded(kWebsocketTeardownTimeoutMs)) {
-        FailClosedRestart("websocket_teardown_failed");
+    if (owner_ != nullptr) {
+        const bool websocket_closed = websocket_was_started
+                                          ? CloseWebsocketBounded(kWebsocketTeardownTimeoutMs)
+                                          : owner_->SupervisorClose(0);
+        if (!websocket_closed) {
+            FailClosedRestart("websocket_teardown_failed");
+        }
+    }
+    if (owner_ != nullptr) {
+        owner_->BindCallbackReadyNotifier(nullptr, nullptr);
+    }
+    if (supervisor_work_signal_ != nullptr) {
+        vSemaphoreDelete(supervisor_work_signal_);
+        supervisor_work_signal_ = nullptr;
     }
     if (udp_runtime_ != nullptr && !udp_runtime_->JoinAndClose(1000)) {
         events_.OnFailure("udp_join_timeout");
@@ -375,6 +413,13 @@ void VoiceRuntime::WebsocketTeardownTask(void* context) {
     // so completion includes all teardown work and no task self-delete path
     // can allocate scheduler cleanup state.
     vTaskSuspend(nullptr);
+}
+
+void VoiceRuntime::NotifySupervisorWork(void* context) noexcept {
+    auto* runtime = static_cast<VoiceRuntime*>(context);
+    if (runtime != nullptr && runtime->supervisor_work_signal_ != nullptr) {
+        xSemaphoreGive(runtime->supervisor_work_signal_);
+    }
 }
 
 bool VoiceRuntime::CloseWebsocketBounded(uint32_t timeout_ms) {
@@ -525,7 +570,9 @@ void VoiceRuntime::RunSupervisor() {
         }
         wss::OwnedClientEvent event;
         if (!owner_->Poll(&event)) {
-            vTaskDelay(pdMS_TO_TICKS(10));
+            if (supervisor_work_signal_ != nullptr) {
+                xSemaphoreTake(supervisor_work_signal_, pdMS_TO_TICKS(100));
+            }
             continue;
         }
         if (event.type == wss::ClientEventType::kConnected) {
@@ -787,7 +834,11 @@ bool VoiceRuntime::PublishPlaybackFact(const PlaybackFact& fact) {
         queued.media_sequence = *fact.last_media_sequence;
         queued.has_media_sequence = true;
     }
-    return xQueueSend(playback_fact_queue_, &queued, 0) == pdTRUE;
+    if (xQueueSend(playback_fact_queue_, &queued, 0) != pdTRUE) return false;
+    if (supervisor_work_signal_ != nullptr) {
+        xSemaphoreGive(supervisor_work_signal_);
+    }
+    return true;
 }
 
 bool VoiceRuntime::DrainPlaybackFacts() {
@@ -1461,10 +1512,11 @@ void VoiceRuntime::RunPlayback() {
                 events_.OnConversationPhase(ConversationPhase::kListening);
             }
         }
-        // Continuous UDP downlink may keep the queue non-empty. Yield once per
-        // decoded 60 ms frame to avoid watchdog starvation while preserving
-        // interruptible 10 ms writes inside the frame.
-        vTaskDelay(1);
+        // WritePlayback is already paced by I2S. Sleeping for one 10 ms RTOS
+        // tick here made each 60 ms packet take at least 70 ms to consume, so
+        // a correctly paced downlink inevitably overflowed the WSS queues.
+        // Yield to peers without changing the audio clock.
+        taskYIELD();
     }
     ESP_LOGI(kLogTag, "playback task minimum free stack: %lu bytes",
              static_cast<unsigned long>(uxTaskGetStackHighWaterMark(nullptr)));

@@ -4,9 +4,14 @@
 #include "voice_protocol/media_header.h"
 
 #include <array>
+#include <atomic>
 #include <cassert>
+#include <chrono>
+#include <condition_variable>
 #include <cstring>
+#include <mutex>
 #include <string>
+#include <thread>
 #include <variant>
 #include <vector>
 
@@ -60,6 +65,94 @@ public:
     bool destroy_result = true;
     size_t last_size = 0;
 };
+
+class BlockingCallbackClient final : public rva::wss::EspWebsocketClientPort {
+public:
+    void BindEventSink(rva::wss::WssOwner* owner) { owner_ = owner; }
+
+    bool Start() override {
+        std::lock_guard<std::mutex> lock(callback_mutex_);
+        ++start_calls;
+        callbacks_enabled_ = true;
+        return true;
+    }
+    bool SendText(const uint8_t*, size_t, uint32_t) override { return true; }
+    bool SendBinary(const uint8_t*, size_t, uint32_t) override { return true; }
+    bool Close(uint32_t) override {
+        ++close_calls;
+        return true;
+    }
+    bool Destroy() override {
+        std::unique_lock<std::mutex> lock(callback_mutex_);
+        ++destroy_calls;
+        callbacks_enabled_ = false;
+        destroy_entered.store(true, std::memory_order_release);
+        callback_finished_.wait(lock, [this]() { return callbacks_in_flight_ == 0; });
+        destroyed_ = true;
+        return true;
+    }
+
+    bool Emit(const rva::wss::ClientEventView& event) {
+        {
+            std::lock_guard<std::mutex> lock(callback_mutex_);
+            if (!callbacks_enabled_ || destroyed_ || owner_ == nullptr) return false;
+            ++callbacks_in_flight_;
+        }
+        const bool accepted = owner_->OnClientCallback(event);
+        {
+            std::lock_guard<std::mutex> lock(callback_mutex_);
+            --callbacks_in_flight_;
+        }
+        callback_finished_.notify_all();
+        return accepted;
+    }
+
+    int start_calls = 0;
+    int close_calls = 0;
+    int destroy_calls = 0;
+    std::atomic<bool> destroy_entered{false};
+
+private:
+    rva::wss::WssOwner* owner_ = nullptr;
+    std::mutex callback_mutex_;
+    std::condition_variable callback_finished_;
+    size_t callbacks_in_flight_ = 0;
+    bool callbacks_enabled_ = false;
+    bool destroyed_ = false;
+};
+
+void CountCallbackNotification(void* context) noexcept {
+    ++*static_cast<size_t*>(context);
+}
+
+struct BlockingNotificationContext final {
+    std::atomic<bool> alive{true};
+    std::atomic<bool> entered{false};
+    std::atomic<bool> release{false};
+    std::atomic<size_t> notifications{0};
+    std::atomic<size_t> accesses_after_retire{0};
+};
+
+void BlockAndCountCallbackNotification(void* context) noexcept {
+    auto* notification = static_cast<BlockingNotificationContext*>(context);
+    if (!notification->alive.load(std::memory_order_acquire)) {
+        notification->accesses_after_retire.fetch_add(1, std::memory_order_relaxed);
+    }
+    notification->notifications.fetch_add(1, std::memory_order_relaxed);
+    notification->entered.store(true, std::memory_order_release);
+    while (!notification->release.load(std::memory_order_acquire)) {
+        std::this_thread::yield();
+    }
+}
+
+bool WaitUntilTrue(const std::atomic<bool>& value) {
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+    while (std::chrono::steady_clock::now() < deadline) {
+        if (value.load(std::memory_order_acquire)) return true;
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    return value.load(std::memory_order_acquire);
+}
 
 std::vector<uint8_t> MakeMediaFrame(
     const std::array<uint8_t, 8>& media_id,
@@ -376,7 +469,7 @@ void TestDownlinkMediaSequenceSpansResponses() {
 void TestCallbackOnlyQueuesAndSupervisorOwnsTeardown() {
     FakeClient client;
     {
-        rva::wss::WssOwner owner(client, 2, 16);
+        rva::wss::WssOwner owner(client, 2, 6);
         assert(owner.Start());
         const std::array<uint8_t, 3> first = {'a', 'b', 'c'};
         const std::array<uint8_t, 2> second = {'d', 'e'};
@@ -402,6 +495,167 @@ void TestCallbackOnlyQueuesAndSupervisorOwnsTeardown() {
         assert(client.close_calls == 1 && client.destroy_calls == 1);
     }
     assert(client.close_calls == 1 && client.destroy_calls == 1);
+}
+
+void TestCallbackQueueInitializationIsAllOrNothing() {
+    using rva::wss::CallbackPayloadBuffer;
+
+    assert(CallbackPayloadBuffer::outstanding_allocations_for_test() == 0);
+    CallbackPayloadBuffer::SetAllocationFailureForTest(3);
+    {
+        rva::wss::CallbackEventQueue queue(4, 16);
+        assert(!queue.ready());
+        assert(queue.capacity() == 0);
+        assert(CallbackPayloadBuffer::allocation_attempts_for_test() == 3);
+        assert(CallbackPayloadBuffer::outstanding_allocations_for_test() == 0);
+    }
+
+    CallbackPayloadBuffer::SetAllocationFailureForTest(2);
+    FakeClient client;
+    {
+        rva::wss::WssOwner owner(client, 4, 16);
+        assert(!owner.Start());
+        assert(client.start_calls == 0);
+        assert(!owner.OnClientCallback({ClientEventType::kConnected}));
+        assert(owner.dropped_events() == 1);
+        assert(CallbackPayloadBuffer::allocation_attempts_for_test() == 2);
+        assert(CallbackPayloadBuffer::outstanding_allocations_for_test() == 0);
+    }
+    assert(client.destroy_calls == 1);
+    CallbackPayloadBuffer::SetAllocationFailureForTest(0);
+    assert(CallbackPayloadBuffer::outstanding_allocations_for_test() == 0);
+}
+
+void TestCallbackBurstCapacityAndNotification() {
+    static_assert(
+        rva::wss::kMaximumCallbackEvents ==
+        (rva::protocol::kMaxControlBytes + rva::wss::kMaximumCallbackFragmentBytes - 1) /
+                rva::wss::kMaximumCallbackFragmentBytes +
+            2);
+
+    FakeClient client;
+    rva::wss::WssOwner owner(
+        client,
+        rva::wss::kMaximumCallbackEvents,
+        rva::wss::kMaximumQueuedCallbackBytes);
+    size_t notifications = 0;
+    owner.BindCallbackReadyNotifier(&CountCallbackNotification, &notifications);
+
+    const std::array<uint8_t, 1> payload = {'x'};
+    for (size_t index = 0; index < rva::wss::kMaximumCallbackEvents; ++index) {
+        assert(owner.OnClientCallback(
+            {ClientEventType::kTextFragment, payload.data(), payload.size(), 0, payload.size()}));
+    }
+    assert(owner.dropped_events() == 0);
+    assert(notifications == rva::wss::kMaximumCallbackEvents);
+
+    assert(!owner.OnClientCallback({ClientEventType::kConnected}));
+    assert(owner.dropped_events() == 1);
+    assert(notifications == rva::wss::kMaximumCallbackEvents + 1);
+
+    rva::wss::OwnedClientEvent event;
+    for (size_t index = 0; index < rva::wss::kMaximumCallbackEvents; ++index) {
+        assert(owner.Poll(&event));
+        assert(event.type == ClientEventType::kTextFragment);
+        assert(event.data_size == payload.size());
+        assert(event.data[0] == payload[0]);
+    }
+    assert(!owner.Poll(&event));
+}
+
+void TestSmallFragmentsCoalesceWithinControlFrameBudget() {
+    constexpr size_t kFragmentSize = 1024;
+    constexpr size_t kFragmentCount = rva::protocol::kMaxControlBytes / kFragmentSize;
+    static_assert(kFragmentCount == 32);
+
+    FakeClient client;
+    rva::wss::WssOwner owner(
+        client,
+        rva::wss::kMaximumCallbackEvents,
+        rva::wss::kMaximumQueuedCallbackBytes);
+    std::array<uint8_t, kFragmentSize> fragment{};
+    for (size_t index = 0; index < kFragmentCount; ++index) {
+        fragment.fill(static_cast<uint8_t>(index));
+        assert(owner.OnClientCallback({
+            ClientEventType::kTextFragment,
+            fragment.data(),
+            fragment.size(),
+            index * fragment.size(),
+            rva::protocol::kMaxControlBytes,
+        }));
+    }
+    assert(owner.OnClientCallback({ClientEventType::kDisconnected}));
+    assert(owner.OnClientCallback({ClientEventType::kError}));
+    assert(owner.dropped_events() == 0);
+    assert(!owner.OnClientCallback({ClientEventType::kConnected}));
+    assert(owner.dropped_events() == 1);
+
+    rva::wss::FrameAssembler assembler;
+    rva::wss::OwnedClientEvent event;
+    std::vector<uint8_t> frame;
+    constexpr size_t kDataDescriptors =
+        rva::protocol::kMaxControlBytes / rva::wss::kMaximumCallbackFragmentBytes;
+    for (size_t descriptor = 0; descriptor < kDataDescriptors; ++descriptor) {
+        assert(owner.Poll(&event));
+        assert(event.type == ClientEventType::kTextFragment);
+        assert(event.payload_offset == descriptor * rva::wss::kMaximumCallbackFragmentBytes);
+        assert(event.data_size == rva::wss::kMaximumCallbackFragmentBytes);
+        const auto result = assembler.Consume(event, &frame);
+        assert(result == (descriptor + 1 == kDataDescriptors
+                              ? rva::wss::AssembleResult::kComplete
+                              : rva::wss::AssembleResult::kIncomplete));
+    }
+    assert(frame.size() == rva::protocol::kMaxControlBytes);
+    for (size_t index = 0; index < kFragmentCount; ++index) {
+        for (size_t offset = 0; offset < kFragmentSize; ++offset) {
+            assert(frame[index * kFragmentSize + offset] == static_cast<uint8_t>(index));
+        }
+    }
+    assert(owner.Poll(&event));
+    assert(event.type == ClientEventType::kDisconnected);
+    assert(owner.Poll(&event));
+    assert(event.type == ClientEventType::kError);
+    assert(!owner.Poll(&event));
+}
+
+void TestCallbackNotifierTeardownBarrierContract() {
+    BlockingCallbackClient client;
+    rva::wss::WssOwner owner(client, 4, 16);
+    client.BindEventSink(&owner);
+    BlockingNotificationContext notification;
+    owner.BindCallbackReadyNotifier(&BlockAndCountCallbackNotification, &notification);
+    assert(owner.Start());
+
+    std::atomic<bool> callback_result{false};
+    std::thread callback([&]() {
+        callback_result.store(
+            client.Emit({ClientEventType::kConnected}), std::memory_order_release);
+    });
+    assert(WaitUntilTrue(notification.entered));
+    assert(notification.notifications.load(std::memory_order_relaxed) == 1);
+
+    std::atomic<bool> teardown_result{false};
+    std::atomic<bool> teardown_finished{false};
+    std::thread teardown([&]() {
+        teardown_result.store(owner.SupervisorClose(100), std::memory_order_release);
+        teardown_finished.store(true, std::memory_order_release);
+    });
+    assert(WaitUntilTrue(client.destroy_entered));
+    assert(!teardown_finished.load(std::memory_order_acquire));
+
+    notification.release.store(true, std::memory_order_release);
+    callback.join();
+    teardown.join();
+    assert(callback_result.load(std::memory_order_acquire));
+    assert(teardown_result.load(std::memory_order_acquire));
+    assert(teardown_finished.load(std::memory_order_acquire));
+    assert(client.close_calls == 1 && client.destroy_calls == 1);
+
+    owner.BindCallbackReadyNotifier(nullptr, nullptr);
+    notification.alive.store(false, std::memory_order_release);
+    assert(owner.OnClientCallback({ClientEventType::kConnected}));
+    assert(notification.notifications.load(std::memory_order_relaxed) == 1);
+    assert(notification.accesses_after_retire.load(std::memory_order_relaxed) == 0);
 }
 
 void TestTeardownFailureIsObservableAndRetryable() {
@@ -431,6 +685,10 @@ int main() {
     TestSessionIdentityGenerationAndSequenceFences();
     TestDownlinkMediaSequenceSpansResponses();
     TestCallbackOnlyQueuesAndSupervisorOwnsTeardown();
+    TestCallbackQueueInitializationIsAllOrNothing();
+    TestCallbackBurstCapacityAndNotification();
+    TestSmallFragmentsCoalesceWithinControlFrameBudget();
+    TestCallbackNotifierTeardownBarrierContract();
     TestTeardownFailureIsObservableAndRetryable();
     return 0;
 }
