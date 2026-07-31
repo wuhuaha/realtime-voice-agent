@@ -765,6 +765,11 @@ class LiveKitAgentRunner:
         else:
             self._close_result.set_result(None)
 
+    def _publish_close_failure(self, failure: BaseException) -> None:
+        assert self._close_result is not None
+        if not self._close_result.done():
+            self._close_result.set_exception(failure)
+
     async def _close_once(self) -> None:
         self._owner_closing = True
         self._terminal_state.publish(AgentRunnerTerminal(AgentRunnerTerminalKind.OWNER_CLOSED))
@@ -774,6 +779,7 @@ class LiveKitAgentRunner:
             self._input.close()
         except BaseException as exc:
             failures.append(exc)
+            self._publish_close_failure(failures[0])
 
         await self._close_stage(
             self._output.close(),
@@ -825,9 +831,7 @@ class LiveKitAgentRunner:
             timeout=self._settings.agent_close_stage_timeout_seconds,
         )
         if not done:
-            assert self._close_result is not None
-            if not self._close_result.done():
-                self._close_result.set_exception(failures[0] if failures else timeout_error)
+            self._publish_close_failure(failures[0] if failures else timeout_error)
             owner = asyncio.current_task()
             assert owner is not None
             retain_shutdown_task(
@@ -840,6 +844,7 @@ class LiveKitAgentRunner:
             await task
         except BaseException as exc:
             failures.append(exc)
+            self._publish_close_failure(failures[0])
 
 
 def create_runner(settings: Settings, emit_segment: SegmentSink, response_end: StopSink) -> AgentRunner:

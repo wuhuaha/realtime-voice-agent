@@ -115,6 +115,67 @@ async def test_vad_defers_idle_reset_while_speaking_and_resets_after_end() -> No
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("operation", "message"),
+    [
+        ("push", "delegate push failed"),
+        ("flush", "delegate flush failed"),
+    ],
+)
+async def test_vad_forward_errors_surface_from_iteration_and_close(
+    operation: str,
+    message: str,
+) -> None:
+    class FailingVADStream(FakeVADStream):
+        def __init__(self) -> None:
+            super().__init__()
+            self.close_calls = 0
+
+        def push_frame(self, frame: rtc.AudioFrame) -> None:
+            if operation == "push":
+                self._events.put_nowait(None)
+                raise RuntimeError(message)
+            super().push_frame(frame)
+
+        def flush(self) -> None:
+            if operation == "flush":
+                self._events.put_nowait(None)
+                raise RuntimeError(message)
+            super().flush()
+
+        async def aclose(self) -> None:
+            self.close_calls += 1
+            await super().aclose()
+
+    class FailingVAD(FakeVAD):
+        def stream(self) -> FailingVADStream:
+            stream = FailingVADStream()
+            self.last_stream = stream
+            return stream
+
+    delegate = FailingVAD()
+    stream = ResettingVAD(  # type: ignore[arg-type]
+        delegate,
+        idle_reset_seconds=30.0,
+    ).stream()
+    inner = delegate.last_stream
+    assert isinstance(inner, FailingVADStream)
+
+    if operation == "push":
+        stream.push_frame(audio_frame())
+    else:
+        stream.flush()
+
+    with pytest.raises(RuntimeError, match=message):
+        await asyncio.wait_for(anext(stream), timeout=0.1)
+    assert inner.close_calls == 1
+
+    with pytest.raises(RuntimeError, match=message):
+        await stream.aclose()
+    assert inner.close_calls == 1
+
+
+@pytest.mark.asyncio
 async def test_vad_close_survives_caller_cancellation_and_reuses_one_close_owner() -> None:
     class BlockingVADStream(FakeVADStream):
         def __init__(self) -> None:

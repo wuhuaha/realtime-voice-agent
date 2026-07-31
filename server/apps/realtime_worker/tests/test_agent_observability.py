@@ -15,7 +15,7 @@ from realtime_worker.agent import (
     _register_livekit_observers,
 )
 from realtime_worker.config import Settings
-from realtime_worker.lifecycle import detached_shutdown_task_count
+from realtime_worker.lifecycle import detached_shutdown_task_count, run_with_hard_deadline
 from realtime_worker.observability.events import (
     BoundedJsonLogTraceSink,
     InMemoryTraceSink,
@@ -443,6 +443,70 @@ async def test_livekit_runner_close_releases_output_and_tts_after_session_failur
 
     assert events == ["output", "session", "tts"]
     assert runner._session is None and runner._tts is None  # noqa: SLF001
+
+
+@pytest.mark.asyncio
+async def test_livekit_runner_publishes_output_failure_while_session_close_is_pending() -> None:
+    release_session = asyncio.Event()
+    session_started = asyncio.Event()
+    events: list[str] = []
+    baseline = detached_shutdown_task_count()
+
+    class BlockingSession:
+        async def aclose(self) -> None:
+            events.append("session")
+            session_started.set()
+            await release_session.wait()
+
+    class FailingOutput:
+        async def close(self) -> None:
+            events.append("output")
+            raise RuntimeError("output close failed")
+
+    class FakeTTS:
+        async def aclose(self) -> None:
+            events.append("tts")
+
+    async def emit_segment(_frames: object) -> None:
+        return None
+
+    stage_timeout = 0.1
+    runner = LiveKitAgentRunner(
+        Settings(
+            runner="livekit",
+            deepseek_api_key="test-key",
+            agent_close_stage_timeout_seconds=stage_timeout,
+        ),
+        emit_segment,
+        lambda _epoch: None,
+    )
+    runner._session = BlockingSession()  # type: ignore[assignment]  # noqa: SLF001
+    runner._output = FailingOutput()  # type: ignore[assignment]  # noqa: SLF001
+    runner._tts = FakeTTS()  # noqa: SLF001
+
+    try:
+        with pytest.raises(RuntimeError, match="output close failed"):
+            await run_with_hard_deadline(
+                runner.close(),
+                timeout=stage_timeout,
+                task_name="test-livekit-agent-runner-close",
+            )
+
+        await asyncio.wait_for(session_started.wait(), timeout=0.1)
+        for _ in range(50):
+            if detached_shutdown_task_count() == baseline + 1:
+                break
+            await asyncio.sleep(0.005)
+        assert detached_shutdown_task_count() == baseline + 1
+    finally:
+        release_session.set()
+        for _ in range(50):
+            if detached_shutdown_task_count() == baseline and events == ["output", "session", "tts"]:
+                break
+            await asyncio.sleep(0.005)
+
+    assert events == ["output", "session", "tts"]
+    assert detached_shutdown_task_count() == baseline
 
 
 @pytest.mark.asyncio

@@ -66,7 +66,7 @@ class _ResettingVADStream(vad_api.VADStream):
     async def aclose(self) -> None:
         if self._close_task is None:
             self._close_task = asyncio.create_task(
-                super().aclose(),
+                self._close_once(),
                 name="vad-reset-close",
             )
             self._close_task.add_done_callback(_consume_task_result)
@@ -82,8 +82,33 @@ class _ResettingVADStream(vad_api.VADStream):
                 )
             raise
 
+    async def _close_once(self) -> None:
+        close_failure: BaseException | None = None
+        try:
+            await super().aclose()
+        except BaseException as exc:
+            close_failure = exc
+
+        if self._task.done() and not self._task.cancelled():
+            main_failure = self._task.exception()
+            if main_failure is not None:
+                raise main_failure
+        if close_failure is not None:
+            raise close_failure
+
     async def _main_task(self) -> None:
         forward_task = asyncio.create_task(self._forward_input(), name="vad-reset-input")
+        failure: BaseException | None = None
+        cancellation: asyncio.CancelledError | None = None
+
+        def remember_failure(exc: BaseException) -> None:
+            nonlocal failure, cancellation
+            if isinstance(exc, asyncio.CancelledError):
+                if cancellation is None:
+                    cancellation = exc
+            elif failure is None:
+                failure = exc
+
         try:
             async for event in self._delegate:
                 if event.type == vad_api.VADEventType.START_OF_SPEECH:
@@ -92,10 +117,26 @@ class _ResettingVADStream(vad_api.VADStream):
                     self._speaking = False
                     self._reset_pending = True
                 self._event_ch.send_nowait(event)
+        except BaseException as exc:
+            remember_failure(exc)
         finally:
-            forward_task.cancel()
-            await asyncio.gather(forward_task, return_exceptions=True)
-            await self._delegate.aclose()
+            cancel_forward = not forward_task.done()
+            if cancel_forward:
+                forward_task.cancel()
+            try:
+                await forward_task
+            except BaseException as exc:
+                if not (cancel_forward and isinstance(exc, asyncio.CancelledError)):
+                    remember_failure(exc)
+            try:
+                await self._delegate.aclose()
+            except BaseException as exc:
+                remember_failure(exc)
+
+        if failure is not None:
+            raise failure
+        if cancellation is not None:
+            raise cancellation
 
     async def _forward_input(self) -> None:
         async for item in self._input_ch:
