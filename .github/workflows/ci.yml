@@ -118,14 +118,26 @@ jobs:
 
   native-firmware-host-contracts:
     runs-on: ubuntu-latest
+    env:
+      IDF_PATH: ${{ github.workspace }}/.ci/esp-idf
     steps:
       - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - name: Check out pinned ESP-IDF
+        uses: actions/checkout@v4
+        with:
+          repository: espressif/esp-idf
+          ref: 30aaf64524299d3bde422ca9a2848090d1bc5d0f
+          path: .ci/esp-idf
+          submodules: recursive
       - name: Verify native firmware composition
         run: test -f firmware/apps/voice_terminal/main/app_main.cc
       - name: Install native host contract dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libcjson-dev
+          sudo apt-get install -y libcjson-dev ninja-build
       - name: Build and run native host contracts
         shell: bash
         run: |
@@ -179,24 +191,9 @@ jobs:
             firmware/components/transport_wss/host_tests/wss_contract_test.cc \
             -lcjson -o "$out/wss_contract_test"
           "$out/wss_contract_test"
-          g++ -std=c++20 -Wall -Wextra -Werror -O2 -pthread \
-            -I firmware/components/transport_udp/include \
-            -I firmware/components/voice_contracts/include \
-            firmware/components/voice_contracts/udp_wire.cc \
-            firmware/components/transport_udp/replay_window.cc \
-            firmware/components/transport_udp/jitter_buffer.cc \
-            firmware/components/transport_udp/playout_queue.cc \
-            firmware/components/transport_udp/udp_session.cc \
-            firmware/components/transport_udp/host_tests/udp_session_test.cc \
-            -o "$out/udp_session_test"
-          "$out/udp_session_test"
-          g++ -std=c++20 -Wall -Wextra -Werror -O2 -pthread \
-            -I firmware/components/transport_udp/include \
-            -I firmware/components/voice_contracts/include \
-            firmware/components/transport_udp/playout_queue.cc \
-            firmware/components/transport_udp/host_tests/playout_queue_test.cc \
-            -o "$out/playout_queue_test"
-          "$out/playout_queue_test"
+      - name: Run UDP host contracts and GCM fixtures
+        shell: pwsh
+        run: ./firmware/components/transport_udp/host_tests/run.ps1
       - name: Run native runtime lifecycle contracts
         shell: pwsh
         run: ./firmware/components/native_runtime/host_tests/run.ps1

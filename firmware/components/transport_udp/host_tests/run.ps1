@@ -3,8 +3,8 @@ $ErrorActionPreference = "Stop"
 $transportRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $componentsRoot = (Resolve-Path (Join-Path $transportRoot "..")).Path
 $repositoryRoot = (Resolve-Path (Join-Path $componentsRoot "../..")).Path
-$cpp = Get-Command g++, clang++ -ErrorAction SilentlyContinue | Select-Object -First 1
-if ($null -eq $cpp) { throw "A C++ host compiler is required" }
+$cpp = Get-Command g++ -ErrorAction SilentlyContinue
+if ($null -eq $cpp) { throw "g++ is required for the UDP host contracts" }
 
 $temporaryDirectory = Join-Path ([IO.Path]::GetTempPath()) ("rva-udp-test-" + [guid]::NewGuid().ToString("N"))
 New-Item -ItemType Directory -Path $temporaryDirectory | Out-Null
