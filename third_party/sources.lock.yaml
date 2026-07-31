@@ -1,12 +1,5 @@
 schema_version: 1
 sources:
-  - id: xiaozhi-esp32
-    url: https://github.com/78/xiaozhi-esp32.git
-    revision: 7b190b78e4f8dfef14126f6cd478c134b3cd3cd8
-    license: MIT
-    accessed_at: 2026-07-20
-    purpose: Historical migration source and legacy compatibility baseline; not the current endpoint implementation
-    dependency_lock_sha256: 3cd77fe32859f2588c75957e21d365f5a31c51167bb5ce65858d26f5fac1843b
   - id: esp-idf
     url: https://github.com/espressif/esp-idf.git
     revision: 30aaf64524299d3bde422ca9a2848090d1bc5d0f

@@ -3,9 +3,9 @@
 日期：2026-07-20
 状态：superseded by [0005](0005-native-esp-idf-endpoint-and-rva-protocol.md)
 
-本决策保留为兼容基线的历史记录。当前 production endpoint 与发布状态以决策 0005 和
-[Release readiness](../quality/release-readiness.md) 为准；`firmware/targets/lichuang-dev/` 仅作为回滚路线，
-不再是唯一 production composition。
+本决策保留为当时 firmware composition 收口的历史记录。当前 production endpoint 与发布状态以决策 0005 和
+[Release readiness](../quality/release-readiness.md) 为准；原 `firmware/targets/lichuang-dev/` 已退役，不再提供
+当前 rollback route。
 
 ## 背景
 
@@ -20,15 +20,15 @@
   external checkout 继续 ignored，不改变固件产品内容。
 - 当时把 `firmware/device/` 定义为非发布抽取工程；决策 0005 完成组件提升后，该目录仅保留独立 headless
   contract harness，production source 统一位于 `firmware/components/`。
-- 历史 provenance 以 `source_path` 记录原位置，以 `production_path` 记录当前文件；运行、构建、测试与 CI 不再
-  使用历史路径。
+- 当时的 migration baseline 以 `source_path` 记录原位置，以 `production_path` 记录提升后的文件；该 baseline
+  已随 legacy composition 退役，当前运行、构建、测试与 CI 不使用这项关联。
 - CI job 命名为 `production-source-contract`。它验证 pinned inputs、PowerShell parse、host contracts 与 ignored
   configuration handling，不声明 clean build。
 
 ## 后果
 
-Production source ownership 与本地/CI 入口变为唯一且可检查。代价是历史 baseline 与当前 production path 需要
-双字段关联，相关文档和 verifier 必须维护这项不变量。
+Production source ownership 与本地/CI 入口变为唯一且可检查；当时的迁移阶段需要用双字段关联 baseline 与
+production path。legacy baseline 退役后，当前 verifier 不再维护这项不变量。
 
 源码迁移完成不等于 production ready。目录提升本身不产生新的 firmware artifact，也不自动提升 clean build、
 flash、boot、UI、声学、弱网或长稳的证据等级；随后实际执行的 build/flash/boot 状态以

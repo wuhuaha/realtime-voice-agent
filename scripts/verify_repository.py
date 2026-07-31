@@ -2,9 +2,7 @@ from __future__ import annotations
 
 import argparse
 import codecs
-import hashlib
 import json
-import re
 import subprocess
 from pathlib import Path
 
@@ -31,12 +29,9 @@ FORBIDDEN_FILES = {
     "server/apps/realtime_worker/src/realtime_worker/bindings/xiaozhi_runtime.py",
     "server/apps/realtime_worker/src/realtime_worker/bindings/xiaozhi_udp.py",
 }
-SHA256_PATTERN = re.compile(r"^[0-9a-fA-F]{64}$")
 NATIVE_FIRMWARE_APP = "firmware/apps/voice_terminal"
 NATIVE_COMPONENT_ROOT = "firmware/components"
-LEGACY_FIRMWARE_PATH = "firmware/targets/lichuang-dev"
 HISTORICAL_FIRMWARE_PATH = "firmware/reference/xiaozhi-overlay"
-FIRMWARE_DEPENDENCY_LOCK = "firmware/locks/xiaozhi-esp32.dependencies.lock"
 RESEARCH_REPOSITORY_NAMES = ("voice-agent-research", "realtime-voice-agent-research")
 RESEARCH_BOUNDARY_SCAN_SUFFIXES = {
     ".bat",
@@ -71,22 +66,11 @@ RESEARCH_BOUNDARY_SCAN_NAMES = {
     "makefile",
     "procfile",
 }
-RESEARCH_BOUNDARY_EVIDENCE_EXEMPTIONS = {
-    "migration/baseline/source-manifest.yaml",
-}
 FONT_THIRD_PARTY_NOTICE = "Copyright © 2014-2021 Adobe (http://www.adobe.com/)."
 FONT_THIRD_PARTY_FILES = (
     "third_party/licenses/Noto-Sans-CJK-OFL-1.1.txt",
     "third_party/licenses/xiaozhi-fonts-MIT.txt",
 )
-
-
-def sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
 
 
 def repository_files(root: Path) -> tuple[str, ...]:
@@ -114,107 +98,6 @@ def validate_tracked_paths(paths: tuple[str, ...]) -> list[str]:
         if Path(normalized).suffix.lower() in FORBIDDEN_SUFFIXES:
             errors.append(f"forbidden tracked artifact: {raw_path}")
     return errors
-
-
-def validate_manifest(root: Path) -> list[str]:
-    manifest_path = root / "migration" / "baseline" / "source-manifest.yaml"
-    if not manifest_path.is_file():
-        return [f"missing manifest: {manifest_path.relative_to(root).as_posix()}"]
-    payload = yaml.safe_load(manifest_path.read_text(encoding="utf-8"))
-    if not isinstance(payload, dict):
-        return ["source manifest must be a mapping"]
-    entries = payload.get("files")
-    if not isinstance(entries, list):
-        return ["source manifest files must be a list"]
-    errors: list[str] = []
-    raw_retired_prefixes = payload.get("retired_prefixes", [])
-    retired_prefixes: tuple[str, ...] = ()
-    if not isinstance(raw_retired_prefixes, list) or not all(
-        isinstance(prefix, str) and prefix and prefix.endswith("/")
-        for prefix in raw_retired_prefixes
-    ):
-        errors.append("source manifest retired_prefixes must be path-prefix strings ending in slash")
-    else:
-        retired_prefixes = tuple(prefix.replace("\\", "/") for prefix in raw_retired_prefixes)
-    manifest_paths: set[str] = set()
-    for entry in entries:
-        if not isinstance(entry, dict) or not isinstance(entry.get("production_path"), str):
-            errors.append("manifest file entry must contain a string production_path")
-            continue
-        normalized_path = entry["production_path"].replace("\\", "/")
-        if normalized_path in manifest_paths:
-            errors.append(f"duplicate manifest production_path: {normalized_path}")
-            continue
-        manifest_paths.add(normalized_path)
-        source_path = entry.get("source_path")
-        if source_path is not None and not isinstance(source_path, str):
-            errors.append(f"invalid manifest source_path: {normalized_path}")
-        if normalized_path.startswith(f"{LEGACY_FIRMWARE_PATH}/"):
-            suffix = normalized_path.removeprefix(LEGACY_FIRMWARE_PATH)
-            expected_source = f"{HISTORICAL_FIRMWARE_PATH}{suffix}"
-            if source_path != expected_source:
-                errors.append(f"firmware provenance path mismatch: {normalized_path}")
-        expected_hash = entry.get("sha256")
-        if not isinstance(expected_hash, str) or SHA256_PATTERN.fullmatch(expected_hash) is None:
-            errors.append(f"invalid manifest SHA256: {normalized_path}")
-            continue
-        relative = Path(normalized_path)
-        target = (root / relative).resolve()
-        if not target.is_relative_to(root.resolve()):
-            errors.append(f"manifest path escapes repository: {relative}")
-            continue
-        historical = entry.get("historical") is True or normalized_path.startswith(retired_prefixes)
-        if not target.is_file() and historical:
-            continue
-        if not target.is_file():
-            errors.append(f"manifest file missing: {relative.as_posix()}")
-            continue
-        actual = sha256(target)
-        if not historical and actual.lower() != expected_hash.lower():
-            errors.append(f"manifest hash mismatch: {relative.as_posix()}")
-    traceability = payload.get("traceability", {})
-    if not isinstance(traceability, dict):
-        errors.append("source manifest traceability must be a mapping")
-    else:
-        for capability, paths in traceability.items():
-            if not isinstance(paths, list) or not paths:
-                errors.append(f"traceability group must be a non-empty list: {capability}")
-                continue
-            for raw_path in paths:
-                if not isinstance(raw_path, str) or raw_path.replace("\\", "/") not in manifest_paths:
-                    errors.append(f"traceability path is not hashed in manifest: {capability}: {raw_path}")
-    return errors
-
-
-def validate_firmware_source_lock(root: Path) -> list[str]:
-    controlled_lock = root / FIRMWARE_DEPENDENCY_LOCK
-    source_lock = root / "third_party" / "sources.lock.yaml"
-    manifest = root / "migration" / "baseline" / "source-manifest.yaml"
-    if not controlled_lock.is_file() or not source_lock.is_file() or not manifest.is_file():
-        return ["firmware dependency lock identity inputs are incomplete"]
-
-    actual = sha256(controlled_lock).lower()
-    source_payload = yaml.safe_load(source_lock.read_text(encoding="utf-8"))
-    source_entries = source_payload.get("sources", []) if isinstance(source_payload, dict) else []
-    matches = [
-        entry for entry in source_entries if isinstance(entry, dict) and entry.get("id") == "xiaozhi-esp32"
-    ]
-    errors: list[str] = []
-    if len(matches) != 1 or matches[0].get("dependency_lock_sha256") != actual:
-        errors.append("third_party source lock differs from controlled firmware dependency lock")
-
-    manifest_payload = yaml.safe_load(manifest.read_text(encoding="utf-8"))
-    upstream = manifest_payload.get("upstream", {}) if isinstance(manifest_payload, dict) else {}
-    if not isinstance(upstream, dict) or upstream.get("xiaozhi_dependencies_lock_sha256") != actual:
-        errors.append("migration provenance differs from controlled firmware dependency lock")
-    return errors
-
-
-def validate_optional_legacy_rollback(root: Path) -> list[str]:
-    """Validate pinned rollback provenance only while the legacy target is retained."""
-    if not (root / LEGACY_FIRMWARE_PATH).exists():
-        return []
-    return [*validate_manifest(root), *validate_firmware_source_lock(root)]
 
 
 def validate_firmware_composition(root: Path) -> list[str]:
@@ -346,8 +229,6 @@ def validate_research_boundary(root: Path, paths: tuple[str, ...]) -> list[str]:
         path = root / raw_path
         if not path.is_file():
             continue
-        if normalized in RESEARCH_BOUNDARY_EVIDENCE_EXEMPTIONS:
-            continue
         if not is_executable_or_config(path):
             continue
         if normalized == "scripts/verify_repository.py":
@@ -435,8 +316,6 @@ def main() -> int:
     paths = repository_files(root)
     errors = [
         *validate_tracked_paths(paths),
-        *validate_manifest(root),
-        *validate_optional_legacy_rollback(root),
         *validate_protocol(root),
         *validate_firmware_composition(root),
         *validate_font_supply_chain(root),

@@ -4,8 +4,7 @@
 设备通过项目定义的 `rva-control-v2` 与 `wss-opus-v3` / `udp-opus-gcm-v2` 接入 roomless LiveKit
 `AgentSession`。服务端由 Session Director、可水平扩展的 Realtime Worker 和 provider adapters 组成。
 
-默认产品路径是 native ESP-IDF endpoint、`/v2/voice` 和 RVA wire。历史 migration provenance 只用于追溯
-已验证来源，不参与当前构建、运行或协议兼容。
+默认产品路径是 native ESP-IDF endpoint、`/v2/voice` 和 RVA wire。
 
 ## 当前能力
 
@@ -28,7 +27,6 @@ firmware/       native application and reusable endpoint components
 clients/        protocol reference endpoints and deterministic host E2E clients
 docs/           product, architecture, protocol, security, quality and operations
 tests/          repository and cross-endpoint contract gates
-migration/      compatibility evidence and rollback provenance
 third_party/    pinned upstream sources and license inventory
 ```
 

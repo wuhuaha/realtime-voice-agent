@@ -6,8 +6,8 @@
 ## 1. 范围
 
 首个 native endpoint 是立创实战派 ESP32-S3，使用 ESP-IDF 5.5.2。正式 application 入口是
-`firmware/apps/voice_terminal`；`firmware/components` 保存可复用实现。历史来源只保存在 migration provenance，
-不进入当前固件 composition。
+`firmware/apps/voice_terminal`；`firmware/components` 保存可复用实现。已退役实现只由 Git 历史和
+ADR 记录，不进入当前固件 composition。
 
 ## 2. 依赖方向
 

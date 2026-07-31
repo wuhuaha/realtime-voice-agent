@@ -4,7 +4,6 @@
 
 - `apps/voice_terminal/`：Product 自有 ESP-IDF application composition。
 - `components/`：board、audio/AFE、RVA protocol、WSS/UDP transport、configuration、runtime 和可选 LVGL UI。
-- `locks/`：只保留已退役 migration target 的 dependency provenance，不进入 current build/runtime。
 - `device/`：独立 headless contract harness，仅消费 `components/voice_contracts` 与 `components/voice_core`，
   不提供 production runtime source，也不生成发布镜像。
 

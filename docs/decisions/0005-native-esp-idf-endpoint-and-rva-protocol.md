@@ -3,11 +3,12 @@
 日期：2026-07-21
 状态：accepted / protocol and compatibility boundary superseded by [0006](0006-server-authoritative-interruption-and-rva-v2.md)
 实施状态：native endpoint、RVA control 与中性 transport 已成为当前主线；下述“背景”描述决策作出时的旧状态，
-不代表当前 production composition。精确发布证据以 [Release readiness](../quality/release-readiness.md) 为准。
+不代表当前 production composition。旧 Xiaozhi target 与 migration rollback assets 已退役，不再提供当前恢复路线。
+精确发布证据以 [Release readiness](../quality/release-readiness.md) 为准。
 
 ## 背景
 
-当前 production firmware 以固定 `xiaozhi-esp32` application 加 Product overlay 交付。该组合已经验证显示、
+决策作出时，production firmware 以固定 `xiaozhi-esp32` application 加 Product overlay 交付。该组合已经验证显示、
 触摸、音频、AEC、WSS/UDP 和端云闭环，但仍链接 MCP、MQTT、Xiaozhi OTA/assets/activation 等当前产品不需要的
 能力，并让 Product wire、构建和应用生命周期持续受上游 application 约束。
 

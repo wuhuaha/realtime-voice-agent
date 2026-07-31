@@ -181,7 +181,8 @@ UDP grant 同时携带绝对安全边界 `expires_at_ms` 和相对调度值 `ref
 ## 7. 安全发布门禁
 
 - 替换所有 placeholder，secret 来自 secret manager，不烘焙镜像。
-- 生产禁用共享 lab token 或限定在隔离维护入口。
+- `production` 必须设置 `VOICE_ALLOW_LAB_AUTH=false`；共享 lab token 仅用于 `development` 的单进程或
+  隔离调试，不作为生产维护入口。
 - Grant `jti` 由 Director 在 shared coordination store 原子消费；Redis-backed 重建与跨实例 replay 测试必须
   持续通过。该证据不替代 Redis HA、网络分区和生产故障演练。
 - TLS、rate limit、UDP amplification/replay、日志脱敏和 retention 检查通过。

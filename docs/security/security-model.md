@@ -36,8 +36,9 @@ HMAC 比较使用 constant-time API。生产 signing key 至少 128 bit 随机�
 coordination store 中原子单次消费。Redis-enabled tests 已覆盖重复消费、重建 service/store 后 replay 拒绝及跨
 实例行为。该结论解决 process-local replay 缺口，但不等于 Redis HA、网络分区或生产故障演练已完成。
 
-共享 lab token 和 Director bootstrap token 是兼容/开发入口，不是完善的设备 enrollment/rotation 体系；生产需
-限制、分设备化或替换。
+共享 lab token 仅用于 `development` 的单进程或隔离调试，不是兼容基线，也不进入生产鉴权面；`production`
+必须设置 `VOICE_ALLOW_LAB_AUTH=false`。Director bootstrap token 仍不是完善的设备 enrollment/rotation 体系，
+生产部署需限制、分设备化或替换。
 
 ## 4. WSS
 

@@ -13,7 +13,7 @@ rva-control-v2 over /v2/voice WSS
   + udp-opus-gcm-v2    authenticated selectable profile
 ```
 
-不提供 v1、Xiaozhi 或新旧 media profile dual stack。旧 wire 由 Git 历史和 migration/ADR 保存，不在当前 registry、
+不提供 v1、Xiaozhi 或新旧 media profile dual stack。旧 wire 由 Git 历史和 ADR 记录，不在当前 registry、
 schema、fixture、runtime route 或发布资产中继续 authoring。
 
 ## 2. 权威层级

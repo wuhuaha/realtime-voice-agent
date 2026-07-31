@@ -31,8 +31,8 @@
 
 ## 证据
 
-- [兼容基线](../quality/compatibility-baseline.md)。
-- `migration/baseline/source-manifest.yaml`、`behavior-matrix.yaml` 和 `third_party/sources.lock.yaml`。
+当时的兼容基线与 migration manifests 已随 legacy lane 退役，历史状态由 Git 历史保留；当前发布证据见
+[Release readiness](../quality/release-readiness.md)。
 
 ## 决定与范围
 
@@ -51,8 +51,8 @@ target lane 并存，存在短期重复和更多兼容测试。风险：目录�
 
 ## 兼容和迁移
 
-Reference lane 在目标 lane 通过等价门禁前保持可构建；最终发布不依赖研究仓或 external checkout常驻。
-Provenance、fixtures 和 baseline 保留；当前构建、真机、声学、弱网和长稳状态只在 release readiness 中维护。
+Reference lane 曾在目标 lane 通过等价门禁前保持可构建；收口后 legacy lane 已退役，当前发布不依赖研究仓或
+external checkout 常驻。当前构建、真机、声学、弱网和长稳状态只在 release readiness 中维护。
 
 ## 复查触发条件
 

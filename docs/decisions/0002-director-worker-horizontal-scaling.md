@@ -62,8 +62,15 @@ replay guard；但 Redis HA、网络分区、真实多进程压力与生产故�
 
 ## 兼容和迁移
 
-开发可保留 direct Worker + lab token 路径用于 reference baseline，但不能作为生产水平扩展证明。设备完成
-bootstrap能力迁移后，应优先使用短期 worker-bound grant。WSS/UDP wire保持 v1，不因部署拓扑改变。
+本决策作出时，曾允许开发环境将绕过 Director 的 direct Worker + lab token 路径作为 reference baseline，并在当时
+要求 WSS/UDP wire 保持 v1。该 migration/reference baseline 与 v1 wire 均已退役，只由 Git 历史和 ADR 保留。
+
+当前 production 设备必须先经 Director bootstrap，再使用短期、单次、worker-bound grant 直连选定 Worker；current
+wire 仅为 `rva-control-v2` 与 `wss-opus-v3` / `udp-opus-gcm-v2`，且不运行 v1 dual stack（见
+[决策 0006](0006-server-authoritative-interruption-and-rva-v2.md)）。
+现有 lab token 鉴权仅用于 `development` 环境的单进程/隔离调试，并继续使用上述 current wire；`production`
+必须设置 `VOICE_ALLOW_LAB_AUTH=false`。它不是 compatibility/reference baseline，也不能替代 Director bootstrap、
+worker-bound grant 或水平扩展证据。
 
 ## 复查触发条件
 
@@ -71,6 +78,8 @@ bootstrap能力迁移后，应优先使用短期 worker-bound grant。WSS/UDP wi
 - Redis-compatible store不能满足 atomic lease/fencing或成为媒体同步依赖。
 - 新增跨区域、边缘入口或标准浏览器媒体需要统一 Edge。
 - 容量测量表明 session不是合适调度单位，需引入 provider/GPU独立配额。
+- 单进程/隔离调试不再需要 lab credential，或设备 enrollment/rotation 已替代 shared credential，需要删除
+  `VOICE_ALLOW_LAB_AUTH` 及其配置、测试和运维面。
 - 需要 active turn无缝迁移，且业务价值足以承担分布式状态成本。
 
 ## 关联链接
