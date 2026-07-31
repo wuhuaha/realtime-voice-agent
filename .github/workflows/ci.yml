@@ -113,7 +113,8 @@ jobs:
           uv run --directory server pytest
           tests/architecture/test_run_local_script.py
           tests/e2e/test_horizontal_scale_processes.py
-          -k "run_local or windows_job_supervisor"
+          tests/e2e/test_windows_legacy_startup_fail_closed.py
+          -k "run_local or windows_job_supervisor or legacy_manifest"
 
   native-firmware-host-contracts:
     runs-on: ubuntu-latest

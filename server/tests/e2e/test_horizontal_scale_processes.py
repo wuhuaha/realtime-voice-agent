@@ -270,6 +270,32 @@ def _windows_process_identity(process_id: int) -> dict[str, Any]:
     return _process_identity_from_row(row)
 
 
+def _wait_for_spawned_process_identity(
+    process: subprocess.Popen[Any],
+    *,
+    stderr_path: Path,
+) -> dict[str, Any]:
+    def probe() -> dict[str, Any] | None:
+        returncode = process.poll()
+        if returncode is not None:
+            stderr = stderr_path.read_text(encoding="utf-8", errors="replace")
+            raise AssertionError(
+                "spawned process exited before its identity became available: "
+                f"pid={process.pid}, returncode={returncode}, "
+                f"stderr_path={stderr_path}, stderr={stderr!r}"
+            )
+        try:
+            return _windows_process_identity(process.pid)
+        except ProcessLookupError:
+            return None
+
+    return _wait_for(
+        probe,
+        timeout=2,
+        description=f"spawned process {process.pid} identity",
+    )
+
+
 def _assert_manifest_process_identities(manifest: dict[str, Any]) -> None:
     process_ids = [
         int(process_id)
@@ -332,6 +358,42 @@ def _invoke_stop(runtime_dir: Path) -> subprocess.CompletedProcess[str]:
         timeout=20,
         env=_clean_process_environment(),
     )
+
+
+def _run_legacy_stop_harness(
+    tmp_path: Path,
+    source: str,
+    *,
+    scenario: str,
+) -> dict[str, Any]:
+    runtime_dir = tmp_path / "runtime"
+    runtime_dir.mkdir()
+    harness = tmp_path / "legacy-stop-harness.ps1"
+    harness.write_text(source, encoding="utf-8")
+    completed = subprocess.run(
+        [
+            "pwsh",
+            "-NoProfile",
+            "-File",
+            str(harness),
+            "-RunLocal",
+            str(RUN_LOCAL),
+            "-RuntimeDirectory",
+            str(runtime_dir),
+            "-Scenario",
+            scenario,
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=20,
+        env=_clean_process_environment(),
+    )
+    assert completed.returncode == 0, f"{completed.stdout}\n{completed.stderr}"
+    result_lines = [line for line in completed.stdout.splitlines() if line.startswith("{")]
+    assert result_lines, f"{completed.stdout}\n{completed.stderr}"
+    return json.loads(result_lines[-1])
 
 
 def _cluster_environment(
@@ -541,6 +603,113 @@ def test_windows_job_supervisor_stop_failure_preserves_survivor_identity(tmp_pat
 
 
 @pytest.mark.e2e_host
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows process identity helper test")
+def test_windows_job_supervisor_missing_bound_is_recorded_after_inspection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    supervisor = _supervisor_module()
+    events: list[str] = []
+
+    class MissingProcessKernel:
+        def OpenProcess(self, access: int, inherit: bool, process_id: int) -> int:  # noqa: N802
+            events.append("open-process")
+            return 0
+
+    def record_clock() -> int:
+        events.append("clock")
+        return 638000000000000123
+
+    monkeypatch.setattr(supervisor, "_kernel32", MissingProcessKernel)
+    monkeypatch.setattr(supervisor, "_utc_now_dotnet_ticks", record_clock)
+    monkeypatch.setattr(supervisor.ctypes, "get_last_error", lambda: supervisor.ERROR_INVALID_PARAMETER)
+
+    result = supervisor.terminate_verified_process(
+        1234,
+        638000000000000000,
+        r"C:\tree\root.exe",
+        start_time_tolerance_ticks=0,
+        timeout_ms=5000,
+    )
+
+    assert events == ["open-process", "clock"]
+    assert result == {
+        "state": "missing",
+        "process_id": 1234,
+        "process_absent_utc_ticks": 638000000000000123,
+    }
+
+
+@pytest.mark.e2e_host
+def test_spawned_process_identity_retries_initial_lookup_miss(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    stderr_path = tmp_path / "spawned.stderr.log"
+    stderr_path.write_text("", encoding="utf-8")
+    expected = {"start_time_utc_ticks": "638000000000000123"}
+    events: list[str] = []
+
+    class RunningProcess:
+        pid = 1234
+
+        def poll(self) -> None:
+            events.append("poll")
+            return None
+
+    attempts = 0
+
+    def identity(process_id: int) -> dict[str, Any]:
+        nonlocal attempts
+        attempts += 1
+        events.append(f"identity:{process_id}")
+        if attempts == 1:
+            raise ProcessLookupError(process_id)
+        return expected
+
+    monkeypatch.setitem(globals(), "_windows_process_identity", identity)
+    monkeypatch.setattr(time, "sleep", lambda _: events.append("sleep"))
+
+    assert (
+        _wait_for_spawned_process_identity(RunningProcess(), stderr_path=stderr_path) == expected
+    )
+    assert events == ["poll", "identity:1234", "sleep", "poll", "identity:1234"]
+
+
+@pytest.mark.e2e_host
+def test_spawned_process_identity_reports_already_exited_process(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    stderr_path = tmp_path / "spawned.stderr.log"
+    stderr_path.write_text("fixture startup failed\n", encoding="utf-8")
+    events: list[str] = []
+
+    class ExitedProcess:
+        pid = 4321
+
+        def poll(self) -> int:
+            events.append("poll")
+            return 17
+
+    monkeypatch.setitem(
+        globals(),
+        "_windows_process_identity",
+        lambda _: pytest.fail("identity lookup must not run after process exit"),
+    )
+    monkeypatch.setattr(time, "sleep", lambda _: pytest.fail("exit diagnosis must not retry"))
+
+    with pytest.raises(AssertionError) as exc_info:
+        _wait_for_spawned_process_identity(ExitedProcess(), stderr_path=stderr_path)
+
+    message = str(exc_info.value)
+    assert "pid=4321" in message
+    assert "returncode=17" in message
+    assert f"stderr_path={stderr_path}" in message
+    assert "fixture startup failed" in message
+    assert events == ["poll"]
+
+
+@pytest.mark.e2e_host
 @pytest.mark.skipif(sys.platform != "win32", reason="Windows legacy process lifecycle test")
 def test_legacy_manifest_start_time_fallback_remains_stoppable(tmp_path: Path) -> None:
     process = subprocess.Popen(
@@ -573,53 +742,837 @@ def test_legacy_manifest_start_time_fallback_remains_stoppable(tmp_path: Path) -
 
         stopped = _invoke_stop(runtime_dir)
 
-        assert stopped.returncode == 0, f"{stopped.stdout}\n{stopped.stderr}"
         assert process.wait(timeout=5) != 0
-        assert not manifest_path.exists()
+        if stopped.returncode == 0:
+            assert not manifest_path.exists()
+        else:
+            assert "survivor identities remain" in stopped.stderr
+            retained = json.loads(manifest_path.read_text(encoding="utf-8"))
+            entries = retained["processes"]
+            assert entries
+            assert all(
+                entry.get("legacy_descendant_scan_incomplete") is True
+                for entry in entries
+            )
+            assert all(int(entry["pid"]) != process.pid for entry in entries)
     finally:
         if process.poll() is None:
             process.kill()
             process.wait(timeout=5)
 
 
+LEGACY_PROCESS_TREE_HARNESS = r"""
+param(
+    [string]$RunLocal,
+    [string]$RuntimeDirectory,
+    [ValidateSet(
+        'fixed-point',
+        'pre-capture-failure',
+        'post-capture-failure',
+        'post-termination-exception',
+        'journal-write-failure',
+        'bound-journal-write-failure',
+        'plain-root-missing',
+        'parent-pid-reuse-before-capture',
+        'missing-late-child',
+        'missing-pid-reuse',
+        'bounded-parent-unbounded-child'
+    )]
+    [string]$Scenario
+)
+. $RunLocal -Stop -RuntimeDirectory $RuntimeDirectory
+
+$baseTicks = 638000000000000000L
+$script:processes = @{}
+$script:terminationStates = @{}
+$script:terminationBounds = @{}
+$script:spawnOnTermination = @{}
+$script:hiddenCaptures = @{}
+$script:captureFailures = @{}
+$script:postTerminationCaptureFailures = @{}
+$script:attemptOrder = [System.Collections.Generic.List[int]]::new()
+$script:allowRecovery = $false
+$script:journalWrites = 0
+$script:reuseInjected = $false
+
+function Add-FakeProcess {
+    param(
+        [int]$ProcessId,
+        [int]$ParentProcessId,
+        [long]$CreatedTicks,
+        [string]$Executable,
+        [bool]$Alive
+    )
+    $script:processes[$ProcessId] = [pscustomobject]@{
+        ProcessId = $ProcessId
+        ParentProcessId = $ParentProcessId
+        CreationDate = [DateTime]::new($CreatedTicks, [DateTimeKind]::Utc)
+        ExecutablePath = $Executable
+        alive = $Alive
+    }
+}
+
+function Set-FakeTermination {
+    param(
+        [int]$ProcessId,
+        [string]$State,
+        [long]$BoundTicks,
+        [int[]]$SpawnIds = @()
+    )
+    $script:terminationStates[$ProcessId] = $State
+    $script:terminationBounds[$ProcessId] = $BoundTicks
+    $script:spawnOnTermination[$ProcessId] = @($SpawnIds)
+}
+
+switch ($Scenario) {
+    'fixed-point' {
+        Add-FakeProcess 100 0 $baseTicks 'C:\tree\root.exe' $true
+        Add-FakeProcess 101 100 ($baseTicks + 100) 'C:\tree\child.exe' $true
+        Add-FakeProcess 102 101 ($baseTicks + 300) 'C:\tree\grandchild.exe' $false
+        Add-FakeProcess 103 102 ($baseTicks + 500) 'C:\tree\great-grandchild.exe' $false
+        Add-FakeProcess 900 100 ($baseTicks + 900) 'C:\unrelated\python.exe' $false
+        Set-FakeTermination 100 'terminated' ($baseTicks + 250) @(900)
+        Set-FakeTermination 101 'terminated' ($baseTicks + 350) @(102)
+        Set-FakeTermination 102 'terminated' ($baseTicks + 550) @(103)
+        Set-FakeTermination 103 'terminated' ($baseTicks + 650)
+        $script:hiddenCaptures[101] = 1
+        $script:hiddenCaptures[102] = 1
+        $rootId = 100
+    }
+    'pre-capture-failure' {
+        Add-FakeProcess 200 0 $baseTicks 'C:\tree\root.exe' $true
+        Set-FakeTermination 200 'terminated' ($baseTicks + 100)
+        $script:captureFailures[200] = 1
+        $rootId = 200
+    }
+    'post-capture-failure' {
+        Add-FakeProcess 300 0 $baseTicks 'C:\tree\root.exe' $true
+        Add-FakeProcess 301 300 ($baseTicks + 100) 'C:\tree\late-child.exe' $false
+        Set-FakeTermination 300 'terminated' ($baseTicks + 200) @(301)
+        Set-FakeTermination 301 'terminated' ($baseTicks + 300)
+        $script:postTerminationCaptureFailures[300] = 1
+        $rootId = 300
+    }
+    'post-termination-exception' {
+        Add-FakeProcess 300 0 $baseTicks 'C:\tree\root.exe' $true
+        Add-FakeProcess 301 300 ($baseTicks + 100) 'C:\tree\late-child.exe' $false
+        Set-FakeTermination 300 'terminated' ($baseTicks + 200) @(301)
+        Set-FakeTermination 301 'terminated' ($baseTicks + 300)
+        $rootId = 300
+    }
+    'journal-write-failure' {
+        Add-FakeProcess 600 0 $baseTicks 'C:\tree\root.exe' $true
+        Add-FakeProcess 601 600 ($baseTicks + 100) 'C:\tree\late-child.exe' $false
+        Set-FakeTermination 600 'terminated' ($baseTicks + 200) @(601)
+        Set-FakeTermination 601 'terminated' ($baseTicks + 300)
+        $rootId = 600
+    }
+    'bound-journal-write-failure' {
+        Add-FakeProcess 600 0 $baseTicks 'C:\tree\root.exe' $true
+        Add-FakeProcess 601 600 ($baseTicks + 100) 'C:\tree\late-child.exe' $false
+        Set-FakeTermination 600 'terminated' ($baseTicks + 200) @(601)
+        Set-FakeTermination 601 'terminated' ($baseTicks + 300)
+        $rootId = 600
+    }
+    'plain-root-missing' {
+        Add-FakeProcess 800 0 $baseTicks 'C:\tree\missing-root.exe' $false
+        $rootId = 800
+    }
+    'parent-pid-reuse-before-capture' {
+        Add-FakeProcess 700 0 $baseTicks 'C:\tree\original-root.exe' $true
+        Add-FakeProcess 701 700 ($baseTicks + 100) 'C:\unrelated\child.exe' $false
+        $rootId = 700
+    }
+    'missing-late-child' {
+        Add-FakeProcess 400 0 $baseTicks 'C:\tree\root.exe' $true
+        Add-FakeProcess 401 400 ($baseTicks + 100) 'C:\tree\candidate-child.exe' $false
+        Set-FakeTermination 400 'missing' ($baseTicks + 200) @(401)
+        Set-FakeTermination 401 'terminated' ($baseTicks + 400)
+        $rootId = 400
+    }
+    'missing-pid-reuse' {
+        Add-FakeProcess 400 0 $baseTicks 'C:\tree\root.exe' $true
+        Add-FakeProcess 401 400 ($baseTicks + 300) 'C:\unrelated\candidate-child.exe' $false
+        Set-FakeTermination 400 'missing' ($baseTicks + 200) @(401)
+        Set-FakeTermination 401 'terminated' ($baseTicks + 400)
+        $rootId = 400
+    }
+    'bounded-parent-unbounded-child' {
+        Add-FakeProcess 500 0 $baseTicks 'C:\tree\root.exe' $false
+        Add-FakeProcess 501 500 ($baseTicks + 100) 'C:\tree\child.exe' $true
+        Add-FakeProcess 502 501 ($baseTicks + 250) 'C:\tree\grandchild.exe' $false
+        Add-FakeProcess 599 501 ($baseTicks + 500) 'C:\unrelated\reused-child.exe' $false
+        Set-FakeTermination 501 'terminated' ($baseTicks + 400) @(502, 599)
+        Set-FakeTermination 502 'terminated' ($baseTicks + 450)
+        $rootId = 500
+    }
+}
+
+function Get-RecordedProcessStatus {
+    param(
+        [int]$ProcessId,
+        [string]$StartTimeUtcTicks,
+        [object]$StartTimeUtc,
+        [int]$StartTimeToleranceTicks = 0,
+        [string]$Executable
+    )
+    if ($Scenario -eq 'parent-pid-reuse-before-capture' -and
+        $ProcessId -eq 700 -and
+        -not $script:reuseInjected) {
+        $script:reuseInjected = $true
+        Add-FakeProcess 700 0 ($baseTicks + 50) 'C:\unrelated\reused-parent.exe' $true
+        $script:processes[701].alive = $true
+        return [pscustomobject]@{ state = 'match'; process = $null }
+    }
+    $process = $script:processes[$ProcessId]
+    if ($null -ne $process -and $process.alive) {
+        return [pscustomobject]@{ state = 'match'; process = $null }
+    }
+    return [pscustomobject]@{ state = 'missing'; process = $null }
+}
+
+function Get-LegacyExactProcessGuard {
+    param([object]$Identity)
+    if ($Scenario -eq 'parent-pid-reuse-before-capture' -and
+        [int]$Identity.pid -eq 700) {
+        if (-not $script:reuseInjected) {
+            $script:reuseInjected = $true
+            Add-FakeProcess 700 0 ($baseTicks + 50) 'C:\unrelated\reused-parent.exe' $true
+            $script:processes[701].alive = $true
+        }
+        return [pscustomobject]@{
+            state = 'mismatch'
+            process = $null
+            identity_key = Get-LegacyIdentityKey -Identity $Identity
+        }
+    }
+    $process = $script:processes[[int]$Identity.pid]
+    if ($null -ne $process -and $process.alive) {
+        return [pscustomobject]@{
+            state = 'match'
+            process = $process
+            identity_key = Get-LegacyIdentityKey -Identity $Identity
+        }
+    }
+    return [pscustomobject]@{
+        state = 'missing'
+        process = $null
+        identity_key = Get-LegacyIdentityKey -Identity $Identity
+    }
+}
+
+function Close-LegacyExactProcessGuard {
+    param([object]$Guard)
+}
+
+function Get-CimInstance {
+    param(
+        [string]$ClassName,
+        [string]$Filter,
+        [uint]$OperationTimeoutSec,
+        [object]$ErrorAction
+    )
+    $parentId = [int]([regex]::Match($Filter, '(\d+)$').Groups[1].Value)
+    if ([int]$script:captureFailures[$parentId] -gt 0) {
+        $script:captureFailures[$parentId] = [int]$script:captureFailures[$parentId] - 1
+        throw 'injected pre-termination CIM capture failure'
+    }
+    if (-not $script:processes[$parentId].alive -and
+        [int]$script:postTerminationCaptureFailures[$parentId] -gt 0) {
+        $script:postTerminationCaptureFailures[$parentId] = [int]$script:postTerminationCaptureFailures[$parentId] - 1
+        throw 'injected post-termination CIM capture failure'
+    }
+    $candidates = @(
+        $script:processes.Values |
+            Where-Object { $_.alive -and $_.ParentProcessId -eq $parentId } |
+            Sort-Object ProcessId
+    )
+    if ($candidates.Count -gt 0 -and [int]$script:hiddenCaptures[$parentId] -gt 0) {
+        $script:hiddenCaptures[$parentId] = [int]$script:hiddenCaptures[$parentId] - 1
+        return @()
+    }
+    return @($candidates)
+}
+
+$script:originalLegacyCapture = ${function:Get-LegacyChildIdentityCapture}
+function Get-LegacyChildIdentityCapture {
+    param(
+        [object]$ParentIdentity,
+        [object]$CreatedNotAfterTicks,
+        [DateTimeOffset]$Deadline,
+        [string]$RootName,
+        [object]$ParentGuard = $null
+    )
+    if ($Scenario -eq 'post-termination-exception' -and
+        [int]$ParentIdentity.pid -eq 300 -and
+        -not $script:processes[300].alive -and
+        -not $script:allowRecovery) {
+        throw 'injected unhandled post-termination exception'
+    }
+    & $script:originalLegacyCapture @PSBoundParameters
+}
+
+$script:originalWriteJsonAtomically = ${function:Write-JsonAtomically}
+function Write-JsonAtomically {
+    param([object]$Value)
+    $script:journalWrites += 1
+    if ($Scenario -eq 'journal-write-failure' -and -not $script:allowRecovery -and $script:journalWrites -eq 1) {
+        throw 'injected journal write failure'
+    }
+    if ($Scenario -eq 'bound-journal-write-failure' -and -not $script:allowRecovery -and $script:journalWrites -eq 2) {
+        throw 'injected bound journal write failure'
+    }
+    & $script:originalWriteJsonAtomically -Value $Value
+}
+
+function Invoke-VerifiedTermination {
+    param(
+        [int]$ProcessId,
+        [string]$StartTimeUtcTicks,
+        [object]$StartTimeUtc,
+        [int]$StartTimeToleranceTicks = 0,
+        [string]$Executable,
+        [int]$TimeoutMilliseconds = 5000
+    )
+    $script:attemptOrder.Add($ProcessId)
+    $process = $script:processes[$ProcessId]
+    if ($null -eq $process -or -not $process.alive) {
+        return [pscustomobject]@{
+            state = 'missing'
+            process_id = $ProcessId
+            process_absent_utc_ticks = [string]($baseTicks + 1000)
+        }
+    }
+    if ($Scenario -eq 'parent-pid-reuse-before-capture' -and $ProcessId -eq 700) {
+        return [pscustomobject]@{ state = 'mismatch'; process_id = $ProcessId }
+    }
+    $process.alive = $false
+    foreach ($spawnId in @($script:spawnOnTermination[$ProcessId])) {
+        $script:processes[[int]$spawnId].alive = $true
+    }
+    $state = [string]$script:terminationStates[$ProcessId]
+    $bound = [string]$script:terminationBounds[$ProcessId]
+    if ($state -eq 'missing') {
+        return [pscustomobject]@{
+            state = 'missing'
+            process_id = $ProcessId
+            process_absent_utc_ticks = $bound
+        }
+    }
+    return [pscustomobject]@{
+        state = 'terminated'
+        process_id = $ProcessId
+        termination_utc_ticks = $bound
+    }
+}
+
+function New-RootEntry {
+    $root = $script:processes[$rootId]
+    return [pscustomobject]@{
+        name = "legacy-$Scenario"
+        pid = $rootId
+        start_time_utc_ticks = [string]$root.CreationDate.Ticks
+        executable = [string]$root.ExecutablePath
+    }
+}
+
+function Write-FakeManifest {
+    param([object]$Entry)
+    $manifestPath = Join-Path $RuntimeDirectory 'server-processes.json'
+    [System.IO.File]::WriteAllText(
+        $manifestPath,
+        (@{ processes = @($Entry) } | ConvertTo-Json -Depth 4),
+        [System.Text.UTF8Encoding]::new($false)
+    )
+    return $manifestPath
+}
+
+if ($Scenario -eq 'bounded-parent-unbounded-child') {
+    $root = New-RootEntry
+    $parentMarker = ConvertTo-LegacyScanMarker `
+        -Identity $root `
+        -TerminationUtcTicks ($baseTicks + 200)
+    $child = $script:processes[501]
+    $childMarker = ConvertTo-LegacyScanMarker -Identity ([pscustomobject]@{
+        name = 'legacy-bounded-parent-unbounded-child-descendant-501'
+        pid = 501
+        start_time_utc_ticks = [string]$child.CreationDate.Ticks
+        executable = [string]$child.ExecutablePath
+    }) -TerminationUtcTicks $null
+    $manifestPath = Join-Path $RuntimeDirectory 'server-processes.json'
+    [System.IO.File]::WriteAllText(
+        $manifestPath,
+        (@{ processes = @($parentMarker, $childMarker) } | ConvertTo-Json -Depth 6),
+        [System.Text.UTF8Encoding]::new($false)
+    )
+    $firstFailed = $false
+    try { Stop-RecordedProcesses } catch { $firstFailed = $true }
+    $secondFailed = $false
+    try { Stop-RecordedProcesses } catch { $secondFailed = $true }
+    [pscustomobject]@{
+        first_failed = $firstFailed
+        second_failed = $secondFailed
+        manifest_exists = Test-Path -LiteralPath $manifestPath
+        attempt_order = @($script:attemptOrder)
+        alive_pids = @(
+            $script:processes.Values |
+                Where-Object { $_.alive } |
+                ForEach-Object { $_.ProcessId } |
+                Sort-Object
+        )
+    } | ConvertTo-Json -Compress
+    return
+}
+
+if ($Scenario -eq 'parent-pid-reuse-before-capture') {
+    $manifestPath = Write-FakeManifest -Entry (New-RootEntry)
+    $failed = $false
+    try { Stop-RecordedProcesses } catch { $failed = $true }
+    $retained = Get-Content -Raw -LiteralPath $manifestPath | ConvertFrom-Json
+    [pscustomobject]@{
+        failed = $failed
+        retained_marker = [bool]$retained.processes[0].legacy_descendant_scan_incomplete
+        retained_process_count = @($retained.processes).Count
+        manifest_exists = Test-Path -LiteralPath $manifestPath
+        attempt_order = @($script:attemptOrder)
+        alive_pids = @(
+            $script:processes.Values |
+                Where-Object { $_.alive } |
+                ForEach-Object { $_.ProcessId } |
+                Sort-Object
+        )
+    } | ConvertTo-Json -Compress
+    return
+}
+
+if ($Scenario -in @('fixed-point', 'missing-late-child', 'missing-pid-reuse')) {
+    $stopResult = Stop-LegacyRecordedProcessTree -Entry (New-RootEntry)
+    $alivePids = @(
+        $script:processes.Values |
+            Where-Object { $_.alive } |
+            ForEach-Object { $_.ProcessId } |
+            Sort-Object
+    )
+    [pscustomobject]@{
+        survivors = @($stopResult.survivors).Count
+        attempt_order = @($script:attemptOrder)
+        alive_pids = $alivePids
+    } | ConvertTo-Json -Compress
+    return
+}
+
+$manifestPath = Write-FakeManifest -Entry (New-RootEntry)
+$firstFailed = $false
+try {
+    Stop-RecordedProcesses
+}
+catch {
+    $firstFailed = $true
+}
+$retained = if (Test-Path -LiteralPath $manifestPath) {
+    Get-Content -Raw -LiteralPath $manifestPath | ConvertFrom-Json
+}
+else {
+    [pscustomobject]@{ processes = @() }
+}
+$retainedEntry = @($retained.processes | Select-Object -First 1)
+$rootAliveAfterFirst = $script:processes[$rootId].alive
+$childId = if ($rootId -eq 600) { 601 } else { 301 }
+$recoverableChildScenarios = @(
+    'post-capture-failure',
+    'post-termination-exception',
+    'journal-write-failure',
+    'bound-journal-write-failure'
+)
+$childAliveAfterFirst = if ($Scenario -in $recoverableChildScenarios) {
+    $script:processes[$childId].alive
+}
+else {
+    $false
+}
+$script:allowRecovery = $true
+$secondFailed = $false
+try {
+    Stop-RecordedProcesses
+}
+catch {
+    $secondFailed = $true
+}
+[pscustomobject]@{
+    first_failed = $firstFailed
+    root_alive_after_first = $rootAliveAfterFirst
+    child_alive_after_first = $childAliveAfterFirst
+    retained_marker = [bool]$retainedEntry.legacy_descendant_scan_incomplete
+    retained_bound = [string]$retainedEntry.legacy_termination_utc_ticks
+    retained_process_count = @($retained.processes).Count
+    second_failed = $secondFailed
+    child_alive_after_second = if ($Scenario -in $recoverableChildScenarios) {
+        $script:processes[$childId].alive
+    }
+    else {
+        $false
+    }
+    manifest_exists_after_second = Test-Path -LiteralPath $manifestPath
+    attempt_order = @($script:attemptOrder)
+} | ConvertTo-Json -Compress
+"""
+
+MANAGED_DEADLINE_HARNESS = r"""
+param(
+    [string]$RunLocal,
+    [string]$RuntimeDirectory,
+    [string]$Scenario
+)
+. $RunLocal -Stop -RuntimeDirectory $RuntimeDirectory
+
+$script:remainingCalls = 0
+$script:attempts = [System.Collections.Generic.List[int]]::new()
+function Get-LegacyRemainingTimeoutMilliseconds {
+    param([DateTimeOffset]$Deadline, [int]$Maximum = 5000)
+    $script:remainingCalls += 1
+    if ($script:remainingCalls -le 2) {
+        return 1
+    }
+    return 0
+}
+function Invoke-VerifiedTermination {
+    param(
+        [int]$ProcessId,
+        [string]$StartTimeUtcTicks,
+        [object]$StartTimeUtc,
+        [int]$StartTimeToleranceTicks = 0,
+        [string]$Executable,
+        [int]$TimeoutMilliseconds = 5000
+    )
+    $script:attempts.Add($ProcessId)
+    return [pscustomobject]@{ state = 'timeout'; process_id = $ProcessId }
+}
+
+$entries = @(
+    1..32 | ForEach-Object {
+        [pscustomobject]@{
+            name = "managed-$_"
+            pid = 2000 + $_
+            start_time_utc_ticks = [string](638000000000000000L + $_)
+            executable = 'C:\tree\child.exe'
+            supervisor_pid = 1000 + $_
+            supervisor_start_time_utc_ticks = [string](638000000000001000L + $_)
+            supervisor_executable = 'C:\tree\supervisor.exe'
+            job_managed = $true
+        }
+    }
+)
+$result = Stop-ProcessEntries -Entries $entries
+[pscustomobject]@{
+    survivor_count = @($result.survivors).Count
+    survivor_names = @($result.survivors | ForEach-Object { $_.name })
+    attempts = @($script:attempts)
+    remaining_calls = $script:remainingCalls
+} | ConvertTo-Json -Compress
+"""
+
+
+@pytest.mark.e2e_host
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows managed cleanup deadline test")
+def test_run_local_managed_cleanup_uses_one_shared_deadline(tmp_path: Path) -> None:
+    result = _run_legacy_stop_harness(
+        tmp_path,
+        MANAGED_DEADLINE_HARNESS,
+        scenario="managed-deadline",
+    )
+    assert result["survivor_count"] == 32
+    assert result["survivor_names"] == [f"managed-{index}" for index in range(1, 33)]
+    assert result["attempts"] == [1001]
+    assert result["remaining_calls"] == 34
+
+
+@pytest.mark.e2e_host
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows legacy missing-parent bound test")
+@pytest.mark.parametrize(
+    ("scenario", "expected_alive_pids", "expected_attempt_order"),
+    [
+        pytest.param("missing-late-child", [], [400, 401], id="missing-late-child"),
+        pytest.param("missing-pid-reuse", [401], [400], id="missing-pid-reuse"),
+    ],
+)
+def test_legacy_manifest_missing_parent_uses_inspection_bound(
+    tmp_path: Path,
+    scenario: str,
+    expected_alive_pids: list[int],
+    expected_attempt_order: list[int],
+) -> None:
+    result = _run_legacy_stop_harness(
+        tmp_path,
+        LEGACY_PROCESS_TREE_HARNESS,
+        scenario=scenario,
+    )
+    assert result == {
+        "survivors": 0,
+        "attempt_order": expected_attempt_order,
+        "alive_pids": expected_alive_pids,
+    }
+
+
+@pytest.mark.e2e_host
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows legacy fixed-point process tree test")
+def test_legacy_manifest_fixed_point_stops_late_multigeneration_descendants(
+    tmp_path: Path,
+) -> None:
+    result = _run_legacy_stop_harness(
+        tmp_path,
+        LEGACY_PROCESS_TREE_HARNESS,
+        scenario="fixed-point",
+    )
+    assert result == {
+        "survivors": 0,
+        "attempt_order": [100, 101, 102, 103],
+        "alive_pids": [900],
+    }
+
+
+@pytest.mark.e2e_host
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows legacy marker merge test")
+def test_legacy_manifest_merges_parent_replay_with_live_child_marker(tmp_path: Path) -> None:
+    result = _run_legacy_stop_harness(
+        tmp_path,
+        LEGACY_PROCESS_TREE_HARNESS,
+        scenario="bounded-parent-unbounded-child",
+    )
+    assert result == {
+        "first_failed": False,
+        "second_failed": False,
+        "manifest_exists": False,
+        "attempt_order": [501, 502],
+        "alive_pids": [599],
+    }
+
+
+@pytest.mark.e2e_host
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows legacy progress journal test")
+@pytest.mark.parametrize(
+    ("scenario", "root_alive_after_first", "retained_bound", "attempt_order"),
+    [
+        pytest.param("post-termination-exception", False, "638000000000000200", [300, 301]),
+        pytest.param("journal-write-failure", True, "", [600, 601]),
+    ],
+)
+def test_legacy_manifest_journals_each_recovery_transition(
+    tmp_path: Path,
+    scenario: str,
+    root_alive_after_first: bool,
+    retained_bound: str,
+    attempt_order: list[int],
+) -> None:
+    result = _run_legacy_stop_harness(tmp_path, LEGACY_PROCESS_TREE_HARNESS, scenario=scenario)
+    assert result == {
+        "first_failed": True,
+        "root_alive_after_first": root_alive_after_first,
+        "child_alive_after_first": scenario == "post-termination-exception",
+        "retained_marker": scenario == "post-termination-exception",
+        "retained_bound": retained_bound,
+        "retained_process_count": 1,
+        "second_failed": False,
+        "child_alive_after_second": False,
+        "manifest_exists_after_second": False,
+        "attempt_order": attempt_order,
+    }
+
+
+@pytest.mark.e2e_host
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows legacy exact parent guard test")
+def test_legacy_manifest_rejects_children_captured_after_parent_pid_reuse(tmp_path: Path) -> None:
+    result = _run_legacy_stop_harness(
+        tmp_path,
+        LEGACY_PROCESS_TREE_HARNESS,
+        scenario="parent-pid-reuse-before-capture",
+    )
+    assert result == {
+        "failed": True,
+        "retained_marker": True,
+        "retained_process_count": 1,
+        "manifest_exists": True,
+        "attempt_order": [],
+        "alive_pids": [700, 701],
+    }
+
+
+@pytest.mark.e2e_host
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows legacy fail-closed marker test")
+@pytest.mark.parametrize(
+    ("scenario", "root_alive_after_first", "child_alive_after_first", "attempt_order"),
+    [pytest.param("plain-root-missing", False, False, [], id="plain-root-missing")],
+)
+def test_legacy_manifest_unbounded_recovery_fails_closed_across_retries(
+    tmp_path: Path,
+    scenario: str,
+    root_alive_after_first: bool,
+    child_alive_after_first: bool,
+    attempt_order: list[int],
+) -> None:
+    result = _run_legacy_stop_harness(
+        tmp_path,
+        LEGACY_PROCESS_TREE_HARNESS,
+        scenario=scenario,
+    )
+    assert result == {
+        "first_failed": True,
+        "root_alive_after_first": root_alive_after_first,
+        "child_alive_after_first": child_alive_after_first,
+        "retained_marker": True,
+        "retained_bound": "",
+        "retained_process_count": 1,
+        "second_failed": True,
+        "child_alive_after_second": child_alive_after_first,
+        "manifest_exists_after_second": True,
+        "attempt_order": attempt_order,
+    }
+
+
+@pytest.mark.e2e_host
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows bounded journal retry test")
+def test_legacy_manifest_bound_journal_failure_recovers_in_same_stop(tmp_path: Path) -> None:
+    result = _run_legacy_stop_harness(
+        tmp_path,
+        LEGACY_PROCESS_TREE_HARNESS,
+        scenario="bound-journal-write-failure",
+    )
+    assert result == {
+        "first_failed": False,
+        "root_alive_after_first": False,
+        "child_alive_after_first": False,
+        "retained_marker": False,
+        "retained_bound": "",
+        "retained_process_count": 0,
+        "second_failed": False,
+        "child_alive_after_second": False,
+        "manifest_exists_after_second": False,
+        "attempt_order": [600, 601],
+    }
+
+
+@pytest.mark.e2e_host
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows legacy capture failure test")
+def test_legacy_manifest_capture_failure_is_failed_and_recoverable(tmp_path: Path) -> None:
+    result = _run_legacy_stop_harness(
+        tmp_path,
+        LEGACY_PROCESS_TREE_HARNESS,
+        scenario="pre-capture-failure",
+    )
+    assert result == {
+        "first_failed": True,
+        "root_alive_after_first": True,
+        "child_alive_after_first": False,
+        "retained_marker": True,
+        "retained_bound": "",
+        "retained_process_count": 1,
+        "second_failed": False,
+        "child_alive_after_second": False,
+        "manifest_exists_after_second": False,
+        "attempt_order": [200],
+    }
+
+
+@pytest.mark.e2e_host
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows legacy post-termination recovery test")
+def test_legacy_manifest_post_termination_capture_failure_recovers_in_fixed_point(
+    tmp_path: Path,
+) -> None:
+    result = _run_legacy_stop_harness(
+        tmp_path,
+        LEGACY_PROCESS_TREE_HARNESS,
+        scenario="post-capture-failure",
+    )
+    assert result == {
+        "first_failed": False,
+        "root_alive_after_first": False,
+        "child_alive_after_first": False,
+        "retained_marker": False,
+        "retained_bound": "",
+        "retained_process_count": 0,
+        "second_failed": False,
+        "child_alive_after_second": False,
+        "manifest_exists_after_second": False,
+        "attempt_order": [300, 301],
+    }
+
+
 @pytest.mark.e2e_host
 @pytest.mark.skipif(sys.platform != "win32", reason="Windows legacy process tree test")
 def test_legacy_manifest_captures_and_stops_descendant_identity(tmp_path: Path) -> None:
-    child_pid_file = tmp_path / "child.pid"
-    root = subprocess.Popen(
-        [
-            sys._base_executable,
-            "-c",
-            (
-                "import pathlib, subprocess, sys, time; "
-                "child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)']); "
-                "pathlib.Path(sys.argv[1]).write_text(str(child.pid), encoding='ascii'); "
-                "time.sleep(60)"
-            ),
-            str(child_pid_file),
-        ],
-        stdin=subprocess.DEVNULL,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        creationflags=subprocess.CREATE_NO_WINDOW,
+    process_records = tmp_path / "legacy-processes"
+    process_records.mkdir()
+    grandchild_program = "import threading; threading.Event().wait(60)"
+    child_program = (
+        "import json, os, pathlib, subprocess, sys, threading; "
+        f"child = subprocess.Popen([sys.executable, '-c', {grandchild_program!r}]); "
+        "record = {'pid': child.pid, 'parent_pid': os.getpid()}; "
+        "(pathlib.Path(sys.argv[1]) / f'{child.pid}.json').write_text(json.dumps(record), encoding='utf-8'); "
+        "threading.Event().wait(60)"
     )
+    root_program = (
+        "import json, os, pathlib, subprocess, sys, threading; "
+        "records = pathlib.Path(sys.argv[1]); program = sys.argv[2]; "
+        "child = subprocess.Popen([sys.executable, '-c', program, str(records)]); "
+        "(records / f'{child.pid}.json').write_text("
+        "json.dumps({'pid': child.pid, 'parent_pid': os.getpid()}), encoding='utf-8'); "
+        "threading.Event().wait(60)"
+    )
+    root_stderr_path = tmp_path / "legacy-root.stderr.log"
+    with root_stderr_path.open("w", encoding="utf-8") as root_stderr:
+        root = subprocess.Popen(
+            [
+                sys._base_executable,
+                "-c",
+                root_program,
+                str(process_records),
+                child_program,
+            ],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=root_stderr,
+            creationflags=subprocess.CREATE_NO_WINDOW,
+        )
     runtime_dir = tmp_path / "runtime"
     runtime_dir.mkdir()
     manifest_path = runtime_dir / "server-processes.json"
-    child_id: int | None = None
-    child_identity: dict[str, Any] | None = None
-    child_creation = ""
+    observed_identities: dict[int, dict[str, Any]] = {}
+
+    def matching_observed_processes() -> list[int]:
+        expected_creation_ticks = {
+            process_id: str(identity["start_time_utc_ticks"])
+            for process_id, identity in observed_identities.items()
+        }
+        if not expected_creation_ticks:
+            return []
+        return _matching_process_identities(expected_creation_ticks)
+
+    def observe_descendant_processes() -> list[dict[str, Any]] | None:
+        records: list[dict[str, Any]] = []
+        for record_path in process_records.glob("*.json"):
+            record = json.loads(record_path.read_text(encoding="utf-8"))
+            process_id = int(record["pid"])
+            if process_id not in observed_identities:
+                try:
+                    observed_identities[process_id] = _windows_process_identity(process_id)
+                except ProcessLookupError:
+                    return None
+            records.append(record)
+        if len(records) != 2:
+            return None
+        return records
+
     try:
-        child_id = _wait_for(
-            lambda: int(child_pid_file.read_text(encoding="ascii")) if child_pid_file.exists() else None,
+        root_identity = _wait_for_spawned_process_identity(
+            root,
+            stderr_path=root_stderr_path,
+        )
+        observed_identities[root.pid] = root_identity
+        parsed_initial = _wait_for(
+            observe_descendant_processes,
             timeout=5,
-            description="legacy child PID",
+            description="legacy child and grandchild identities",
         )
-        root_identity = _windows_process_identity(root.pid)
-        child_identity = _windows_process_identity(child_id)
-        child_creation = _cim_creation_to_utc_ticks(
-            _windows_process_snapshot(process_ids=[child_id])[child_id]["CreationDate"]
-        )
+        assert any(record["parent_pid"] != root.pid for record in parsed_initial)
         manifest_path.write_text(
             json.dumps(
                 {
@@ -640,37 +1593,171 @@ def test_legacy_manifest_captures_and_stops_descendant_identity(tmp_path: Path) 
 
         assert stopped.returncode == 0, f"{stopped.stdout}\n{stopped.stderr}"
         assert root.wait(timeout=5) != 0
+        final_records = [
+            json.loads(path.read_text(encoding="utf-8")) for path in process_records.glob("*.json")
+        ]
         assert _wait_for(
-            lambda: [] if not _matching_process_identities({child_id: child_creation}) else None,
+            lambda: [] if not matching_observed_processes() else None,
             timeout=5,
             description="legacy descendant termination",
+        ) == []
+        assert len(final_records) == 2
+        assert not manifest_path.exists()
+    finally:
+        if root.poll() is None:
+            root.kill()
+            root.wait(timeout=5)
+        matching_process_ids = set(matching_observed_processes())
+        cleanup_entries = [
+            {
+                "name": "legacy-child-fixture-cleanup",
+                "pid": process_id,
+                **identity,
+            }
+            for process_id, identity in observed_identities.items()
+            if process_id in matching_process_ids
+        ]
+        cleanup_stop: subprocess.CompletedProcess[str] | None = None
+        cleanup_stop_error: Exception | None = None
+        if cleanup_entries:
+            manifest_path.write_text(
+                json.dumps({"processes": cleanup_entries}),
+                encoding="utf-8",
+            )
+            try:
+                cleanup_stop = _invoke_stop(runtime_dir)
+            except Exception as exc:  # pragma: no cover - report cleanup failure with survivors
+                cleanup_stop_error = exc
+
+        try:
+            cleanup_survivors = _wait_for(
+                lambda: [] if not matching_observed_processes() else None,
+                timeout=5,
+                description="legacy fixture process termination",
+            )
+        except AssertionError as exc:
+            survivors = matching_observed_processes()
+            raise AssertionError(
+                f"{exc}; surviving process identities: {survivors}; "
+                f"cleanup stop error: {cleanup_stop_error}; cleanup stop result: {cleanup_stop}"
+            ) from exc
+        assert cleanup_stop_error is None, str(cleanup_stop_error)
+        if cleanup_stop is not None:
+            assert cleanup_stop.returncode == 0, f"{cleanup_stop.stdout}\n{cleanup_stop.stderr}"
+        assert cleanup_survivors == []
+
+
+@pytest.mark.e2e_host
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows startup recovery test")
+def test_run_local_recovers_live_late_child_marker_before_startup(tmp_path: Path) -> None:
+    child_pid_file = tmp_path / "late-child.pid"
+    root_program = (
+        "import pathlib, subprocess, sys, threading; "
+        "child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)']); "
+        "pathlib.Path(sys.argv[1]).write_text(str(child.pid), encoding='ascii'); "
+        "threading.Event().wait(60)"
+    )
+    root = subprocess.Popen(
+        [sys._base_executable, "-c", root_program, str(child_pid_file)],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        creationflags=subprocess.CREATE_NO_WINDOW,
+    )
+    runtime_dir = tmp_path / "runtime"
+    runtime_dir.mkdir()
+    manifest_path = runtime_dir / "server-processes.json"
+    child_id: int | None = None
+    child_identity: dict[str, Any] | None = None
+    try:
+        child_id = _wait_for(
+            lambda: int(child_pid_file.read_text(encoding="ascii")) if child_pid_file.exists() else None,
+            timeout=5,
+            description="late child PID",
+        )
+        root_identity = _windows_process_identity(root.pid)
+        child_identity = _windows_process_identity(child_id)
+        snapshot = _windows_process_snapshot(process_ids=[child_id])
+        assert int(snapshot[child_id]["ParentProcessId"]) == root.pid
+
+        root.terminate()
+        root.wait(timeout=5)
+        termination_bound = max(
+            _datetime_to_dotnet_ticks(datetime.now(UTC)),
+            int(child_identity["start_time_utc_ticks"]),
+        )
+        manifest_path.write_text(
+            json.dumps(
+                {
+                    "processes": [
+                        {
+                            "name": "legacy-startup-recovery",
+                            "pid": root.pid,
+                            **root_identity,
+                            "job_managed": False,
+                            "legacy_descendant_scan_incomplete": True,
+                            "legacy_termination_utc_ticks": str(termination_bound),
+                        }
+                    ]
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        started = subprocess.run(
+            [
+                "pwsh",
+                "-NoProfile",
+                "-File",
+                str(RUN_LOCAL),
+                "-RuntimeDirectory",
+                str(runtime_dir),
+                "-EnvironmentFile",
+                str(tmp_path / "missing.env"),
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=20,
+            env=_clean_process_environment(),
+        )
+
+        assert started.returncode != 0
+        assert "Environment file does not exist" in started.stderr
+        assert _wait_for(
+            lambda: []
+            if not _matching_process_identities(
+                {child_id: str(child_identity["start_time_utc_ticks"])}
+            )
+            else None,
+            timeout=5,
+            description="startup recovery late child termination",
         ) == []
         assert not manifest_path.exists()
     finally:
         if root.poll() is None:
             root.kill()
             root.wait(timeout=5)
-        if child_id is not None and child_identity is None:
-            try:
-                child_identity = _windows_process_identity(child_id)
-            except subprocess.SubprocessError:
-                pass
         if child_id is not None and child_identity is not None:
-            manifest_path.write_text(
-                json.dumps(
-                    {
-                        "processes": [
-                            {
-                                "name": "legacy-child-fixture-cleanup",
-                                "pid": child_id,
-                                **child_identity,
-                            }
-                        ]
-                    }
-                ),
-                encoding="utf-8",
-            )
-            _invoke_stop(runtime_dir)
+            if _matching_process_identities(
+                {child_id: str(child_identity["start_time_utc_ticks"])}
+            ):
+                manifest_path.write_text(
+                    json.dumps(
+                        {
+                            "processes": [
+                                {
+                                    "name": "legacy-startup-recovery-fixture-cleanup",
+                                    "pid": child_id,
+                                    **child_identity,
+                                }
+                            ]
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+                _invoke_stop(runtime_dir)
 
 
 @pytest.mark.e2e_host

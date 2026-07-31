@@ -126,7 +126,9 @@ function Invoke-VerifiedTermination {
         [string]$StartTimeUtcTicks,
         [object]$StartTimeUtc,
         [int]$StartTimeToleranceTicks = 0,
-        [string]$Executable
+        [string]$Executable,
+        [ValidateRange(1, 5000)]
+        [int]$TimeoutMilliseconds = 5000
     )
     $expectedTicks = Resolve-RecordedStartTimeUtcTicks `
         -StartTimeUtcTicks $StartTimeUtcTicks `
@@ -149,7 +151,7 @@ function Invoke-VerifiedTermination {
                 --start-time-utc-ticks ([string]$expectedTicks) `
                 --start-time-tolerance-ticks $StartTimeToleranceTicks `
                 --executable $Executable `
-                --timeout-ms 5000 2>&1
+                --timeout-ms $TimeoutMilliseconds 2>&1
         )
         $nativeExitCode = $LASTEXITCODE
         if ($raw.Count -eq 0) {
@@ -197,115 +199,710 @@ function ConvertTo-RecoverableLegacyEntry {
     return [pscustomobject]$normalized
 }
 
-function Get-LegacyProcessTreeSnapshot {
-    param([object]$Entry)
-    $rootStatus = Get-RecordedProcessStatus `
-        -ProcessId ([int]$Entry.pid) `
-        -StartTimeUtcTicks ([string]$Entry.start_time_utc_ticks) `
-        -StartTimeUtc ($Entry.start_time_utc) `
-        -StartTimeToleranceTicks ([int]$Entry.start_time_tolerance_ticks) `
-        -Executable ([string]$Entry.executable)
-    if ($rootStatus.state -eq 'missing') {
-        return [pscustomobject]@{ state = 'missing'; identities = @() }
+function Get-LegacyIdentityKey {
+    param([object]$Identity)
+    $ticks = Resolve-RecordedStartTimeUtcTicks `
+        -StartTimeUtcTicks ([string]$Identity.start_time_utc_ticks) `
+        -StartTimeUtc ($Identity.start_time_utc)
+    if ($null -eq $ticks -or [string]::IsNullOrWhiteSpace([string]$Identity.executable)) {
+        return $null
     }
-    if ($rootStatus.state -ne 'match') {
-        return [pscustomobject]@{ state = 'mismatch'; identities = @($Entry) }
-    }
-
-    $identities = [System.Collections.Generic.List[object]]::new()
-    $identities.Add((ConvertTo-RecoverableLegacyEntry -Entry $Entry))
-    $pending = [System.Collections.Generic.Queue[int]]::new()
-    $pending.Enqueue([int]$Entry.pid)
-    while ($pending.Count -gt 0) {
-        $parentId = $pending.Dequeue()
-        $children = Get-CimInstance Win32_Process -Filter "ParentProcessId = $parentId" -ErrorAction SilentlyContinue
-        foreach ($child in @($children)) {
-            try {
-                $created = ([DateTime]$child.CreationDate).ToUniversalTime()
-                $executable = [string]$child.ExecutablePath
-                if ([string]::IsNullOrWhiteSpace($executable)) {
-                    throw "CIM did not expose ExecutablePath"
-                }
-                $identities.Add([pscustomobject]@{
-                    name = "$($Entry.name)-descendant-$($child.ProcessId)"
-                    pid = [int]$child.ProcessId
-                    start_time_utc = $created.ToString('O')
-                    start_time_utc_ticks = [string]$created.Ticks
-                    start_time_tolerance_ticks = 10
-                    executable = [System.IO.Path]::GetFullPath($executable)
-                    job_managed = $false
-                })
-                $pending.Enqueue([int]$child.ProcessId)
-            }
-            catch {
-                Write-Warning "Cannot capture the identity of legacy descendant PID $($child.ProcessId)."
-            }
-        }
-    }
-    return [pscustomobject]@{ state = 'match'; identities = @($identities) }
+    $executable = [System.IO.Path]::GetFullPath([string]$Identity.executable)
+    return "$([int]$Identity.pid):${ticks}:$executable"
 }
 
-function Stop-LegacyRecordedProcessTree {
-    param([object]$Entry)
-    $snapshot = Get-LegacyProcessTreeSnapshot -Entry $Entry
-    if ($snapshot.state -eq 'missing') {
-        return [pscustomobject]@{ survivors = @() }
+function Get-LegacyRemainingTimeoutMilliseconds {
+    param([DateTimeOffset]$Deadline, [int]$Maximum = 5000)
+    $remaining = [long][Math]::Floor(($Deadline - [DateTimeOffset]::UtcNow).TotalMilliseconds)
+    if ($remaining -le 0) {
+        return 0
     }
-    if ($snapshot.state -ne 'match') {
-        Write-Warning "Legacy PID $($Entry.pid) no longer matches its recorded identity."
-        return [pscustomobject]@{ survivors = @($Entry) }
-    }
+    return [int][Math]::Min([long]$Maximum, $remaining)
+}
 
-    Write-Warning "Stopping legacy manifest entry $($Entry.name); restart it to obtain Job Object lifecycle guarantees."
-    $identities = @($snapshot.identities)
-
-    $stopOrder = [System.Collections.Generic.List[object]]::new()
-    $stopOrder.Add($identities[0])
-    for ($index = $identities.Count - 1; $index -ge 1; $index--) {
-        $stopOrder.Add($identities[$index])
-    }
-    $survivors = [System.Collections.Generic.List[object]]::new()
-    foreach ($identity in $stopOrder) {
-        $result = Invoke-VerifiedTermination `
-            -ProcessId ([int]$identity.pid) `
-            -StartTimeUtcTicks ([string]$identity.start_time_utc_ticks) `
-            -StartTimeUtc ($identity.start_time_utc) `
-            -StartTimeToleranceTicks ([int]$identity.start_time_tolerance_ticks) `
-            -Executable ([string]$identity.executable)
-        if ($result.state -notin @('missing', 'terminated')) {
-            $survivors.Add($identity)
+function Get-LegacyExactProcessGuard {
+    param([object]$Identity)
+    $identityKey = Get-LegacyIdentityKey -Identity $Identity
+    if ($null -eq $identityKey) {
+        return [pscustomobject]@{
+            state = 'error'
+            process = $null
+            handle = $null
+            identity_key = $null
+            detail = 'invalid recorded identity'
         }
+    }
+
+    $processId = [int]$Identity.pid
+    if ($processId -le 0) {
+        return [pscustomobject]@{
+            state = 'error'
+            process = $null
+            handle = $null
+            identity_key = $identityKey
+            detail = 'invalid recorded PID'
+        }
+    }
+
+    $process = $null
+    try {
+        $process = [System.Diagnostics.Process]::GetProcessById($processId)
+        $handle = $process.Handle
+        if ($process.HasExited) {
+            return [pscustomobject]@{
+                state = 'missing'
+                process = $process
+                handle = $handle
+                identity_key = $identityKey
+            }
+        }
+
+        $expectedTicks = Resolve-RecordedStartTimeUtcTicks `
+            -StartTimeUtcTicks ([string]$Identity.start_time_utc_ticks) `
+            -StartTimeUtc ($Identity.start_time_utc)
+        $expectedExecutable = [string]$Identity.executable
+        if ($null -eq $expectedTicks -or [string]::IsNullOrWhiteSpace($expectedExecutable)) {
+            return [pscustomobject]@{
+                state = 'error'
+                process = $process
+                handle = $handle
+                identity_key = $identityKey
+                detail = 'invalid recorded identity'
+            }
+        }
+        $toleranceTicks = if ($Identity.PSObject.Properties.Name -contains 'start_time_tolerance_ticks') {
+            [int]$Identity.start_time_tolerance_ticks
+        }
+        else {
+            0
+        }
+        $startMatches = [Math]::Abs(
+            $process.StartTime.ToUniversalTime().Ticks - $expectedTicks
+        ) -le $toleranceTicks
+        $executableMatches = [string]::Equals(
+            [System.IO.Path]::GetFullPath($process.Path),
+            [System.IO.Path]::GetFullPath($expectedExecutable),
+            [StringComparison]::OrdinalIgnoreCase
+        )
+        $state = if ($startMatches -and $executableMatches) { 'match' } else { 'mismatch' }
+        return [pscustomobject]@{
+            state = $state
+            process = $process
+            handle = $handle
+            identity_key = $identityKey
+        }
+    }
+    catch [ArgumentException] {
+        return [pscustomobject]@{
+            state = 'missing'
+            process = $process
+            handle = $null
+            identity_key = $identityKey
+        }
+    }
+    catch {
+        return [pscustomobject]@{
+            state = 'error'
+            process = $process
+            handle = $null
+            identity_key = $identityKey
+            detail = $_.Exception.Message
+        }
+    }
+}
+
+function Close-LegacyExactProcessGuard {
+    param([object]$Guard)
+    if ($null -eq $Guard -or $null -eq $Guard.process) {
+        return
+    }
+    try {
+        $Guard.process.Dispose()
+    }
+    catch {
+        Write-Warning "Cannot close legacy process guard: $($_.Exception.Message)"
+    }
+}
+
+function Get-LegacyChildIdentityCapture {
+    param(
+        [object]$ParentIdentity,
+        [object]$CreatedNotAfterTicks,
+        [DateTimeOffset]$Deadline,
+        [string]$RootName,
+        [object]$ParentGuard = $null
+    )
+    $identities = [System.Collections.Generic.List[object]]::new()
+    if ($null -eq $CreatedNotAfterTicks) {
+        $identityKey = Get-LegacyIdentityKey -Identity $ParentIdentity
+        $guardMatches = $null -ne $ParentGuard -and
+            $ParentGuard.state -eq 'match' -and
+            $null -ne $ParentGuard.process -and
+            [string]::Equals(
+                [string]$ParentGuard.identity_key,
+                [string]$identityKey,
+                [StringComparison]::OrdinalIgnoreCase
+            )
+        if (-not $guardMatches) {
+            Write-Warning "Cannot enumerate unbounded descendants of PID $($ParentIdentity.pid) without an exact process guard."
+            return [pscustomobject]@{ state = 'error'; identities = @() }
+        }
+    }
+    $parentTicks = Resolve-RecordedStartTimeUtcTicks `
+        -StartTimeUtcTicks ([string]$ParentIdentity.start_time_utc_ticks) `
+        -StartTimeUtc ($ParentIdentity.start_time_utc)
+    if ($null -eq $parentTicks) {
+        return [pscustomobject]@{ state = 'error'; identities = @() }
+    }
+
+    $remainingMilliseconds = Get-LegacyRemainingTimeoutMilliseconds -Deadline $Deadline
+    if ($remainingMilliseconds -le 0) {
+        return [pscustomobject]@{ state = 'deadline'; identities = @() }
+    }
+    $operationTimeoutSeconds = [uint][Math]::Max(
+        1.0,
+        [Math]::Ceiling($remainingMilliseconds / 1000.0)
+    )
+    try {
+        $children = Get-CimInstance Win32_Process `
+            -Filter "ParentProcessId = $([int]$ParentIdentity.pid)" `
+            -OperationTimeoutSec $operationTimeoutSeconds `
+            -ErrorAction Stop
+    }
+    catch {
+        Write-Warning "Cannot enumerate legacy descendants of PID $($ParentIdentity.pid): $($_.Exception.Message)"
+        return [pscustomobject]@{ state = 'error'; identities = @() }
+    }
+
+    $captureFailed = $false
+    foreach ($child in @($children)) {
+        try {
+            $childId = [int]$child.ProcessId
+            if ($childId -le 0 -or $childId -eq [int]$ParentIdentity.pid) {
+                throw "invalid child PID"
+            }
+            $created = ([DateTime]$child.CreationDate).ToUniversalTime()
+            if ($created.Ticks -lt $parentTicks) {
+                continue
+            }
+            if ($null -ne $CreatedNotAfterTicks -and $created.Ticks -gt [long]$CreatedNotAfterTicks) {
+                continue
+            }
+            $executable = [string]$child.ExecutablePath
+            if ([string]::IsNullOrWhiteSpace($executable)) {
+                throw "CIM did not expose ExecutablePath"
+            }
+            $identities.Add([pscustomobject]@{
+                name = "$RootName-descendant-$childId"
+                pid = $childId
+                start_time_utc = $created.ToString('O')
+                start_time_utc_ticks = [string]$created.Ticks
+                start_time_tolerance_ticks = 10
+                executable = [System.IO.Path]::GetFullPath($executable)
+                job_managed = $false
+            })
+        }
+        catch {
+            $captureFailed = $true
+            Write-Warning "Cannot capture the exact identity of legacy descendant PID $($child.ProcessId)."
+        }
+    }
+    $captureState = if ($captureFailed) { 'error' } else { 'success' }
+    return [pscustomobject]@{ state = $captureState; identities = @($identities) }
+}
+
+function Add-LegacyIdentityState {
+    param(
+        [object]$Identity,
+        [object]$States,
+        [object]$StateByKey,
+        [bool]$Terminated = $false,
+        [object]$TerminationUtcTicks = $null
+    )
+    $key = Get-LegacyIdentityKey -Identity $Identity
+    if ($null -eq $key) {
+        return $null
+    }
+    if ($StateByKey.ContainsKey($key)) {
+        $existing = $StateByKey[$key]
+        $candidateTicks = 0L
+        if ($Terminated -and
+            $null -ne $TerminationUtcTicks -and
+            [long]::TryParse([string]$TerminationUtcTicks, [ref]$candidateTicks)) {
+            $existingTicks = 0L
+            $hasExistingTicks = $null -ne $existing.termination_utc_ticks -and
+                [long]::TryParse([string]$existing.termination_utc_ticks, [ref]$existingTicks)
+            if (-not $existing.terminated -or -not $hasExistingTicks -or $candidateTicks -gt $existingTicks) {
+                $existing.terminated = $true
+                $existing.termination_utc_ticks = $candidateTicks
+                $existing.failed = $false
+                $existing.retain_marker = $false
+            }
+        }
+        return $null
+    }
+    $state = [pscustomobject]@{
+        key = $key
+        identity = $Identity
+        terminated = $Terminated
+        termination_utc_ticks = $TerminationUtcTicks
+        failed = $false
+        retain_marker = $false
+    }
+    $States.Add($state)
+    $StateByKey.Add($key, $state)
+    return $state
+}
+
+function ConvertTo-LegacyScanMarker {
+    param([object]$Identity, [object]$TerminationUtcTicks)
+    $marker = ConvertTo-RecoverableLegacyEntry -Entry $Identity
+    $marker | Add-Member `
+        -NotePropertyName legacy_descendant_scan_incomplete `
+        -NotePropertyValue $true `
+        -Force
+    if ($null -ne $TerminationUtcTicks) {
+        $marker | Add-Member `
+            -NotePropertyName legacy_termination_utc_ticks `
+            -NotePropertyValue ([string]$TerminationUtcTicks) `
+            -Force
+    }
+    return $marker
+}
+
+function Get-LegacyRecoveryEntries {
+    param(
+        [object]$States,
+        [object]$Passthrough,
+        [switch]$IncludeInProgress
+    )
+    $entries = [System.Collections.Generic.List[object]]::new()
+    $keys = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+    foreach ($entry in @($Passthrough)) {
+        $key = Get-LegacyIdentityKey -Identity $entry
+        if ($null -eq $key -or $keys.Add($key)) {
+            $entries.Add($entry)
+        }
+    }
+    foreach ($state in @($States)) {
+        if (-not $IncludeInProgress -and $state.terminated -and -not $state.retain_marker) {
+            continue
+        }
+        $marker = ConvertTo-LegacyScanMarker `
+            -Identity $state.identity `
+            -TerminationUtcTicks $(if ($state.terminated) { $state.termination_utc_ticks } else { $null })
+        $markerKey = Get-LegacyIdentityKey -Identity $marker
+        if ($null -ne $markerKey -and $keys.Add($markerKey)) {
+            $entries.Add($marker)
+        }
+    }
+    return @($entries)
+}
+
+function Publish-LegacyRecoveryProgress {
+    param(
+        [object]$States,
+        [object]$Passthrough,
+        [scriptblock]$ProgressCallback,
+        [switch]$IncludeInProgress
+    )
+    if ($null -eq $ProgressCallback) {
+        return
+    }
+    $recoveryEntries = Get-LegacyRecoveryEntries `
+        -States $States `
+        -Passthrough $Passthrough `
+        -IncludeInProgress:$IncludeInProgress
+    & $ProgressCallback -RecoveryEntries @($recoveryEntries)
+}
+
+function Publish-LegacyRecoveryProgressAfterBound {
+    param(
+        [object]$States,
+        [object]$Passthrough,
+        [scriptblock]$ProgressCallback,
+        [ref]$DeferredError,
+        [switch]$IncludeInProgress
+    )
+    try {
+        Publish-LegacyRecoveryProgress `
+            -States $States `
+            -Passthrough $Passthrough `
+            -ProgressCallback $ProgressCallback `
+            -IncludeInProgress:$IncludeInProgress
+    }
+    catch {
+        $DeferredError.Value = $_
+        Write-Warning (
+            "Deferred a legacy recovery journal error after a safe termination bound: " +
+            $_.Exception.Message
+        )
+    }
+}
+
+function Stop-LegacyRecordedProcessTrees {
+    param(
+        [object[]]$Entries,
+        [scriptblock]$ProgressCallback = $null
+    )
+    $deadline = [DateTimeOffset]::UtcNow.AddSeconds(15)
+    $states = [System.Collections.Generic.List[object]]::new()
+    $stateByKey = [System.Collections.Generic.Dictionary[string, object]]::new(
+        [StringComparer]::OrdinalIgnoreCase
+    )
+    $passthrough = [System.Collections.Generic.List[object]]::new()
+    $passthroughKeys = [System.Collections.Generic.HashSet[string]]::new(
+        [StringComparer]::OrdinalIgnoreCase
+    )
+    $deferredJournalError = $null
+
+    foreach ($entry in @($Entries)) {
+        $isRecoveryMarker = $entry.PSObject.Properties.Name -contains 'legacy_descendant_scan_incomplete'
+        $entryTicks = Resolve-RecordedStartTimeUtcTicks `
+            -StartTimeUtcTicks ([string]$entry.start_time_utc_ticks) `
+            -StartTimeUtc ($entry.start_time_utc)
+        $markerTerminationTicks = 0L
+        $hasTerminationBound = $isRecoveryMarker -and
+            $entry.PSObject.Properties.Name -contains 'legacy_termination_utc_ticks' -and
+            [long]::TryParse(
+                [string]$entry.legacy_termination_utc_ticks,
+                [ref]$markerTerminationTicks
+            ) -and
+            $null -ne $entryTicks -and
+            $markerTerminationTicks -ge $entryTicks
+        $identity = ConvertTo-RecoverableLegacyEntry -Entry $entry
+        if ($hasTerminationBound) {
+            [void](Add-LegacyIdentityState `
+                -Identity $identity `
+                -States $states `
+                -StateByKey $stateByKey `
+                -Terminated $true `
+                -TerminationUtcTicks $markerTerminationTicks)
+            continue
+        }
+
+        $state = Add-LegacyIdentityState `
+            -Identity $identity `
+            -States $states `
+            -StateByKey $stateByKey
+        if ($null -eq $state) {
+            $key = Get-LegacyIdentityKey -Identity $identity
+            if ($null -ne $key -and $stateByKey.ContainsKey($key)) {
+                continue
+            }
+            $marker = ConvertTo-LegacyScanMarker `
+                -Identity $identity `
+                -TerminationUtcTicks $null
+            $markerKey = Get-LegacyIdentityKey -Identity $marker
+            if ($null -eq $markerKey -or $passthroughKeys.Add($markerKey)) {
+                $passthrough.Add($marker)
+            }
+            continue
+        }
+        Write-Warning "Stopping legacy manifest entry $($entry.name); restart it to obtain Job Object lifecycle guarantees."
+    }
+
+    if ($states.Count -gt 0 -or $passthrough.Count -gt 0) {
+        Publish-LegacyRecoveryProgress `
+            -States $states `
+            -Passthrough $passthrough `
+            -ProgressCallback $ProgressCallback `
+            -IncludeInProgress
+    }
+
+    $madeProgress = $true
+    $deadlineExceeded = $false
+    while ($madeProgress) {
+        $madeProgress = $false
+        foreach ($state in @($states)) {
+            if ([DateTimeOffset]::UtcNow -ge $deadline) {
+                $deadlineExceeded = $true
+                break
+            }
+            if ($state.terminated) {
+                if ($null -eq $state.termination_utc_ticks) {
+                    $state.retain_marker = $true
+                    continue
+                }
+                $capture = Get-LegacyChildIdentityCapture `
+                    -ParentIdentity $state.identity `
+                    -CreatedNotAfterTicks $state.termination_utc_ticks `
+                    -Deadline $deadline `
+                    -RootName ([string]$state.identity.name)
+                foreach ($identity in @($capture.identities)) {
+                    $added = Add-LegacyIdentityState `
+                        -Identity $identity `
+                        -States $states `
+                        -StateByKey $stateByKey
+                    if ($null -ne $added) {
+                        $madeProgress = $true
+                    }
+                    if ($null -ne $added) {
+                        Publish-LegacyRecoveryProgress `
+                            -States $states `
+                            -Passthrough $passthrough `
+                            -ProgressCallback $ProgressCallback `
+                            -IncludeInProgress
+                    }
+                }
+                if ($capture.state -eq 'success') {
+                    $state.retain_marker = $false
+                }
+                else {
+                    $state.retain_marker = $true
+                    Publish-LegacyRecoveryProgressAfterBound `
+                        -States $states `
+                        -Passthrough $passthrough `
+                        -ProgressCallback $ProgressCallback `
+                        -DeferredError ([ref]$deferredJournalError) `
+                        -IncludeInProgress
+                }
+                continue
+            }
+            if ($state.failed) {
+                continue
+            }
+
+            $guard = $null
+            try {
+                $guard = Get-LegacyExactProcessGuard -Identity $state.identity
+                if ($guard.state -ne 'match') {
+                    if ($guard.state -eq 'missing') {
+                        Write-Warning "Legacy PID $($state.identity.pid) is absent without a safe descendant-scan bound."
+                    }
+                    else {
+                        Write-Warning "Legacy PID $($state.identity.pid) no longer has a verifiable recorded identity."
+                    }
+                    $state.failed = $true
+                    $state.retain_marker = $true
+                    Publish-LegacyRecoveryProgress `
+                        -States $states `
+                        -Passthrough $passthrough `
+                        -ProgressCallback $ProgressCallback `
+                        -IncludeInProgress
+                    continue
+                }
+
+            $beforeTermination = Get-LegacyChildIdentityCapture `
+                -ParentIdentity $state.identity `
+                -CreatedNotAfterTicks $null `
+                -Deadline $deadline `
+                -RootName ([string]$state.identity.name) `
+                -ParentGuard $guard
+            if ($beforeTermination.state -ne 'success') {
+                $state.failed = $true
+                $state.retain_marker = $true
+                Publish-LegacyRecoveryProgress `
+                    -States $states `
+                    -Passthrough $passthrough `
+                    -ProgressCallback $ProgressCallback `
+                    -IncludeInProgress
+                continue
+            }
+            $capturedBeforeTermination = $false
+            foreach ($identity in @($beforeTermination.identities)) {
+                $added = Add-LegacyIdentityState `
+                    -Identity $identity `
+                    -States $states `
+                    -StateByKey $stateByKey
+                if ($null -ne $added) {
+                    $capturedBeforeTermination = $true
+                    $madeProgress = $true
+                }
+            }
+            if ($capturedBeforeTermination) {
+                Publish-LegacyRecoveryProgress `
+                    -States $states `
+                    -Passthrough $passthrough `
+                    -ProgressCallback $ProgressCallback `
+                    -IncludeInProgress
+            }
+
+            $remainingMilliseconds = Get-LegacyRemainingTimeoutMilliseconds -Deadline $deadline
+            if ($remainingMilliseconds -le 0) {
+                $deadlineExceeded = $true
+                break
+            }
+            $termination = Invoke-VerifiedTermination `
+                -ProcessId ([int]$state.identity.pid) `
+                -StartTimeUtcTicks ([string]$state.identity.start_time_utc_ticks) `
+                -StartTimeUtc ($state.identity.start_time_utc) `
+                -StartTimeToleranceTicks ([int]$state.identity.start_time_tolerance_ticks) `
+                -Executable ([string]$state.identity.executable) `
+                -TimeoutMilliseconds $remainingMilliseconds
+            $terminationBound = if ($termination.state -eq 'missing') {
+                [string]$termination.process_absent_utc_ticks
+            }
+            elseif ($termination.state -eq 'terminated') {
+                [string]$termination.termination_utc_ticks
+            }
+            else {
+                $null
+            }
+            $identityTicks = Resolve-RecordedStartTimeUtcTicks `
+                -StartTimeUtcTicks ([string]$state.identity.start_time_utc_ticks) `
+                -StartTimeUtc ($state.identity.start_time_utc)
+            $terminationTicks = 0L
+            if ($null -eq $terminationBound -or
+                -not [long]::TryParse($terminationBound, [ref]$terminationTicks) -or
+                $null -eq $identityTicks -or
+                $terminationTicks -lt $identityTicks) {
+                $state.failed = $true
+                $state.retain_marker = $true
+                Publish-LegacyRecoveryProgress `
+                    -States $states `
+                    -Passthrough $passthrough `
+                    -ProgressCallback $ProgressCallback `
+                    -IncludeInProgress
+                continue
+            }
+
+            $state.terminated = $true
+            $state.termination_utc_ticks = $terminationTicks
+            $madeProgress = $true
+            Publish-LegacyRecoveryProgressAfterBound `
+                -States $states `
+                -Passthrough $passthrough `
+                -ProgressCallback $ProgressCallback `
+                -DeferredError ([ref]$deferredJournalError) `
+                -IncludeInProgress
+
+            $afterTermination = Get-LegacyChildIdentityCapture `
+                -ParentIdentity $state.identity `
+                -CreatedNotAfterTicks $state.termination_utc_ticks `
+                -Deadline $deadline `
+                -RootName ([string]$state.identity.name) `
+                -ParentGuard $guard
+            $capturedAfterTermination = $false
+            foreach ($identity in @($afterTermination.identities)) {
+                $added = Add-LegacyIdentityState `
+                    -Identity $identity `
+                    -States $states `
+                    -StateByKey $stateByKey
+                if ($null -ne $added) {
+                    $capturedAfterTermination = $true
+                    $madeProgress = $true
+                }
+            }
+            if ($capturedAfterTermination) {
+                Publish-LegacyRecoveryProgressAfterBound `
+                    -States $states `
+                    -Passthrough $passthrough `
+                    -ProgressCallback $ProgressCallback `
+                    -DeferredError ([ref]$deferredJournalError) `
+                    -IncludeInProgress
+            }
+            if ($afterTermination.state -eq 'success') {
+                $state.retain_marker = $false
+            }
+            else {
+                $state.retain_marker = $true
+                Publish-LegacyRecoveryProgressAfterBound `
+                    -States $states `
+                    -Passthrough $passthrough `
+                    -ProgressCallback $ProgressCallback `
+                    -DeferredError ([ref]$deferredJournalError) `
+                    -IncludeInProgress
+            }
+            }
+            finally {
+                Close-LegacyExactProcessGuard -Guard $guard
+            }
+        }
+        if ($deadlineExceeded) {
+            break
+        }
+    }
+
+    if ($deadlineExceeded -or [DateTimeOffset]::UtcNow -ge $deadline) {
+        Write-Warning "Legacy descendant discovery exceeded its global deadline."
+        foreach ($state in @($states)) {
+            $state.retain_marker = $true
+        }
+        Publish-LegacyRecoveryProgress `
+            -States $states `
+            -Passthrough $passthrough `
+            -ProgressCallback $ProgressCallback `
+            -IncludeInProgress
+    }
+
+    $survivors = Get-LegacyRecoveryEntries -States $states -Passthrough $passthrough
+    if ($null -ne $ProgressCallback) {
+        & $ProgressCallback -RecoveryEntries @($survivors)
+    }
+    if ($null -ne $deferredJournalError) {
+        Write-Warning (
+            "Legacy process recovery completed after a transient journal error: " +
+            $deferredJournalError.Exception.Message
+        )
     }
     return [pscustomobject]@{ survivors = @($survivors) }
 }
 
+function Stop-LegacyRecordedProcessTree {
+    param([object]$Entry)
+    return Stop-LegacyRecordedProcessTrees -Entries @($Entry)
+}
+
 function Stop-ProcessEntries {
-    param([object[]]$Entries)
+    param(
+        [object[]]$Entries,
+        [scriptblock]$LegacyProgressCallback = $null
+    )
     $survivors = [System.Collections.Generic.List[object]]::new()
+    $legacyEntries = [System.Collections.Generic.List[object]]::new()
+    $managedEntries = [System.Collections.Generic.List[object]]::new()
     foreach ($entry in @($Entries)) {
         $hasSupervisor = $entry.PSObject.Properties.Name -contains 'supervisor_pid'
         if (-not $hasSupervisor) {
-            $legacyResult = Stop-LegacyRecordedProcessTree -Entry $entry
-            foreach ($survivor in @($legacyResult.survivors)) {
-                $survivors.Add($survivor)
-            }
+            $legacyEntries.Add($entry)
             continue
         }
+        $managedEntries.Add($entry)
+    }
+    if ($legacyEntries.Count -gt 0) {
+        $legacyResult = Stop-LegacyRecordedProcessTrees `
+            -Entries @($legacyEntries) `
+            -ProgressCallback $LegacyProgressCallback
+        foreach ($survivor in @($legacyResult.survivors)) {
+            $survivors.Add($survivor)
+        }
+    }
+    $managedDeadline = [DateTimeOffset]::UtcNow.AddSeconds(15)
+    $managedDeadlineExceeded = $false
+    foreach ($entry in @($managedEntries)) {
+        $remainingMilliseconds = Get-LegacyRemainingTimeoutMilliseconds -Deadline $managedDeadline
+        if ($remainingMilliseconds -le 0) {
+            $managedDeadlineExceeded = $true
+            $survivors.Add($entry)
+            continue
+        }
+
         $supervisorResult = Invoke-VerifiedTermination `
             -ProcessId ([int]$entry.supervisor_pid) `
             -StartTimeUtcTicks ([string]$entry.supervisor_start_time_utc_ticks) `
             -StartTimeUtc ($entry.supervisor_start_time_utc) `
-            -Executable ([string]$entry.supervisor_executable)
+            -Executable ([string]$entry.supervisor_executable) `
+            -TimeoutMilliseconds $remainingMilliseconds
         if ($supervisorResult.state -in @('error', 'timeout')) {
-            Start-Sleep -Milliseconds 200
-            $supervisorResult = Invoke-VerifiedTermination `
-                -ProcessId ([int]$entry.supervisor_pid) `
-                -StartTimeUtcTicks ([string]$entry.supervisor_start_time_utc_ticks) `
-                -StartTimeUtc ($entry.supervisor_start_time_utc) `
-                -Executable ([string]$entry.supervisor_executable)
+            $remainingMilliseconds = Get-LegacyRemainingTimeoutMilliseconds -Deadline $managedDeadline
+            if ($remainingMilliseconds -gt 0) {
+                Start-Sleep -Milliseconds ([Math]::Min(200, $remainingMilliseconds))
+            }
+            $remainingMilliseconds = Get-LegacyRemainingTimeoutMilliseconds -Deadline $managedDeadline
+            if ($remainingMilliseconds -gt 0) {
+                $supervisorResult = Invoke-VerifiedTermination `
+                    -ProcessId ([int]$entry.supervisor_pid) `
+                    -StartTimeUtcTicks ([string]$entry.supervisor_start_time_utc_ticks) `
+                    -StartTimeUtc ($entry.supervisor_start_time_utc) `
+                    -Executable ([string]$entry.supervisor_executable) `
+                    -TimeoutMilliseconds $remainingMilliseconds
+            }
+            else {
+                $managedDeadlineExceeded = $true
+            }
         }
         if ($supervisorResult.state -in @('missing', 'terminated')) {
-            $deadline = [DateTimeOffset]::UtcNow.AddSeconds(5)
             do {
                 $childStatus = Get-RecordedProcessStatus `
                     -ProcessId ([int]$entry.pid) `
@@ -315,22 +912,29 @@ function Stop-ProcessEntries {
                 if ($childStatus.state -ne 'match') {
                     break
                 }
-                Start-Sleep -Milliseconds 100
-            } while ([DateTimeOffset]::UtcNow -lt $deadline)
+                $remainingMilliseconds = Get-LegacyRemainingTimeoutMilliseconds -Deadline $managedDeadline
+                if ($remainingMilliseconds -le 0) {
+                    $managedDeadlineExceeded = $true
+                    break
+                }
+                Start-Sleep -Milliseconds ([Math]::Min(100, $remainingMilliseconds))
+            } while ($true)
             if ($childStatus.state -eq 'match') {
-                $childResult = Invoke-VerifiedTermination `
-                    -ProcessId ([int]$entry.pid) `
-                    -StartTimeUtcTicks ([string]$entry.start_time_utc_ticks) `
-                    -StartTimeUtc ($entry.start_time_utc) `
-                    -Executable ([string]$entry.executable)
+                $remainingMilliseconds = Get-LegacyRemainingTimeoutMilliseconds -Deadline $managedDeadline
+                if ($remainingMilliseconds -gt 0) {
+                    $childResult = Invoke-VerifiedTermination `
+                        -ProcessId ([int]$entry.pid) `
+                        -StartTimeUtcTicks ([string]$entry.start_time_utc_ticks) `
+                        -StartTimeUtc ($entry.start_time_utc) `
+                        -Executable ([string]$entry.executable) `
+                        -TimeoutMilliseconds $remainingMilliseconds
+                }
+                else {
+                    $managedDeadlineExceeded = $true
+                    $childResult = [pscustomobject]@{ state = 'timeout' }
+                }
                 if ($childResult.state -notin @('missing', 'terminated')) {
-                    $survivors.Add((ConvertTo-RecoverableLegacyEntry -Entry ([pscustomobject]@{
-                        name = "$($entry.name)-detached-child"
-                        pid = $entry.pid
-                        start_time_utc = $entry.start_time_utc
-                        start_time_utc_ticks = $entry.start_time_utc_ticks
-                        executable = $entry.executable
-                    })))
+                    $survivors.Add($entry)
                 }
             }
         }
@@ -341,6 +945,9 @@ function Stop-ProcessEntries {
             Write-Warning "Failed to stop $($entry.name) (state=$($supervisorResult.state)); retaining its recoverable identity in the manifest."
             $survivors.Add($entry)
         }
+    }
+    if ($managedDeadlineExceeded) {
+        Write-Warning "Managed process cleanup exceeded its shared 15 second deadline; exact survivor identities were retained."
     }
     return [pscustomobject]@{ survivors = @($survivors) }
 }
@@ -373,33 +980,33 @@ function Stop-RecordedProcesses {
     }
     $manifest = Get-Content -Raw -LiteralPath $PidFile | ConvertFrom-Json
     $recoverable = [System.Collections.Generic.List[object]]::new()
-    $recordedIdentities = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
-    $hasLegacyEntry = $false
     foreach ($entry in @($manifest.processes)) {
-        if ($entry.PSObject.Properties.Name -contains 'supervisor_pid') {
-            $recoverable.Add($entry)
-            continue
-        }
-        $hasLegacyEntry = $true
-        $snapshot = Get-LegacyProcessTreeSnapshot -Entry $entry
-        foreach ($identity in @($snapshot.identities)) {
-            $ticks = Resolve-RecordedStartTimeUtcTicks `
-                -StartTimeUtcTicks ([string]$identity.start_time_utc_ticks) `
-                -StartTimeUtc ($identity.start_time_utc)
-            $key = "$([int]$identity.pid):${ticks}:$([string]$identity.executable)"
-            if ($recordedIdentities.Add($key)) {
-                $recoverable.Add($identity)
+        $recoverable.Add($entry)
+    }
+    $managedEntries = @(
+        $recoverable |
+            Where-Object { $_.PSObject.Properties.Name -contains 'supervisor_pid' }
+    )
+    $legacyProgressCallback = {
+        param([object[]]$RecoveryEntries)
+        $progressEntries = @($RecoveryEntries) + @($managedEntries)
+        if ($progressEntries.Count -eq 0) {
+            if (Test-Path -LiteralPath $PidFile) {
+                Remove-Item -LiteralPath $PidFile -Force -ErrorAction Stop
             }
+            return
         }
-    }
-    if ($hasLegacyEntry) {
-        $manifest.processes = @($recoverable)
+        $manifest.processes = @($progressEntries)
         Write-JsonAtomically -Value $manifest
-    }
-    $stopResult = Stop-ProcessEntries -Entries @($recoverable)
+    }.GetNewClosure()
+    $stopResult = Stop-ProcessEntries `
+        -Entries @($recoverable) `
+        -LegacyProgressCallback $legacyProgressCallback
     $survivors = @($stopResult.survivors)
     if ($survivors.Count -eq 0) {
-        Remove-Item -LiteralPath $PidFile -Force -ErrorAction SilentlyContinue
+        if (Test-Path -LiteralPath $PidFile) {
+            Remove-Item -LiteralPath $PidFile -Force -ErrorAction Stop
+        }
     }
     else {
         $manifest.processes = @($survivors)
@@ -411,6 +1018,32 @@ function Stop-RecordedProcesses {
 if ($Stop) {
     Stop-RecordedProcesses
     return
+}
+
+if (Test-Path -LiteralPath $PidFile) {
+    $recoveryManifest = Get-Content -Raw -LiteralPath $PidFile | ConvertFrom-Json
+    $requiresLegacyRecovery = $false
+    foreach ($entry in @($recoveryManifest.processes)) {
+        if ($entry.PSObject.Properties.Name -contains 'legacy_descendant_scan_incomplete') {
+            $requiresLegacyRecovery = $true
+            break
+        }
+        if ($entry.PSObject.Properties.Name -contains 'supervisor_pid') {
+            continue
+        }
+        $legacyStatus = Get-RecordedProcessStatus `
+            -ProcessId ([int]$entry.pid) `
+            -StartTimeUtcTicks ([string]$entry.start_time_utc_ticks) `
+            -StartTimeUtc ($entry.start_time_utc) `
+            -Executable ([string]$entry.executable)
+        if ($legacyStatus.state -ne 'match') {
+            $requiresLegacyRecovery = $true
+            break
+        }
+    }
+    if ($requiresLegacyRecovery) {
+        Stop-RecordedProcesses
+    }
 }
 
 $EnvFile = $EnvironmentFile

@@ -25,6 +25,7 @@ STILL_ACTIVE = 259
 WAIT_OBJECT_0 = 0x00000000
 WAIT_TIMEOUT = 0x00000102
 WINDOWS_TO_DOTNET_TICKS = 504_911_232_000_000_000
+UNIX_TO_DOTNET_TICKS = 621_355_968_000_000_000
 
 
 class IoCounters(ctypes.Structure):
@@ -216,6 +217,10 @@ def _wait_for_process(kernel32: Any, handle: int, timeout_ms: int) -> str:
     raise AssertionError("unreachable")
 
 
+def _utc_now_dotnet_ticks() -> int:
+    return time.time_ns() // 100 + UNIX_TO_DOTNET_TICKS
+
+
 def terminate_verified_process(
     process_id: int,
     expected_start_time_utc_ticks: int,
@@ -234,14 +239,22 @@ def terminate_verified_process(
     if not handle:
         error = ctypes.get_last_error()
         if error == ERROR_INVALID_PARAMETER:
-            return {"state": "missing", "process_id": process_id}
+            return {
+                "state": "missing",
+                "process_id": process_id,
+                "process_absent_utc_ticks": _utc_now_dotnet_ticks(),
+            }
         return {"state": "error", "process_id": process_id, "winerror": error}
     try:
         exit_code = wintypes.DWORD()
         if not kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code)):
             _raise_last_winerror("GetExitCodeProcess")
         if exit_code.value != STILL_ACTIVE:
-            return {"state": "missing", "process_id": process_id}
+            return {
+                "state": "missing",
+                "process_id": process_id,
+                "process_absent_utc_ticks": _utc_now_dotnet_ticks(),
+            }
         actual_ticks, actual_executable = _process_identity(kernel32, handle)
         start_time_matches = (
             abs(actual_ticks - expected_start_time_utc_ticks) <= start_time_tolerance_ticks
@@ -252,10 +265,21 @@ def terminate_verified_process(
             error = ctypes.get_last_error()
             exit_code = wintypes.DWORD()
             if kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code)) and exit_code.value != STILL_ACTIVE:
-                return {"state": "missing", "process_id": process_id}
+                return {
+                    "state": "missing",
+                    "process_id": process_id,
+                    "process_absent_utc_ticks": _utc_now_dotnet_ticks(),
+                }
             return {"state": "error", "process_id": process_id, "winerror": error}
         wait_state = _wait_for_process(kernel32, handle, timeout_ms)
-        return {"state": "terminated" if wait_state == "exited" else "timeout", "process_id": process_id}
+        if wait_state == "exited":
+            return {
+                "state": "terminated",
+                "process_id": process_id,
+                # Holding the process handle prevents PID reuse before this bound is recorded.
+                "termination_utc_ticks": _utc_now_dotnet_ticks(),
+            }
+        return {"state": "timeout", "process_id": process_id}
     finally:
         kernel32.CloseHandle(handle)
 
