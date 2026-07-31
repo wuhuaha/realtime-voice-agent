@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
 
 import httpx
 import pytest
@@ -465,7 +466,7 @@ async def test_registry_startup_abort_is_idempotent_for_admission_and_exact_rele
 
 async def test_worker_heartbeat_reports_capacity_and_applies_director_drain() -> None:
     requests: list[dict[str, object]] = []
-    revoked: list[set[str]] = []
+    revoked: list[tuple[LeaseRenewal, ...]] = []
 
     class FakeRegistry:
         def active_lease_renewals(self) -> tuple[LeaseRenewal, ...]:
@@ -478,15 +479,26 @@ async def test_worker_heartbeat_reports_capacity_and_applies_director_drain() ->
                 ),
             )
 
-        async def revoke_session_epochs(self, epochs: set[str]) -> None:
-            revoked.append(epochs)
+        async def lease_renewal_deadline(
+            self,
+            renewals: tuple[LeaseRenewal, ...],
+        ) -> float | None:
+            assert renewals == self.active_lease_renewals()
+            return None
+
+        async def revoke_lease_claims(self, claims: tuple[LeaseRenewal, ...]) -> None:
+            revoked.append(claims)
 
         async def revoke_expired_leases(self, now: float) -> None:
             assert now > 0
 
-        def extend_lease_deadlines(self, expires_at: float, rejected: set[str]) -> None:
+        async def extend_lease_deadlines(
+            self,
+            expires_at: float,
+            accepted: tuple[LeaseRenewal, ...],
+        ) -> None:
             assert expires_at == 153.0
-            assert rejected == {"epoch-1"}
+            assert accepted == ()
 
         def pending_lease_releases(self) -> tuple[LeaseRenewal, ...]:
             return ()
@@ -538,7 +550,16 @@ async def test_worker_heartbeat_reports_capacity_and_applies_director_drain() ->
         }
     ]
     assert admission.draining is True
-    assert revoked == [{"epoch-1"}]
+    assert revoked == [
+        (
+            LeaseRenewal(
+                tenant_id="tenant-1",
+                device_id="device-1",
+                session_epoch="epoch-1",
+                fencing_token=2,
+            ),
+        )
+    ]
 
 
 @pytest.mark.asyncio
@@ -666,11 +687,13 @@ async def test_rva_registry_does_not_drop_release_claims_above_heartbeat_batch_s
         await registry.run(object(), auth, reservation)  # type: ignore[arg-type]
 
     assert len(registry.pending_lease_releases()) == 80
+    assert registry._expiry_task is None  # noqa: SLF001
 
 
 @pytest.mark.asyncio
-async def test_successful_heartbeat_renews_lease_at_local_deadline_without_closing() -> None:
-    registry = RvaSessionRegistry(settings(), SharedSessionAdmission(5))
+async def test_successful_heartbeat_renews_lease_before_local_deadline_without_closing() -> None:
+    clock = MutableClock(99.0)
+    registry = RvaSessionRegistry(settings(), SharedSessionAdmission(5), clock=clock)
     closed: list[tuple[int, str]] = []
 
     class FakeConnection:
@@ -688,7 +711,7 @@ async def test_successful_heartbeat_renews_lease_at_local_deadline_without_closi
         expires_at=100.0,
     )
     registry._connections[("tenant-1", "device-1")] = (FakeConnection(), auth)  # type: ignore[assignment]  # noqa: SLF001
-    registry._lease_deadlines["epoch-1"] = 100.0  # noqa: SLF001
+    registry._lease_deadlines[("tenant-1", "device-1", "epoch-1", 1)] = 100.0  # noqa: SLF001
 
     def renewed(request: httpx.Request) -> httpx.Response:
         payload = json.loads(request.read())
@@ -711,7 +734,6 @@ async def test_successful_heartbeat_renews_lease_at_local_deadline_without_closi
             },
         )
 
-    clock = MutableClock(100.0)
     worker_settings = settings(director_url="http://director.test", heartbeat_enabled=True)
     async with httpx.AsyncClient(transport=httpx.MockTransport(renewed)) as client:
         heartbeat = WorkerHeartbeatLoop(
@@ -724,12 +746,13 @@ async def test_successful_heartbeat_renews_lease_at_local_deadline_without_closi
         await heartbeat.send_once()
 
     assert closed == []
-    assert registry._lease_deadlines == {"epoch-1": 130.0}  # noqa: SLF001
+    assert registry._lease_deadlines == {("tenant-1", "device-1", "epoch-1", 1): 130.0}  # noqa: SLF001
 
 
 @pytest.mark.asyncio
 async def test_failed_heartbeat_enforces_local_deadline_after_renewal_attempt() -> None:
-    registry = RvaSessionRegistry(settings(), SharedSessionAdmission(5))
+    clock = MutableClock(99.0)
+    registry = RvaSessionRegistry(settings(), SharedSessionAdmission(5), clock=clock)
     events: list[str] = []
     closed: list[tuple[int, str]] = []
 
@@ -749,13 +772,13 @@ async def test_failed_heartbeat_enforces_local_deadline_after_renewal_attempt() 
         expires_at=100.0,
     )
     registry._connections[("tenant-1", "device-1")] = (FakeConnection(), auth)  # type: ignore[assignment]  # noqa: SLF001
-    registry._lease_deadlines["epoch-1"] = 100.0  # noqa: SLF001
+    registry._lease_deadlines[("tenant-1", "device-1", "epoch-1", 1)] = 100.0  # noqa: SLF001
 
     def unavailable(_request: httpx.Request) -> httpx.Response:
         events.append("renew")
+        clock.advance(1.0)
         raise httpx.ConnectError("director unavailable")
 
-    clock = MutableClock(200.0)
     worker_settings = settings(director_url="http://director.test", heartbeat_enabled=True)
     async with httpx.AsyncClient(transport=httpx.MockTransport(unavailable)) as client:
         heartbeat = WorkerHeartbeatLoop(
@@ -769,6 +792,312 @@ async def test_failed_heartbeat_enforces_local_deadline_after_renewal_attempt() 
             await heartbeat.send_once()
     assert events == ["renew", "close"]
     assert closed == [(1008, "stale_route_lease")]
+
+
+@pytest.mark.asyncio
+async def test_blocked_heartbeat_cannot_outlive_submitted_lease_deadline() -> None:
+    deadline = time.time() + 0.25
+    registry = RvaSessionRegistry(settings(), SharedSessionAdmission(5))
+    request_started = asyncio.Event()
+    request_cancelled = asyncio.Event()
+    connection_closed = asyncio.Event()
+    close_calls = 0
+
+    class FakeConnection:
+        async def close(self, *, code: int, reason: str) -> None:
+            nonlocal close_calls
+            assert (code, reason) == (1008, "stale_route_lease")
+            close_calls += 1
+            connection_closed.set()
+
+        async def wait_closed(self) -> None:
+            return None
+
+    auth = AuthContext(
+        tenant_id="tenant-1",
+        device_id="device-1",
+        session_epoch="epoch-1",
+        fencing_token=1,
+        expires_at=deadline,
+    )
+    registry._connections[("tenant-1", "device-1")] = (FakeConnection(), auth)  # type: ignore[assignment]  # noqa: SLF001
+    registry._lease_deadlines[("tenant-1", "device-1", "epoch-1", 1)] = deadline  # noqa: SLF001
+    registry.start_expiry_enforcement()
+
+    async def blocked(_request: httpx.Request) -> httpx.Response:
+        request_started.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            request_cancelled.set()
+        raise AssertionError("unreachable")
+
+    worker_settings = settings(director_url="http://director.test", heartbeat_enabled=True)
+    try:
+        async with httpx.AsyncClient(transport=httpx.MockTransport(blocked)) as client:
+            heartbeat = WorkerHeartbeatLoop(
+                worker_settings,
+                SharedSessionAdmission(5),
+                registry,
+                client=client,
+            )
+            heartbeat_task = asyncio.create_task(heartbeat.send_once())
+            await asyncio.wait_for(request_started.wait(), timeout=1.0)
+            with pytest.raises(TimeoutError):
+                await heartbeat_task
+
+        await asyncio.wait_for(connection_closed.wait(), timeout=1.0)
+        assert request_cancelled.is_set()
+        assert close_calls == 1
+    finally:
+        await registry.close()
+
+    assert registry._expiry_task is None  # noqa: SLF001
+
+
+@pytest.mark.asyncio
+async def test_expiry_enforcement_failure_is_critical_and_fails_closed(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    closed = asyncio.Event()
+
+    class BrokenClock:
+        def __call__(self) -> float:
+            raise RuntimeError("clock failed")
+
+    class FakeConnection:
+        async def close(self, *, code: int, reason: str) -> None:
+            assert (code, reason) == (1008, "stale_route_lease")
+            closed.set()
+
+        async def wait_closed(self) -> None:
+            return None
+
+    registry = RvaSessionRegistry(
+        settings(),
+        SharedSessionAdmission(5),
+        clock=BrokenClock(),
+    )
+    auth = AuthContext(
+        tenant_id="tenant-1",
+        device_id="device-1",
+        session_epoch="epoch-1",
+        fencing_token=1,
+        expires_at=100.0,
+    )
+    registry._connections[("tenant-1", "device-1")] = (FakeConnection(), auth)  # type: ignore[assignment]  # noqa: SLF001
+    registry._lease_deadlines[("tenant-1", "device-1", "epoch-1", 1)] = 100.0  # noqa: SLF001
+
+    try:
+        with caplog.at_level(logging.CRITICAL):
+            registry.start_expiry_enforcement()
+            await asyncio.wait_for(closed.wait(), timeout=1.0)
+    finally:
+        await registry.close()
+
+    assert any(
+        record.message
+        == "worker_lease_expiry_enforcement_failed action=fail_closed error_type=RuntimeError"
+        for record in caplog.records
+    )
+
+
+@pytest.mark.asyncio
+async def test_heartbeat_does_not_extend_session_added_while_request_is_awaiting() -> None:
+    clock = MutableClock(100.0)
+    registry = RvaSessionRegistry(settings(), SharedSessionAdmission(5), clock=clock)
+    request_started = asyncio.Event()
+    release_response = asyncio.Event()
+
+    class FakeConnection:
+        async def close(self, *, code: int, reason: str) -> None:
+            raise AssertionError(f"unexpected close: {code} {reason}")
+
+        async def wait_closed(self) -> None:
+            return None
+
+    submitted_auth = AuthContext(
+        tenant_id="tenant-1",
+        device_id="device-1",
+        session_epoch="epoch-1",
+        fencing_token=1,
+        expires_at=150.0,
+    )
+    registry._connections[("tenant-1", "device-1")] = (FakeConnection(), submitted_auth)  # type: ignore[assignment]  # noqa: SLF001
+    registry._lease_deadlines[("tenant-1", "device-1", "epoch-1", 1)] = 150.0  # noqa: SLF001
+
+    async def renewed(_request: httpx.Request) -> httpx.Response:
+        request_started.set()
+        await release_response.wait()
+        return httpx.Response(
+            200,
+            json={
+                "accepted": True,
+                "draining": False,
+                "heartbeat_expires_at": 200.0,
+                "lease_expires_at": 180.0,
+                "rejected_session_epochs": [],
+            },
+        )
+
+    worker_settings = settings(director_url="http://director.test", heartbeat_enabled=True)
+    async with httpx.AsyncClient(transport=httpx.MockTransport(renewed)) as client:
+        heartbeat = WorkerHeartbeatLoop(
+            worker_settings,
+            SharedSessionAdmission(5),
+            registry,
+            client=client,
+            clock=clock,
+        )
+        heartbeat_task = asyncio.create_task(heartbeat.send_once())
+        await asyncio.wait_for(request_started.wait(), timeout=1.0)
+
+        new_auth = AuthContext(
+            tenant_id="tenant-2",
+            device_id="device-2",
+            session_epoch="epoch-2",
+            fencing_token=2,
+            expires_at=160.0,
+        )
+        async with registry._lock:  # noqa: SLF001
+            registry._connections[("tenant-2", "device-2")] = (FakeConnection(), new_auth)  # type: ignore[assignment]  # noqa: SLF001
+            registry._lease_deadlines[("tenant-2", "device-2", "epoch-2", 2)] = 160.0  # noqa: SLF001
+        release_response.set()
+        await heartbeat_task
+
+    assert registry._lease_deadlines == {  # noqa: SLF001
+        ("tenant-1", "device-1", "epoch-1", 1): 180.0,
+        ("tenant-2", "device-2", "epoch-2", 2): 160.0,
+    }
+
+
+@pytest.mark.asyncio
+async def test_heartbeat_response_at_deadline_cannot_resurrect_expired_claim() -> None:
+    clock = MutableClock(99.0)
+    registry = RvaSessionRegistry(settings(), SharedSessionAdmission(5), clock=clock)
+    closed: list[tuple[int, str]] = []
+
+    class FakeConnection:
+        async def close(self, *, code: int, reason: str) -> None:
+            closed.append((code, reason))
+
+        async def wait_closed(self) -> None:
+            return None
+
+    auth = AuthContext(
+        tenant_id="tenant-1",
+        device_id="device-1",
+        session_epoch="epoch-1",
+        fencing_token=1,
+        expires_at=100.0,
+    )
+    registry._connections[("tenant-1", "device-1")] = (FakeConnection(), auth)  # type: ignore[assignment]  # noqa: SLF001
+    registry._lease_deadlines[("tenant-1", "device-1", "epoch-1", 1)] = 100.0  # noqa: SLF001
+
+    def at_deadline(_request: httpx.Request) -> httpx.Response:
+        clock.advance(1.0)
+        return httpx.Response(
+            200,
+            json={
+                "accepted": True,
+                "draining": False,
+                "heartbeat_expires_at": 120.0,
+                "lease_expires_at": 130.0,
+                "rejected_session_epochs": [],
+            },
+        )
+
+    worker_settings = settings(director_url="http://director.test", heartbeat_enabled=True)
+    async with httpx.AsyncClient(transport=httpx.MockTransport(at_deadline)) as client:
+        heartbeat = WorkerHeartbeatLoop(
+            worker_settings,
+            SharedSessionAdmission(5),
+            registry,
+            client=client,
+            clock=clock,
+        )
+        await heartbeat.send_once()
+
+    assert closed == [(1008, "stale_route_lease")]
+    assert registry._lease_deadlines == {}  # noqa: SLF001
+
+
+@pytest.mark.asyncio
+async def test_rejected_submitted_claim_does_not_close_new_epoch_for_same_principal() -> None:
+    clock = MutableClock(100.0)
+    registry = RvaSessionRegistry(settings(), SharedSessionAdmission(5), clock=clock)
+    request_started = asyncio.Event()
+    release_response = asyncio.Event()
+    new_closed: list[tuple[int, str]] = []
+
+    class OldConnection:
+        async def close(self, *, code: int, reason: str) -> None:
+            return None
+
+        async def wait_closed(self) -> None:
+            return None
+
+    class NewConnection:
+        async def close(self, *, code: int, reason: str) -> None:
+            new_closed.append((code, reason))
+
+        async def wait_closed(self) -> None:
+            return None
+
+    old_auth = AuthContext(
+        tenant_id="tenant-1",
+        device_id="device-1",
+        session_epoch="epoch-1",
+        fencing_token=1,
+        expires_at=150.0,
+    )
+    registry._connections[("tenant-1", "device-1")] = (OldConnection(), old_auth)  # type: ignore[assignment]  # noqa: SLF001
+    registry._lease_deadlines[("tenant-1", "device-1", "epoch-1", 1)] = 150.0  # noqa: SLF001
+
+    async def rejected(_request: httpx.Request) -> httpx.Response:
+        request_started.set()
+        await release_response.wait()
+        return httpx.Response(
+            200,
+            json={
+                "accepted": True,
+                "draining": False,
+                "heartbeat_expires_at": 160.0,
+                "lease_expires_at": 170.0,
+                "rejected_session_epochs": ["epoch-1"],
+            },
+        )
+
+    worker_settings = settings(director_url="http://director.test", heartbeat_enabled=True)
+    async with httpx.AsyncClient(transport=httpx.MockTransport(rejected)) as client:
+        heartbeat = WorkerHeartbeatLoop(
+            worker_settings,
+            SharedSessionAdmission(5),
+            registry,
+            client=client,
+            clock=clock,
+        )
+        heartbeat_task = asyncio.create_task(heartbeat.send_once())
+        await asyncio.wait_for(request_started.wait(), timeout=1.0)
+
+        new_auth = AuthContext(
+            tenant_id="tenant-1",
+            device_id="device-1",
+            session_epoch="epoch-2",
+            fencing_token=2,
+            expires_at=160.0,
+        )
+        async with registry._lock:  # noqa: SLF001
+            registry._connections[("tenant-1", "device-1")] = (NewConnection(), new_auth)  # type: ignore[assignment]  # noqa: SLF001
+            registry._lease_deadlines.pop(("tenant-1", "device-1", "epoch-1", 1))
+            registry._lease_deadlines[("tenant-1", "device-1", "epoch-2", 2)] = 160.0  # noqa: SLF001
+        release_response.set()
+        await heartbeat_task
+
+    assert new_closed == []
+    assert registry._lease_deadlines == {  # noqa: SLF001
+        ("tenant-1", "device-1", "epoch-2", 2): 160.0,
+    }
 
 
 @pytest.mark.asyncio
@@ -787,6 +1116,12 @@ async def test_malformed_success_heartbeat_expires_locally_without_acknowledging
 
         def active_lease_renewals(self) -> tuple[LeaseRenewal, ...]:
             return ()
+
+        async def lease_renewal_deadline(
+            self,
+            renewals: tuple[LeaseRenewal, ...],
+        ) -> float | None:
+            return None
 
         def acknowledge_lease_releases(self, _releases: tuple[LeaseRenewal, ...]) -> None:
             events.append("acknowledge")
@@ -816,7 +1151,8 @@ async def test_malformed_success_heartbeat_expires_locally_without_acknowledging
 
 @pytest.mark.asyncio
 async def test_registry_closes_connection_after_local_lease_deadline() -> None:
-    registry = RvaSessionRegistry(settings(), SharedSessionAdmission(5))
+    clock = MutableClock(100.0)
+    registry = RvaSessionRegistry(settings(), SharedSessionAdmission(5), clock=clock)
     closed: list[tuple[int, str]] = []
 
     class FakeConnection:
@@ -836,7 +1172,7 @@ async def test_registry_closes_connection_after_local_lease_deadline() -> None:
 
     auth = FakeConnection.auth_context
     registry._connections[("tenant-1", "device-1")] = (FakeConnection(), auth)  # type: ignore[assignment]  # noqa: SLF001
-    registry._lease_deadlines["epoch-1"] = 100.0  # noqa: SLF001
+    registry._lease_deadlines[("tenant-1", "device-1", "epoch-1", 1)] = 100.0  # noqa: SLF001
     await registry.revoke_expired_leases(100.0)
     assert closed == [(1008, "stale_route_lease")]
 

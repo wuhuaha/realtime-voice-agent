@@ -34,6 +34,8 @@ SHUTDOWN_RELEASE_MAX_ATTEMPTS = 32
 SHUTDOWN_CLOSE_BUDGET_RATIO = 0.6
 SHUTDOWN_INITIAL_HEARTBEAT_MAX_SECONDS = 1.0
 
+LeaseClaimKey = tuple[str, str, str, int]
+
 
 class LeaseRegistryPort(Protocol):
     def snapshot_active_lease_releases(self) -> None: ...
@@ -42,7 +44,15 @@ class LeaseRegistryPort(Protocol):
 
     async def revoke_session_epochs(self, session_epochs: set[str]) -> None: ...
 
-    def extend_lease_deadlines(self, expires_at: float, rejected_epochs: set[str]) -> None: ...
+    async def revoke_lease_claims(self, claims: tuple[LeaseRenewal, ...]) -> None: ...
+
+    async def extend_lease_deadlines(
+        self,
+        expires_at: float,
+        accepted_claims: tuple[LeaseRenewal, ...],
+    ) -> None: ...
+
+    async def lease_renewal_deadline(self, renewals: tuple[LeaseRenewal, ...]) -> float | None: ...
 
     def active_lease_renewals(self) -> tuple[LeaseRenewal, ...]: ...
 
@@ -60,14 +70,21 @@ class RvaSessionRegistry:
         admission: SharedSessionAdmission,
         *,
         udp_gateway: UdpMediaGateway | None = None,
+        clock: Callable[[], float] = time.time,
     ) -> None:
         self._settings = settings
         self._admission = admission
         self._udp_gateway = udp_gateway
         self._connections: dict[tuple[str, str], tuple[RvaWssConnection, AuthContext]] = {}
-        self._lease_deadlines: dict[str, float] = {}
+        self._lease_deadlines: dict[LeaseClaimKey, float] = {}
         self._pending_releases: deque[LeaseRenewal] = deque()
         self._lock = asyncio.Lock()
+        self._close_lock = asyncio.Lock()
+        self._clock = clock
+        self._expiry_changed = asyncio.Event()
+        self._expiry_task: asyncio.Task[None] | None = None
+        self._closing = False
+        self._retirement_tasks: dict[int, asyncio.Task[None]] = {}
 
     async def reserve(self, auth: AuthContext) -> str | None:
         return await self._admission.reserve((auth.tenant_id, auth.device_id))
@@ -111,10 +128,14 @@ class RvaSessionRegistry:
                 ),
                 interruption_policy=_create_interruption_policy(self._settings),
             )
+            claim = self._lease_claim(auth)
             async with self._lock:
                 self._connections[principal] = (connection, auth)
-                if auth.session_epoch is not None and auth.expires_at is not None:
-                    self._lease_deadlines[auth.session_epoch] = auth.expires_at
+                if claim is not None and auth.expires_at is not None:
+                    self._lease_deadlines[self._lease_claim_key(claim)] = auth.expires_at
+                self._expiry_changed.set()
+            if claim is not None and auth.expires_at is not None:
+                self.start_expiry_enforcement()
         except BaseException:
             await self.abort_startup(auth, token)
             raise
@@ -124,55 +145,97 @@ class RvaSessionRegistry:
             try:
                 await connection.wait_closed()
             finally:
+                expiry_task: asyncio.Task[None] | None = None
                 async with self._lock:
                     current = self._connections.get(principal)
                     if current is not None and current[0] is connection:
                         self._connections.pop(principal, None)
-                    if auth.session_epoch is not None:
-                        self._lease_deadlines.pop(auth.session_epoch, None)
+                    claim = self._lease_claim(auth)
+                    if claim is not None:
+                        self._lease_deadlines.pop(self._lease_claim_key(claim), None)
                     self._queue_lease_release(auth)
+                    self._expiry_changed.set()
+                    expiry_task = self._detach_expiry_task_if_idle_locked()
+                if expiry_task is not None:
+                    await asyncio.gather(expiry_task, return_exceptions=True)
                 await self._admission.release(token)
 
     async def close(self) -> None:
-        async with self._lock:
-            owned = tuple(self._connections.values())
-            for _, auth in owned:
-                self._queue_lease_release(auth)
-            connections = tuple(connection for connection, _ in owned)
-            self._connections.clear()
-        await asyncio.gather(
-            *(connection.close(code=1_001, reason="server_shutdown") for connection in connections),
-            return_exceptions=True,
-        )
-        await asyncio.gather(*(connection.wait_closed() for connection in connections), return_exceptions=True)
+        async with self._close_lock:
+            self._closing = True
+            await self._stop_expiry_enforcement()
+            async with self._lock:
+                owned = tuple(self._connections.values())
+                for _, auth in owned:
+                    self._queue_lease_release(auth)
+                connections = tuple(connection for connection, _ in owned)
+                self._connections.clear()
+                self._lease_deadlines.clear()
+                self._expiry_changed.set()
+            self._schedule_retirements(connections, code=1_001, reason="server_shutdown")
+            tasks = tuple(self._retirement_tasks.values())
+            try:
+                await asyncio.gather(*tasks, return_exceptions=True)
+            except asyncio.CancelledError:
+                tasks = tuple(self._retirement_tasks.values())
+                for task in tasks:
+                    task.cancel()
+                await asyncio.gather(*tasks, return_exceptions=True)
+                raise
 
     def snapshot_active_lease_releases(self) -> None:
         for _, auth in self._connections.values():
             self._queue_lease_release(auth)
 
     async def revoke_session_epochs(self, session_epochs: set[str]) -> None:
-        if not session_epochs:
+        claims = tuple(
+            claim
+            for _, auth in self._connections.values()
+            if auth.session_epoch in session_epochs and (claim := self._lease_claim(auth)) is not None
+        )
+        await self.revoke_lease_claims(claims)
+
+    async def revoke_lease_claims(self, claims: tuple[LeaseRenewal, ...]) -> None:
+        claim_keys = {self._lease_claim_key(claim) for claim in claims}
+        if not claim_keys:
             return
         async with self._lock:
-            connections = tuple(
-                connection
-                for connection, auth in self._connections.values()
-                if auth.session_epoch in session_epochs
-            )
-        await asyncio.gather(
-            *(connection.close(code=1_008, reason="stale_route_lease") for connection in connections),
-            return_exceptions=True,
-        )
-        await asyncio.gather(*(connection.wait_closed() for connection in connections), return_exceptions=True)
+            connections = self._remove_claims_locked(claim_keys)
+            self._expiry_changed.set()
+        tasks = self._schedule_retirements(connections, code=1_008, reason="stale_route_lease")
+        await self._await_retirements(tasks)
 
     async def revoke_expired_leases(self, now: float) -> None:
-        expired = {epoch for epoch, deadline in self._lease_deadlines.items() if deadline <= now}
-        await self.revoke_session_epochs(expired)
+        async with self._lock:
+            expired = {claim for claim, deadline in self._lease_deadlines.items() if deadline <= now}
+            connections = self._remove_claims_locked(expired)
+            self._expiry_changed.set()
+        tasks = self._schedule_retirements(connections, code=1_008, reason="stale_route_lease")
+        await self._await_retirements(tasks)
 
-    def extend_lease_deadlines(self, expires_at: float, rejected_epochs: set[str]) -> None:
-        for session_epoch in tuple(self._lease_deadlines):
-            if session_epoch not in rejected_epochs:
-                self._lease_deadlines[session_epoch] = expires_at
+    async def extend_lease_deadlines(
+        self,
+        expires_at: float,
+        accepted_claims: tuple[LeaseRenewal, ...],
+    ) -> None:
+        claim_keys = {self._lease_claim_key(claim) for claim in accepted_claims}
+        async with self._lock:
+            now = self._clock()
+            for claim in claim_keys:
+                deadline = self._lease_deadlines.get(claim)
+                if deadline is not None and deadline > now:
+                    self._lease_deadlines[claim] = expires_at
+            self._expiry_changed.set()
+
+    async def lease_renewal_deadline(self, renewals: tuple[LeaseRenewal, ...]) -> float | None:
+        claim_keys = {self._lease_claim_key(renewal) for renewal in renewals}
+        async with self._lock:
+            deadlines = tuple(
+                deadline
+                for claim, deadline in self._lease_deadlines.items()
+                if claim in claim_keys
+            )
+        return min(deadlines, default=None)
 
     def active_lease_renewals(self) -> tuple[LeaseRenewal, ...]:
         return tuple(
@@ -213,10 +276,173 @@ class RvaSessionRegistry:
             fencing_token=auth.fencing_token,
         )
 
+    @staticmethod
+    def _lease_claim_key(claim: LeaseRenewal) -> LeaseClaimKey:
+        return (claim.tenant_id, claim.device_id, claim.session_epoch, claim.fencing_token)
+
     def _queue_lease_release(self, auth: AuthContext) -> None:
         release = self._lease_claim(auth)
         if release is not None and release not in self._pending_releases:
             self._pending_releases.append(release)
+
+    def start_expiry_enforcement(self) -> None:
+        if self._closing:
+            return
+        task = self._expiry_task
+        if task is not None and not task.done():
+            return
+        task = asyncio.create_task(
+            self._enforce_lease_expiry(),
+            name="worker-lease-expiry",
+        )
+        self._expiry_task = task
+        task.add_done_callback(self._expiry_enforcement_done)
+
+    async def _stop_expiry_enforcement(self) -> None:
+        task, self._expiry_task = self._expiry_task, None
+        if task is None:
+            return
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+    async def _enforce_lease_expiry(self) -> None:
+        while True:
+            try:
+                async with self._lock:
+                    self._expiry_changed.clear()
+                    deadline = min(self._lease_deadlines.values(), default=None)
+                if deadline is None:
+                    await self._expiry_changed.wait()
+                    continue
+                remaining = deadline - self._clock()
+                if remaining <= 0:
+                    await self.revoke_expired_leases(self._clock())
+                    continue
+                try:
+                    await asyncio.wait_for(self._expiry_changed.wait(), timeout=remaining)
+                except TimeoutError:
+                    await self.revoke_expired_leases(self._clock())
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.critical(
+                    "worker_lease_expiry_enforcement_failed action=fail_closed error_type=%s",
+                    type(exc).__name__,
+                )
+                try:
+                    await self.revoke_expired_leases(math.inf)
+                except asyncio.CancelledError:
+                    raise
+                except Exception as fail_closed_exc:
+                    self._admission.set_draining(True)
+                    logger.critical(
+                        "worker_lease_expiry_fail_closed_failed action=terminate_and_drain error_type=%s",
+                        type(fail_closed_exc).__name__,
+                    )
+                    raise
+
+    def _expiry_enforcement_done(self, task: asyncio.Task[None]) -> None:
+        if self._expiry_task is task:
+            self._expiry_task = None
+        if task.cancelled():
+            return
+        exception = task.exception()
+        logger.critical(
+            "worker_lease_expiry_enforcement_stopped action=terminated error_type=%s",
+            type(exception).__name__ if exception is not None else "none",
+        )
+
+    def _detach_expiry_task_if_idle_locked(self) -> asyncio.Task[None] | None:
+        if self._lease_deadlines:
+            return None
+        task, self._expiry_task = self._expiry_task, None
+        if task is not None:
+            task.cancel()
+        return task
+
+    def _remove_claims_locked(
+        self,
+        claim_keys: set[LeaseClaimKey],
+    ) -> tuple[RvaWssConnection, ...]:
+        for claim in claim_keys:
+            self._lease_deadlines.pop(claim, None)
+        connections: list[RvaWssConnection] = []
+        for principal, (connection, auth) in tuple(self._connections.items()):
+            claim = self._lease_claim(auth)
+            if claim is None or self._lease_claim_key(claim) not in claim_keys:
+                continue
+            current = self._connections.get(principal)
+            if current is not None and current[0] is connection:
+                self._connections.pop(principal, None)
+            self._queue_lease_release(auth)
+            connections.append(connection)
+        return tuple(connections)
+
+    def _schedule_retirements(
+        self,
+        connections: tuple[RvaWssConnection, ...],
+        *,
+        code: int,
+        reason: str,
+    ) -> tuple[asyncio.Task[None], ...]:
+        tasks: list[asyncio.Task[None]] = []
+        for connection in connections:
+            key = id(connection)
+            task = self._retirement_tasks.get(key)
+            if task is None:
+                task = asyncio.create_task(
+                    self._retire_connection(connection, code=code, reason=reason),
+                    name=f"rva-registry-retire-{key}",
+                )
+                self._retirement_tasks[key] = task
+                task.add_done_callback(
+                    lambda done, key=key, reason=reason: self._retirement_done(key, reason, done)
+                )
+            tasks.append(task)
+        return tuple(tasks)
+
+    async def _retire_connection(
+        self,
+        connection: RvaWssConnection,
+        *,
+        code: int,
+        reason: str,
+    ) -> None:
+        try:
+            await connection.close(code=code, reason=reason)
+        finally:
+            await connection.wait_closed()
+
+    async def _await_retirements(self, tasks: tuple[asyncio.Task[None], ...]) -> None:
+        await asyncio.gather(
+            *(asyncio.shield(task) for task in tasks),
+            return_exceptions=True,
+        )
+
+    def _retirement_done(
+        self,
+        key: int,
+        reason: str,
+        task: asyncio.Task[None],
+    ) -> None:
+        if self._retirement_tasks.get(key) is task:
+            self._retirement_tasks.pop(key, None)
+        if task.cancelled():
+            if reason == "stale_route_lease":
+                logger.critical(
+                    "worker_lease_retirement_cancelled close_reason=%s",
+                    reason,
+                )
+            return
+        exception = task.exception()
+        if exception is None:
+            return
+        log = logger.critical if reason == "stale_route_lease" else logger.error
+        log(
+            "worker_lease_retirement_failed close_reason=%s error_type=%s",
+            reason,
+            type(exception).__name__,
+        )
 
 
 class CombinedLeaseRegistry:
@@ -235,9 +461,23 @@ class CombinedLeaseRegistry:
     async def revoke_session_epochs(self, session_epochs: set[str]) -> None:
         await asyncio.gather(*(registry.revoke_session_epochs(session_epochs) for registry in self._registries))
 
-    def extend_lease_deadlines(self, expires_at: float, rejected_epochs: set[str]) -> None:
-        for registry in self._registries:
-            registry.extend_lease_deadlines(expires_at, rejected_epochs)
+    async def revoke_lease_claims(self, claims: tuple[LeaseRenewal, ...]) -> None:
+        await asyncio.gather(*(registry.revoke_lease_claims(claims) for registry in self._registries))
+
+    async def extend_lease_deadlines(
+        self,
+        expires_at: float,
+        accepted_claims: tuple[LeaseRenewal, ...],
+    ) -> None:
+        await asyncio.gather(
+            *(registry.extend_lease_deadlines(expires_at, accepted_claims) for registry in self._registries)
+        )
+
+    async def lease_renewal_deadline(self, renewals: tuple[LeaseRenewal, ...]) -> float | None:
+        deadlines = await asyncio.gather(
+            *(registry.lease_renewal_deadline(renewals) for registry in self._registries)
+        )
+        return min((deadline for deadline in deadlines if deadline is not None), default=None)
 
     def active_lease_renewals(self) -> tuple[LeaseRenewal, ...]:
         return tuple(renewal for registry in self._registries for renewal in registry.active_lease_renewals())
@@ -398,6 +638,7 @@ class WorkerHeartbeatLoop:
         self._owns_client = client is None
         self._clock = clock
         self._task: asyncio.Task[None] | None = None
+        self._send_lock = asyncio.Lock()
         self.last_success = False
 
     def start(self) -> None:
@@ -414,6 +655,10 @@ class WorkerHeartbeatLoop:
             await self._client.aclose()
 
     async def send_once(self) -> None:
+        async with self._send_lock:
+            await self._send_once()
+
+    async def _send_once(self) -> None:
         udp_ready = self._udp_gateway is not None and self._udp_gateway.is_ready
         udp_required = self._settings.rva_udp_enabled
         udp_unavailable = udp_required and not udp_ready
@@ -448,31 +693,59 @@ class WorkerHeartbeatLoop:
             released_leases=pending_releases,
         )
         try:
-            response = await self._client.post(
-                f"{self._settings.director_url.rstrip('/')}/internal/v1/workers/heartbeat",
-                headers={"X-Internal-Token": self._settings.internal_token.get_secret_value()},
-                json=payload.model_dump(mode="json"),
+            renewal_deadline = (
+                await self._registry.lease_renewal_deadline(payload.active_leases)
+                if self._registry is not None
+                else None
             )
-            response.raise_for_status()
-            heartbeat_response = WorkerHeartbeatResponse.model_validate(response.json())
-            if (
-                not heartbeat_response.accepted
-                or not math.isfinite(heartbeat_response.heartbeat_expires_at)
-                or not math.isfinite(heartbeat_response.lease_expires_at)
-            ):
-                raise ValueError("Director returned an invalid lease renewal response")
+
+            async def exchange_heartbeat() -> tuple[WorkerHeartbeatResponse, tuple[LeaseRenewal, ...]]:
+                response = await self._client.post(
+                    f"{self._settings.director_url.rstrip('/')}/internal/v1/workers/heartbeat",
+                    headers={"X-Internal-Token": self._settings.internal_token.get_secret_value()},
+                    json=payload.model_dump(mode="json"),
+                )
+                response.raise_for_status()
+                heartbeat_response = WorkerHeartbeatResponse.model_validate(response.json())
+                if (
+                    not heartbeat_response.accepted
+                    or not math.isfinite(heartbeat_response.heartbeat_expires_at)
+                    or not math.isfinite(heartbeat_response.lease_expires_at)
+                ):
+                    raise ValueError("Director returned an invalid lease renewal response")
+                rejected = set(heartbeat_response.rejected_session_epochs)
+                rejected_claims = tuple(
+                    claim for claim in payload.active_leases if claim.session_epoch in rejected
+                )
+                accepted_claims = tuple(
+                    claim for claim in payload.active_leases if claim.session_epoch not in rejected
+                )
+                if self._registry is not None:
+                    await self._registry.extend_lease_deadlines(
+                        heartbeat_response.lease_expires_at,
+                        accepted_claims,
+                    )
+                return heartbeat_response, rejected_claims
+
+            if renewal_deadline is None:
+                heartbeat_response, rejected_claims = await exchange_heartbeat()
+            else:
+                remaining = renewal_deadline - self._clock()
+                if remaining <= 0:
+                    raise TimeoutError("local route lease expired before renewal")
+                async with asyncio.timeout(remaining):
+                    heartbeat_response, rejected_claims = await exchange_heartbeat()
         except Exception:
             if self._registry is not None:
                 await self._registry.revoke_expired_leases(self._clock())
             raise
         if self._registry is not None:
+            await self._registry.revoke_expired_leases(self._clock())
             self._registry.acknowledge_lease_releases(pending_releases)
         if heartbeat_response.draining:
             self._admission.set_draining(True)
         if self._registry is not None:
             rejected = set(heartbeat_response.rejected_session_epochs)
-            lease_expires_at = heartbeat_response.lease_expires_at
-            self._registry.extend_lease_deadlines(lease_expires_at, rejected)
             if rejected:
                 logger.warning(
                     "worker_lease_renewal_rejected worker_id=%s active_claims=%d released_claims=%d rejected=%d",
@@ -481,7 +754,7 @@ class WorkerHeartbeatLoop:
                     len(payload.released_leases),
                     len(rejected),
                 )
-            await self._registry.revoke_session_epochs(rejected)
+            await self._registry.revoke_lease_claims(rejected_claims)
         self.last_success = True
 
     async def _run(self) -> None:
