@@ -126,10 +126,14 @@ def _ports_released(cluster: ProcessCluster) -> bool:
     try:
         for port in [cluster.director_port, *(worker.http_port for worker in cluster.workers)]:
             candidate = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            # Health probes can leave short-lived TCP connections in TIME_WAIT after the process exits.
+            # Reuse is safe here because this probe only runs after the child process has been reaped.
+            candidate.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             candidate.bind(("127.0.0.1", port))
             sockets.append(candidate)
         for worker in cluster.workers:
             candidate = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            candidate.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             candidate.bind(("127.0.0.1", worker.udp_port))
             sockets.append(candidate)
     except OSError:
