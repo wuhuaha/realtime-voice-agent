@@ -5,7 +5,7 @@
 
 ## 背景
 
-Native endpoint 已使用项目自有协议，但 RVA v1 仍允许端侧 VAD 在服务端裁决前清空播放并发送 `barge_in`。
+Native endpoint 已使用项目自有协议，但旧 control contract 仍允许端侧 VAD 在服务端裁决前清空播放并发送 `barge_in`。
 Worker 同时会在播放期间抑制上行音频，LiveKit 默认也会把不可打断阶段的 STT 输入替换成静音，导致服务端明确
 短语策略在真实链路中不可达。一个 Agent speech 的多个 TTS flush 还可能被映射成多个 playback generation。
 
@@ -22,8 +22,8 @@ Worker 同时会在播放期间抑制上行音频，LiveKit 默认也会把不�
 - Endpoint 不从 VAD、wake onset 或普通 speech 推导 cancel；AEC、NS 和 VAD 继续服务音频质量、UI 和观测。
 - Endpoint 只执行服务端精确 `playback.stop`、generation fence 和 sequence drain，并回报物理
   `playback.started/ended`。明确按钮操作可以立即关闭本地 render gate并请求取消。
-- Current wire提升为 `rva-control-v2`、`/v2/voice`、`wss-opus-v3` 和 `udp-opus-gcm-v2`。不运行 RVA v1/v2
-  dual stack，也不保留 active Xiaozhi firmware route。
+- Current wire提升为 `rva-control-v2`、`/v2/voice`、`wss-opus-v3` 和 `udp-opus-gcm-v2`。不运行旧 wire
+  dual stack，也不保留 legacy firmware route。
 - 两个 v2 media profile 的 uplink generation固定为0；downlink generation只约束 render freshness。
 - 正常 response terminal携带最后媒体序号，设备播放到该序号后才报告 completed；取消和失败不冒充正常完成。
 

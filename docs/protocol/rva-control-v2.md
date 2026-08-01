@@ -10,8 +10,8 @@ Machine-readable authority：`protocol/rva_control_v2/contract.yaml`、`messages
 response generation、authoritative playback stop、设备物理播放事实、错误和关闭；Opus 媒体由本次 session 选定的
 `wss-opus-v3` 或 `udp-opus-gcm-v2` 承载。
 
-v2 是 clean-slate wire，不接受 `response.cancel`、`response.cancelled`、`barge_in`、`new_wake` 或 Xiaozhi
-`hello/listen/tts/abort/mcp`。Product runtime 不实现 v1/v2 dual stack；旧协议只存在于 Git 历史和迁移记录。
+v2 是 clean-slate wire，不接受 `response.cancel`、`response.cancelled`、`barge_in`、`new_wake` 或 legacy
+`hello/listen/tts/abort/mcp`。Product runtime 不实现旧 wire dual stack；旧协议只存在于 Research/Git 历史。
 
 ## 2. 建连
 

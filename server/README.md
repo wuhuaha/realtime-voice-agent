@@ -14,7 +14,7 @@ Director 不导入 LiveKit、AV、Opus或 provider，媒体建立后不访问 co
 
 ## 安装和验证
 
-```powershell
+```bash
 cd server
 uv lock --check
 uv sync --locked --all-packages --dev
@@ -24,25 +24,23 @@ uv run pytest --timeout=20 --timeout-method=thread
 
 Redis integration 默认不访问本机服务。对专用测试实例显式运行：
 
-```powershell
-$env:VOICE_TEST_REDIS_URL = "redis://127.0.0.1:6399/15"
+```bash
+export VOICE_TEST_REDIS_URL=redis://127.0.0.1:6399/15
 uv run pytest apps/session_director/tests/test_redis_store.py
 ```
 
 ## 运行入口
 
-```powershell
+Server 运行环境为 Linux 或 Linux container。开发时分别启动两个进程：
+
+```bash
 uv run session-director
 uv run realtime-worker
 ```
 
-根 `scripts/run-local.ps1` 会调用本目录 launcher。它为每个 Worker 分配独立 HTTP/UDP端口，以隐藏进程
-启动并把 PID、端口和日志路径写入 `.runtime/local/server-processes.json`：
-
-```powershell
-./scripts/run-local.ps1 -WorkerCount 2
-./server/scripts/run-local.ps1 -Stop -RuntimeDirectory ./.runtime/local
-```
+多 Director/Worker 使用 `deployment/single-node/compose.yaml` 或部署编排器管理。测试需要独立进程时，使用
+`voice_testkit.subprocess_cluster.running_process_cluster`；该 fixture 只负责测试进程的有界启动、readiness
+和回收，不是生产 supervisor，也不提供 Windows 原生进程生命周期支持。
 
 Director API：
 
@@ -65,8 +63,8 @@ GET  /health/live
 GET  /health/ready
 ```
 
-`/v2/voice` 是唯一设备语音入口。当前 runtime 不注册 `/v1/voice` 或 `/v1/xiaozhi`，协议升级通过 fresh session
-完成，不在同一进程保留 dual stack。
+`/v2/voice` 是唯一设备语音入口。当前 runtime 只注册 canonical v2 route；不支持的旧 path 或 wire 会 fail closed，
+协议升级通过 fresh session 完成，不在同一进程保留 dual stack。
 
 Worker `max_sessions` 默认 `5`，可用 `VOICE_WORKER_MAX_SESSIONS` 覆盖。生产多 Director/多 Worker 必须使用
 `VOICE_COORDINATION_BACKEND=redis`；memory backend只允许测试和单进程开发。

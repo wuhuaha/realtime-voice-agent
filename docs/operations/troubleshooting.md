@@ -67,7 +67,7 @@ heartbeat 和进程日志三方核对唯一 incarnation。不要只修改 unit �
 
 ## 5. `session.open` / 控制失败
 
-- Client 首条且唯一的 open 消息是 `session.open(protocol_version=2)`；不得发送 Xiaozhi `hello` 或 v1 消息。
+- Client 首条且唯一的 open 消息是 `session.open(protocol_version=2)`；不得发送非 canonical v2 消息。
 - `audio` 为 Opus/16 kHz/mono/60 ms，DTX on、FEC off。
 - `supported_media_profiles` 只包含 `wss-opus-v3`/`udp-opus-gcm-v2`，且与 grant allowed profiles 有交集；
   `preferred_media_profile` 必须属于该集合。

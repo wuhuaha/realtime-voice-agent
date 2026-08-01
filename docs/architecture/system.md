@@ -31,7 +31,7 @@ flowchart LR
 
 ### Realtime Worker
 
-- 终止 `/v2/voice` RVA WSS control；active runtime 不注册 v1 或 Xiaozhi route。
+- 终止 `/v2/voice` RVA WSS control；active runtime 只注册 canonical v2 route，其他 route fail closed。
 - commit `wss-opus-v3` 或 `udp-opus-gcm-v2`，并持有对应媒体 transport。
 - 一个 active session 内唯一持有 AgentSession、codec、provider stream、playback generation 和 teardown。
 - 通过 `InterruptionCoordinator` 独占语音打断裁决；Endpoint VAD 只产生观测事实，不改变播放状态。
@@ -59,7 +59,7 @@ flowchart LR
 - interactive playback fact 使用 PortAudio clock 与报告的 output latency 形成 host 预计 render boundary；该边界不等于
   已测量的 DAC/扬声器输出，也不能替代声学验证。
 - PyAV/libopus 与 PortAudio 是可选 host 依赖；ESP32、Server 和默认无声卡测试不依赖它们。
-- Desktop endpoint 不实现 Xiaozhi wire、MQTT、MCP、OTA、activation、IoT 或视觉能力，也不 vendoring PyXiaozhi。
+- Desktop endpoint 只实现 canonical RVA wire，不引入 MQTT、MCP、OTA、activation、IoT 或视觉业务依赖。
 
 ## 3. 核心不变量
 
@@ -144,4 +144,4 @@ Python Desktop Reference Client 已提供与 native endpoint 相同的 RVA v2 se
 - 浏览器/手机出现真实需求时，可新增标准 LiveKit Room binding；不把 Room/SFU 引入 ESP32 profile。
 - Worker endpoint 无法在目标网络可靠暴露时，重新评估 Edge Media Gateway；在此之前不预建媒体转发层。
 - 第二个真实 Agent application 消费者出现后再提取业务 Agent package。
-- Direct WebRTC/AIMP 不属于当前产品范围。
+- 标准 RTC/SFU、PCM DataChannel 和其他未登记媒体协议不属于当前产品范围。

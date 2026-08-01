@@ -32,3 +32,6 @@
 - [需求追踪](quality/requirements-traceability.md)
 - [安全模型](security/security-model.md)
 - [凭据](security/credentials.md)
+
+仓库级贡献、安全报告和第三方许可证入口：[`CONTRIBUTING.md`](../CONTRIBUTING.md)、[`SECURITY.md`](../SECURITY.md)、
+[`LICENSE`](../LICENSE)、[`NOTICE`](../NOTICE)。

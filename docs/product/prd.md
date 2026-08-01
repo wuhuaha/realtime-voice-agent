@@ -39,7 +39,7 @@ TTS 和 interruption；ESP32 使用 `rva-control-v2`，媒体可选择 `wss-opus
 
 ### 3.2 非目标
 
-- 不提供 Direct WebRTC、AIMP 或 PCM DataChannel。
+- 不提供标准 RTC/SFU、PCM DataChannel 或其他未登记的媒体协议。
 - 不为 ESP32 补齐 ICE、SDP、DTLS-SRTP、RTCP、SFU 或完整 WebRTC。
 - 不在首版实现 active turn 跨 Worker 热迁移、same-session transport 切换或断点续播。
 - 不把浏览器/手机标准 LiveKit Room 作为首个验收 endpoint；架构只保留未来接入边界。

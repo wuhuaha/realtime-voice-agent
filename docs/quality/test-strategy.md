@@ -23,7 +23,7 @@
 
 ### Repository
 
-- 禁止路径、secret、generated binary、external checkout、Direct/AIMP 资产。
+- 禁止路径、secret、generated binary、external checkout 和未登记媒体协议资产。
 - source/license/dependency lock 完整性。
 - protocol registry、schema、fixture 与文档链接一致。
 - architecture dependency 方向和 package import 边界。

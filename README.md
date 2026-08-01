@@ -32,11 +32,27 @@ third_party/    pinned upstream sources and license inventory
 
 ## 开发入口
 
-```powershell
-./scripts/bootstrap.ps1
-./scripts/verify.ps1
-./scripts/run-local.ps1
+根仓验证（Linux/macOS/WSL）：
+
+```bash
+uv sync --locked --dev
+uv run ruff check scripts tests firmware/tools
+uv run pytest
+uv run python scripts/verify_repository.py
+uv run python scripts/check_secrets.py
 ```
+
+Server 运行入口只支持 Linux/container：
+
+```bash
+cd server
+uv sync --locked --all-packages --dev
+uv run session-director
+uv run realtime-worker
+```
+
+多实例部署使用 [`deployment/single-node/`](deployment/single-node/) 的 Docker Compose 资产；测试中的独立
+Director/Worker 子进程由 `voice_testkit.subprocess_cluster` 管理，不作为生产启动器。
 
 Native firmware 入口为 `firmware/apps/voice_terminal/`。真实 provider、设备和网络凭据只写入 ignored
 `.env` / local configuration；tracked 模板只保存字段和安全占位符。

@@ -1,89 +1,45 @@
 # 决策 0002：Director 与 Worker 水平扩展
 
-日期：2026-07-20
+日期：2026-08-01
 状态：accepted
-决定：首版交付 Session Director + stateful Realtime Worker；Director 不接触媒体，生产使用 Redis-compatible
-shared store，Worker `max_sessions` 默认 `5` 且可配置。
 
-## 背景
+## 决定
 
-WSS control 与 UDP media 必须落在同一个 active session owner。普通无状态多副本或仅按 WSS sticky 不能可靠
-处理 UDP `media_id`、duplicate device、drain、capacity 和故障 fencing。用户明确要求首版包含水平扩展入口。
+Product 使用 Session Director + stateful Realtime Worker 的部署边界。Director 负责 bootstrap、Worker registry、
+capacity、route lease、fencing、connect grant 和 drain；Worker 独占一个 active session 的 WSS、UDP、AgentSession、
+codec、playback generation 与 bounded teardown。Server 运行与生产编排只支持 Linux/container。
 
-## 已考虑选项
+生产多实例使用 Redis-compatible shared store；memory backend 只允许测试和单进程开发。`VOICE_WORKER_MAX_SESSIONS=5`
+是可配置的保守启动值，不是容量测量或 SLO。
 
-### 单 Runtime 多副本 + 普通负载均衡
+## 约束
 
-不选择。WSS/UDP affinity、双 owner、全局 admission 和 drain 语义不闭合。
+- 一个 active epoch 只有一个 Worker owner，WSS 与 UDP media 必须落在同一 Worker。
+- Director 不读取、转发、缓存或重放媒体帧，不管理 Agent turn/provider stream；shared store 不进入 media hot path。
+- Worker heartbeat 必须声明 public URL、active/max、profiles、healthy 和 draining；Director 只选择 heartbeat 有效、
+  健康、non-draining、还有 slot 且 profile 相交的 Worker。
+- Route lease 产生递增 fencing token；grant 绑定 Worker、device、epoch、fence、profiles、expiry 和 jti，并在共享
+  coordination store 中单次消费。
+- Worker 故障后设备 fresh bootstrap/session，不迁移 active turn；drain 是单向状态，恢复容量使用新的 Worker
+  incarnation，不对旧进程 undrain。
+- `/v2/voice` 是唯一设备语音入口；current wire 只有 `rva-control-v2`、`wss-opus-v3` 和 `udp-opus-gcm-v2`。
 
-### Director + stateful Worker
+## 选择理由
 
-选择。设备 bootstrap 后直连一个 Worker，媒体单跳；Director只负责 registry、capacity、lease/fencing、grant
-和 drain。
+媒体单跳且 ownership 清晰，Worker 可独立扩缩，Director 短时故障不会打断已建立媒体。普通无状态负载均衡、把媒体
+放入 Redis/NATS/Kafka、或在 Worker 前增加媒体网关都会引入跨 owner、逐帧排队和额外生命周期故障域，暂不采用。
 
-### Edge Media Gateway + Worker
+代价是每个 Worker 的 WSS/UDP endpoint 必须可达，证书、防火墙、service discovery、drain 和 Redis 运维需要明确配置。
+真实容量、Redis HA、网络分区、故障演练和 provider/GPU 配额仍属于部署门禁，不由默认值推导。
 
-暂不选择。它统一公网入口但增加媒体一跳、IPC、双层 lifecycle和新故障域；仅当 Worker endpoint无法可靠
-暴露时复查。
+## 复查条件
 
-### 音频经 Redis/NATS/Kafka
+- 目标网络不能稳定暴露 Worker endpoint，需另行设计 Edge gateway。
+- session 不再是合适的调度单位，需要 provider/GPU 独立配额。
+- 需要 active turn 跨 Worker 无缝迁移，且业务价值足以承担分布式状态成本。
 
-排除。可靠消息系统不适合逐帧实时音频，会引入复制、排队和 stale media。
+## 关联
 
-## 证据
-
-- [Server 架构](../architecture/server.md)。
-- `voice_contracts` 中 Worker heartbeat、route lease、grant claims。
-- `session_director` 的 memory/Redis coordination adapters。
-- [协议总览](../protocol/overview.md) 的同 Worker control/media ownership。
-
-## 决定与范围
-
-- 一个 active epoch 只有一个 Worker owner，完整持有 WSS、UDP、AgentSession、codec、generation 和 cleanup。
-- Director 不读取、转发、缓存或重放媒体帧，不管理 Agent turn/provider stream。
-- Worker heartbeat报告 public URL、active/max、profiles、healthy和 draining。
-- Director 只选择 heartbeat有效、健康、non-draining、有 slot且 profile相交的 Worker。
-- Route lease产生递增 fencing token；grant绑定 Worker/device/epoch/fence/profiles/expiry/jti。
-- 生产多实例使用 Redis-compatible shared store；memory只允许测试和单进程开发。
-- Shared store 不进入 media hot path。
-- `VOICE_WORKER_MAX_SESSIONS=5` 是保守可配置默认值，不是容量测量或 SLO。
-- Worker失败后 fresh bootstrap/session，不迁移 active turn。
-- Drain 为当前 Worker 进程的单向状态；需要恢复容量时启动 replacement Worker，不对原进程 undrain。
-
-## 后果与风险
-
-正面：媒体单跳、ownership 清晰、Worker可独立扩缩、Director短时故障不打断既有媒体。代价：每个 Worker
-WSS/UDP endpoint必须设备可达，证书、防火墙、service discovery和 drain运维更复杂。
-
-风险：Redis lease、grant 单次消费和 Worker active count 的实现缺陷仍可能产生错误 admission。当前实现已由
-Director 在 shared coordination store 原子消费 `jti`，并已有 Redis 重启/跨实例测试，不再是 process-local
-replay guard；但 Redis HA、网络分区、真实多进程压力与生产故障演练尚未完成。默认容量被误解仍会造成过载，
-必须用目标环境压测调整。
-
-## 兼容和迁移
-
-本决策作出时，曾允许开发环境将绕过 Director 的 direct Worker + lab token 路径作为 reference baseline，并在当时
-要求 WSS/UDP wire 保持 v1。该 migration/reference baseline 与 v1 wire 均已退役，只由 Git 历史和 ADR 保留。
-
-当前 production 设备必须先经 Director bootstrap，再使用短期、单次、worker-bound grant 直连选定 Worker；current
-wire 仅为 `rva-control-v2` 与 `wss-opus-v3` / `udp-opus-gcm-v2`，且不运行 v1 dual stack（见
-[决策 0006](0006-server-authoritative-interruption-and-rva-v2.md)）。
-现有 lab token 鉴权仅用于 `development` 环境的单进程/隔离调试，并继续使用上述 current wire；`production`
-必须设置 `VOICE_ALLOW_LAB_AUTH=false`。它不是 compatibility/reference baseline，也不能替代 Director bootstrap、
-worker-bound grant 或水平扩展证据。
-
-## 复查触发条件
-
-- 目标网络不能稳定暴露 Worker WSS/UDP endpoint。
-- Redis-compatible store不能满足 atomic lease/fencing或成为媒体同步依赖。
-- 新增跨区域、边缘入口或标准浏览器媒体需要统一 Edge。
-- 容量测量表明 session不是合适调度单位，需引入 provider/GPU独立配额。
-- 单进程/隔离调试不再需要 lab credential，或设备 enrollment/rotation 已替代 shared credential，需要删除
-  `VOICE_ALLOW_LAB_AUTH` 及其配置、测试和运维面。
-- 需要 active turn无缝迁移，且业务价值足以承担分布式状态成本。
-
-## 关联链接
-
-- [系统架构](../architecture/system.md)
+- [Server 架构](../architecture/server.md)
 - [部署指南](../operations/deployment.md)
 - [安全模型](../security/security-model.md)

@@ -4,29 +4,37 @@
 
 ## 1. 前置条件
 
-- Windows PowerShell 7、Git、Python 3.12、`uv`。
+- Linux、Git、Python 3.12、`uv`；Server 的本机运行和多进程测试不依赖 Windows 原生进程管理。
 - Firmware 使用锁定 ESP-IDF 5.5.2。
 - 多实例 coordination 使用 Redis-compatible service；memory backend 只用于单进程开发。
 - 真实 provider 与设备凭据只写 ignored `.env` / local build input。
 
 ## 2. 初始化与验证
 
-```powershell
-Copy-Item .env.example .env
-./scripts/bootstrap.ps1
-./scripts/verify.ps1
+```bash
+cp .env.example .env
+uv sync --locked --dev
+uv sync --directory server --locked --all-packages --dev
+uv sync --directory clients/desktop_reference --locked --extra test
+uv run ruff check scripts tests firmware/tools
+uv run pytest
+uv run python scripts/verify_repository.py
+uv run python scripts/check_secrets.py
 ```
+
+Windows PowerShell 脚本只用于固件/开发辅助，不是 Server 运行前提；在 Windows 上验证 Server 时请使用 WSL 或
+Linux container。
 
 Server 测试可单独运行：
 
-```powershell
+```bash
 uv run --directory server ruff check .
 uv run --directory server pytest
 ```
 
 Desktop Reference Client 可单独初始化和验证：
 
-```powershell
+```bash
 uv sync --directory clients/desktop_reference --locked --extra test
 uv run --directory clients/desktop_reference ruff check src tests
 uv run --directory clients/desktop_reference pytest -m "not e2e_host"
@@ -37,9 +45,14 @@ uv run --directory clients/desktop_reference pytest -m "not e2e_host"
 
 ## 3. 启动 Server
 
-```powershell
-./scripts/run-local.ps1 -WorkerCount 2
+```bash
+cd server
+uv run session-director
+uv run realtime-worker
 ```
+
+需要多 Worker、Redis 或固定网络端口时，使用 [`deployment/single-node/`](../../deployment/single-node/) 的 Docker Compose
+资产。测试中的独立 Director/Worker 进程由 `voice_testkit.subprocess_cluster` 启动和回收，不能作为生产启动器。
 
 检查 Director/Worker 的 `/health/live` 与 `/health/ready`。`live` 只证明进程存活；`ready` 还要检查配置、
 coordination heartbeat 和启用的 provider/network policy。不得把 HTTP 200 单独当作语音闭环。
@@ -64,8 +77,8 @@ Desktop 的 headless/interactive 都不是独立业务 Agent，也不是 Server 
 
 入口：`firmware/apps/voice_terminal`。激活锁定 ESP-IDF 后：
 
-```powershell
-Set-Location firmware/apps/voice_terminal
+```bash
+cd firmware/apps/voice_terminal
 idf.py set-target esp32s3
 idf.py build
 idf.py size

@@ -11,7 +11,7 @@ headless fixture 路径和使用本机麦克风/扬声器的 interactive 路径�
 
 要求 Python 3.12 和 `uv`。从 Product 仓根目录执行：
 
-```powershell
+```bash
 # headless：包含 Opus codec，不打开本机音频设备
 uv sync --directory clients/desktop_reference --locked --extra opus
 
@@ -25,7 +25,7 @@ uv sync --directory clients/desktop_reference --locked --extra test
 基础依赖不包含 Opus codec；实际运行 headless 至少需要 `opus` extra，interactive 使用
 `interactive` extra。安装成功后通过 console script 查看参数：
 
-```powershell
+```bash
 uv run --directory clients/desktop_reference rva-desktop --help
 ```
 
@@ -56,24 +56,24 @@ UDP 运行还要求 grant 中的 UDP endpoint 可从桌面主机访问。
 
 显式 WSS：
 
-```powershell
-uv run --directory clients/desktop_reference rva-desktop headless `
-  --director-url https://director.example `
-  --token-file C:\secure\rva-bootstrap.token `
-  --profile wss-opus-v3 `
-  --input-pcm .\input.s16le.pcm `
-  --output-pcm .\output.s16le.pcm
+```bash
+uv run --directory clients/desktop_reference rva-desktop headless \
+  --director-url https://director.example \
+  --token-file /secure/rva-bootstrap.token \
+  --profile wss-opus-v3 \
+  --input-pcm ./input.s16le.pcm \
+  --output-pcm ./output.s16le.pcm
 ```
 
 显式 UDP：
 
-```powershell
-uv run --directory clients/desktop_reference rva-desktop headless `
-  --director-url https://director.example `
-  --token-file C:\secure\rva-bootstrap.token `
-  --profile udp-opus-gcm-v2 `
-  --input-pcm .\input.s16le.pcm `
-  --output-pcm .\output.s16le.pcm
+```bash
+uv run --directory clients/desktop_reference rva-desktop headless \
+  --director-url https://director.example \
+  --token-file /secure/rva-bootstrap.token \
+  --profile udp-opus-gcm-v2 \
+  --input-pcm ./input.s16le.pcm \
+  --output-pcm ./output.s16le.pcm
 ```
 
 ## Interactive
@@ -85,10 +85,10 @@ sounddevice 的设备 index 或名称。退出使用 `Ctrl+C`。
 跨过该边界后才发送 playback facts。它仍是驱动报告的预计值，不是实际 DAC、扬声器或声学测量结果；真实设备
 若低报 latency，事实仍可能偏早，因此 interactive 必须作为显式 smoke 单独记录设备与 backend。
 
-```powershell
-uv run --directory clients/desktop_reference rva-desktop interactive `
-  --director-url https://director.example `
-  --token-file C:\secure\rva-bootstrap.token `
+```bash
+uv run --directory clients/desktop_reference rva-desktop interactive \
+  --director-url https://director.example \
+  --token-file /secure/rva-bootstrap.token \
   --profile wss-opus-v3
 ```
 
@@ -96,22 +96,22 @@ uv run --directory clients/desktop_reference rva-desktop interactive `
 
 快速验证不启动 Server 拓扑：
 
-```powershell
+```bash
 uv run --directory clients/desktop_reference ruff check src tests
 uv run --directory clients/desktop_reference pytest -m "not e2e_host"
 ```
 
-Windows 上的 deterministic host E2E 会使用独立端口启动 Product 的 local Director/Worker、选择
-deterministic runner，并分别执行 WSS 与 UDP 的 control/media round trip、Opus encode/decode、playback facts
-和资源清理：
+Linux 上的 deterministic host E2E 会使用独立端口启动 Product 的 Director/Worker 子进程、选择 deterministic
+runner，并分别执行 WSS 与 UDP 的 control/media round trip、Opus encode/decode、playback facts 和资源清理：
 
-```powershell
+```bash
 uv run --directory clients/desktop_reference pytest -m e2e_host
 ```
 
-该 E2E 需要 `pwsh` 和已同步的 Server 依赖。它形成的只是本机 loopback、deterministic provider、临时凭据和
-独立进程拓扑的 host evidence；不证明公网 TLS、真实 provider、目标部署、音频设备、声学、ESP32、弱网、长稳
-或 release artifact。临时环境文件、token、端口和原始日志不得成为发布凭据或正式证据。
+该 E2E 需要已同步的 Server 依赖；Windows 开发者应在 WSL/Linux container 中运行。它形成的只是本机 loopback、
+deterministic provider、临时凭据和独立进程拓扑的 host evidence；不证明公网 TLS、真实 provider、目标部署、音频
+设备、声学、ESP32、弱网、长稳或 release artifact。临时环境文件、token、端口和原始日志不得成为发布凭据或正式
+证据。
 
 ## 原生依赖与发布边界
 

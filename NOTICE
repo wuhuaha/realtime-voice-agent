@@ -1,0 +1,8 @@
+realtime-voice-agent
+
+Copyright 2026 realtime-voice-agent contributors.
+
+This repository includes third-party source and generated assets whose
+licenses and fixed provenance are listed in `third_party/sources.lock.yaml`
+and the files under `third_party/licenses/`. Those terms apply to the
+corresponding third-party material and are not replaced by this NOTICE.
