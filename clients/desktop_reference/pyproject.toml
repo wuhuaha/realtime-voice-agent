@@ -42,7 +42,7 @@ asyncio_mode = "auto"
 markers = [
   "e2e_host: independent Director and Worker process path",
 ]
-pythonpath = ["src"]
+pythonpath = ["src", "../../server/packages/voice_testkit/src"]
 
 [tool.ruff]
 line-length = 120

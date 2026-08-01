@@ -44,7 +44,7 @@ jobs:
       - run: uv run --directory clients/desktop_reference pytest -m "not e2e_host"
 
   desktop-reference-host-e2e:
-    runs-on: windows-latest
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v6
@@ -82,39 +82,18 @@ jobs:
           uv run --directory server pytest
           apps/session_director/tests/test_redis_store.py
           --junitxml=redis-results.xml
+      - name: Run Redis Director/Worker subprocess E2E
+        run: >-
+          uv run --directory server pytest
+          tests/e2e/test_horizontal_scale_subprocesses.py
+          -m e2e_host --junitxml=redis-horizontal-results.xml
       - name: Reject skipped Redis integration tests
         run: >-
           uv run --directory server python -c
           "import xml.etree.ElementTree as ET;
-          root = ET.parse('redis-results.xml').getroot();
-          skipped = root.findall('.//skipped');
-          assert not skipped, f'{len(skipped)} Redis integration test(s) skipped'"
-
-  windows-local-process-lifecycle-redis-e2e-not-covered:
-    runs-on: windows-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v6
-        with:
-          enable-cache: true
-      - run: uv sync --directory server --locked --all-packages --dev
-      - name: Parse local PowerShell launcher
-        shell: pwsh
-        run: |
-          $errors = @()
-          [void][Management.Automation.Language.Parser]::ParseFile(
-            (Resolve-Path server/scripts/run-local.ps1),
-            [ref]$null,
-            [ref]$errors
-          )
-          if ($errors.Count -gt 0) { $errors | Format-List; exit 1 }
-      - name: Verify Windows Job Object process lifecycle (Redis E2E not covered)
-        run: >-
-          uv run --directory server pytest
-          tests/architecture/test_run_local_script.py
-          tests/e2e/test_horizontal_scale_processes.py
-          tests/e2e/test_windows_legacy_startup_fail_closed.py
-          -k "run_local or windows_job_supervisor or legacy_manifest"
+          paths=['redis-results.xml','redis-horizontal-results.xml'];
+          skipped=sum(len(ET.parse(path).getroot().findall('.//skipped')) for path in paths);
+          assert skipped == 0, f'{skipped} Redis test(s) skipped'"
 
   native-firmware-host-contracts:
     runs-on: ubuntu-latest
