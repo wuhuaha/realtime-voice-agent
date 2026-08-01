@@ -8,9 +8,9 @@
 
 ## 当前软件证据
 
-当前文档 HEAD 位于 `codex/linux-only-product-finalization@8c3caed`，基于 `main@32d65b1`，已推送并通过 GitHub Actions
-run `30691383849`（7/7 jobs）。`8c3caed` 仅更新发布证据文档；运行代码候选仍是 `da43d1b`，其代码与固件构建证据
-来自 GitHub Actions run `30690783808`。该分支尚未合并到 `main`，也不是正式 release。
+当前分支基于 `main@32d65b1`，运行代码候选为 `da43d1b`；其代码与固件构建证据来自 GitHub Actions run
+`30690783808`。后续提交只更新发布证据文档，docs-only 验证 run `30691383849`、`30691662704` 均为 7/7 jobs
+成功。该分支尚未合并到 `main`，也不是正式 release。
 
 | 范围 | 当前状态 | 本轮实际结果与边界 |
 | --- | --- | --- |
@@ -19,7 +19,7 @@ run `30691383849`（7/7 jobs）。`8c3caed` 仅更新发布证据文档；运行
 | Desktop reference | `host_verified` | 本地非 host suite `116 passed`、host `4 passed`；CI Linux Desktop 与 host E2E 均通过 |
 | Native runtime/WSS/headless contracts | `host_verified` | 本机 native runtime、WSS、headless 通过；CI pinned ESP-IDF host contracts 通过 |
 | Native UDP/GCM contracts | `host_verified` | 本机 C++ contract 通过；CI pinned ESP-IDF source verifier、UDP C++ 和 GCM positive/negative fixtures 通过 |
-| Native ESP-IDF composition | `build_passed/image_sized` | CI run `30690783808` 使用 pinned ESP-IDF 构建代码候选 `da43d1b`：app `0x219d70`，4 MiB 分区剩余 `0x1e6290`（47%），DIRAM `202751/341760`，IRAM `16384/16384`；docs-only HEAD `8c3caed` 的 run `30691383849` 也重新通过 build/size job；CI 未保留可发布 binary hash |
+| Native ESP-IDF composition | `build_passed/image_sized` | CI run `30690783808` 使用 pinned ESP-IDF 构建代码候选 `da43d1b`：app `0x219d70`，4 MiB 分区剩余 `0x1e6290`（47%），DIRAM `202751/341760`，IRAM `16384/16384`；后续 docs-only run `30691383849`、`30691662704` 也重新通过 build/size job；CI 未保留可发布 binary hash |
 
 Host/软件测试和 CI build 不证明 ESP32 真机、真实 provider、公网 TLS、声学、弱网、资源余量、长稳或正式部署。
 
@@ -27,7 +27,7 @@ Host/软件测试和 CI build 不证明 ESP32 真机、真实 provider、公网 
 
 | Gate | 当前状态 | 完成条件 |
 | --- | --- | --- |
-| Native clean build + size | `passed` | 代码候选 `da43d1b` 的 CI run `30690783808` 与 docs-only HEAD `8c3caed` 的 run `30691383849` 均使用锁定 ESP-IDF 完成构建、size、分区与资源检查；发布前仍需归档 binary/hash |
+| Native clean build + size | `passed` | 代码候选 `da43d1b` 的 CI run `30690783808` 以及 docs-only run `30691383849`、`30691662704` 均使用锁定 ESP-IDF 完成构建、size、分区与资源检查；发布前仍需归档 binary/hash |
 | Current image flash/boot | `not_run` | 将同源 image 烧录目标板并保存可关联的启动证据 |
 | Boot/display/touch | `not_run` | 当前 image 完成启动、显示、触摸和最小交互矩阵 |
 | Wi-Fi/NVS/bootstrap | `not_run` | 当前 image 完成首次联网、持久化回读、Director bootstrap、重连和 Wi-Fi flap |
