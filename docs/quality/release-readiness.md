@@ -8,37 +8,36 @@
 
 ## 当前软件证据
 
-当前候选位于 `codex/linux-only-product-finalization`，基于 `main@32d65b1`，本轮改动尚未形成 durable commit。
-因此下面的 host 结果只描述本地工作树，不代表远端 `main` 或正式 release。
+当前候选位于 `codex/linux-only-product-finalization@da43d1b`，基于 `main@32d65b1`，已推送并通过 GitHub Actions
+run `30690783808`。该分支尚未合并到 `main`，也不是正式 release。
 
 | 范围 | 当前状态 | 本轮实际结果与边界 |
 | --- | --- | --- |
-| Product repository | `host_verified` | root Ruff 与 repository tests：`37 passed`；repository verifier、secret scan 和 `git diff --check` 通过 |
-| Server | `host_verified` | Ruff 通过；Server suite：`286 passed, 3 skipped`。Redis service 不在当前主机，3 项 skip 不计为通过 |
-| Desktop reference | `host_verified` | Ruff 通过；非 host suite：`116 passed`；Linux Director/Worker WSS/UDP host E2E：`4 passed` |
-| Native runtime/WSS/headless contracts | `host_verified` | native runtime、WSS transport 和 headless firmware contract 脚本通过；只证明 host contract |
-| Native UDP C++ contracts | `host_verified` | UDP session/playout C++ host tests 编译并通过 |
-| UDP GCM source fixture | `not_run` | 当前主机没有已校验的 ESP-IDF `IDF_PATH`；不能把 source identity 或 GCM vectors 写成通过 |
-| Native ESP-IDF composition | `not_run` | 本轮工作树未使用同源、已校验的 ESP-IDF clean build/size；不继承旧 binary 证据 |
+| Product repository | `host_verified` | root Ruff 与 repository tests：`37 passed`；repository verifier、secret scan 和 `git diff --check` 通过；CI 同样通过 |
+| Server | `host_verified` | 本地 suite `286 passed, 3 skipped`；CI Server 与 Redis coordination、双 Worker subprocess E2E 均通过，3 项本机 skip 不计为通过 |
+| Desktop reference | `host_verified` | 本地非 host suite `116 passed`、host `4 passed`；CI Linux Desktop 与 host E2E 均通过 |
+| Native runtime/WSS/headless contracts | `host_verified` | 本机 native runtime、WSS、headless 通过；CI pinned ESP-IDF host contracts 通过 |
+| Native UDP/GCM contracts | `host_verified` | 本机 C++ contract 通过；CI pinned ESP-IDF source verifier、UDP C++ 和 GCM positive/negative fixtures 通过 |
+| Native ESP-IDF composition | `build_passed/image_sized` | CI run `30690783808` 使用 pinned ESP-IDF 构建当前 commit：app `0x219d70`，4 MiB 分区剩余 `0x1e6290`（47%），DIRAM `202751/341760`，IRAM `16384/16384`；CI 未保留可发布 binary hash |
 
-Host/软件测试不证明 ESP32 真机、真实 provider、公网 TLS、声学、弱网、资源余量、长稳或正式部署。
+Host/软件测试和 CI build 不证明 ESP32 真机、真实 provider、公网 TLS、声学、弱网、资源余量、长稳或正式部署。
 
 ## 当前发布门禁
 
 | Gate | 当前状态 | 完成条件 |
 | --- | --- | --- |
-| Native clean build + size | `not_run` | 使用当前 durable Product commit 和锁定 ESP-IDF 重建、链接、记录 image/hash/size/分区与资源水位 |
+| Native clean build + size | `passed` | CI run `30690783808` 使用当前 commit 和锁定 ESP-IDF 完成构建、size、分区与资源检查；发布前仍需归档 binary/hash |
 | Current image flash/boot | `not_run` | 将同源 image 烧录目标板并保存可关联的启动证据 |
 | Boot/display/touch | `not_run` | 当前 image 完成启动、显示、触摸和最小交互矩阵 |
 | Wi-Fi/NVS/bootstrap | `not_run` | 当前 image 完成首次联网、持久化回读、Director bootstrap、重连和 Wi-Fi flap |
 | Provider chain on current image | `not_run` | 当前 image 完成 ASR -> LLM -> TTS 的可追溯真机闭环 |
 | WSS voice loop | `not_run` | 当前 image 完成多轮上行、ASR final、完整 TTS、playback、explicit cancel 和重连 |
-| UDP voice loop | `not_run` | 同源 image 完成 authenticated probe、双向媒体、expiry/fresh reconnect、模式选择和异常恢复 |
+| UDP voice loop | `not_run` | host/GCM contract 已通过；仍需同源 image 完成 authenticated probe、双向媒体、expiry/fresh reconnect、模式选择和异常恢复 |
 | End-to-end latency | `not_run` | 按固定样本量采集端云 trace，报告口径、分位数和原始证据 |
 | AEC/acoustic | `not_run` | 当前 image 完成近讲、远讲、double-talk、自回授和 interrupt tail 评测 |
 | Stability | `incomplete` | 当前 image 完成多轮、持续运行、queue/deadline/disconnect/WDT/资源水位门禁 |
 | Desktop distribution | `not ready` | 目标 OS/architecture 的 native audio/codec 许可证、notice、SBOM 和 provenance 完成 |
-| Security/repository | `incomplete` | 代码、协议、secret、许可证和 CI 门禁通过；当前工作树仍需选择性 commit、远端 CI 和发布记录 |
+| Security/repository | `incomplete` | 代码、协议、secret、许可证文件和 CI 门禁通过；许可证法律复核、SBOM、发布归档和正式 main/release 记录仍未完成 |
 
 ## 运行时边界
 
