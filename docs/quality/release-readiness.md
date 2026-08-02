@@ -12,6 +12,12 @@
 `1408228759e931fe4e5047ec74d40deed93e58a9`。该提交包含 Protocol Identity Reset、长 TTS 有界分块和 UDP 停止竞态
 日志修复；本文件作为后续证据提交记录该代码 identity。分支尚未合并或打 tag，因此不是正式 release。
 
+GitHub Actions [`ci` run 30729933771](https://github.com/wuhuaha/realtime-voice-agent/actions/runs/30729933771)
+在证据提交 `6e4b65fa510501b5f37b25c15451a59a69d2460b` 上完成，7 个 job 全部通过：`repository`、`server`、
+`desktop-reference`、`desktop-reference-host-e2e`、`redis-integration`、`native-firmware-host-contracts` 和
+`native-firmware-build-size`。该 CI 证明相同代码 identity 的 clean checkout host/build 门禁，不替代下述真机、
+真实 provider、公网、声学、弱网或长稳证据。
+
 | 范围 | 当前状态 | 本轮实际结果与边界 |
 | --- | --- | --- |
 | Product repository | `host_verified` | root Ruff 与 repository tests：`37 passed`；repository verifier、tracked/untracked secret scan 和 `git diff --check` 通过 |
