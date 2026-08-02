@@ -12,8 +12,8 @@
 `1408228759e931fe4e5047ec74d40deed93e58a9`。该提交包含 Protocol Identity Reset、长 TTS 有界分块和 UDP 停止竞态
 日志修复；本文件作为后续证据提交记录该代码 identity。分支尚未合并或打 tag，因此不是正式 release。
 
-GitHub Actions [`ci` run 30729933771](https://github.com/wuhuaha/realtime-voice-agent/actions/runs/30729933771)
-在证据提交 `6e4b65fa510501b5f37b25c15451a59a69d2460b` 上完成，7 个 job 全部通过：`repository`、`server`、
+GitHub Actions [`ci` run 30730215383](https://github.com/wuhuaha/realtime-voice-agent/actions/runs/30730215383)
+在证据提交 `dc4e3466173be9ee3b410998246f2fc059b24d2c` 上完成，7 个 job 全部通过：`repository`、`server`、
 `desktop-reference`、`desktop-reference-host-e2e`、`redis-integration`、`native-firmware-host-contracts` 和
 `native-firmware-build-size`。该 CI 证明相同代码 identity 的 clean checkout host/build 门禁，不替代下述真机、
 真实 provider、公网、声学、弱网或长稳证据。
@@ -52,6 +52,19 @@ model 和字体分区，在保留 NVS 的前提下补做 UDP bootstrap、双向�
 UDP send 取消记录为 `udp_uplink_send` warning；当前源码已用 running-state guard 修复并通过 host contract。最终 hash
 image 已完成正常 MIC close，但本次串口采集在会话中段被强制停止，未保留 stop 时刻原始行，因此“warning 消失”仍只记
 `contract_verified`，不把缺失日志写成实机通过。
+
+## 2026-08-02 commit-addressable 公网部署
+
+验证环境随后从 Product 提交 `dc4e3466173be9ee3b410998246f2fc059b24d2c` 的 Git archive 部署为只读 release
+`rva-20260802T031400Z-dc4e346`；archive SHA-256 为
+`1a4deece44421ac73c8a8cdf98bf4f80b6a4fe292353c0db7a2935ffafe9125a`，激活配置 identity 为
+`216b81c7ff521a4439ccbe0c0cb33d58d0bd821d962043daad5123df2f996a61`，Worker incarnation 为
+`worker-ol-20260802T033000Z-dc4e346`。Director/Worker readiness、Redis coordination、provider 网络探测、UDP socket、
+WSS-only bootstrap、WSS+UDP profile bootstrap 和 exact route release 均通过，验证后 `active_sessions=0`。
+
+本次切换没有重新执行真实音频/provider 或 ESP32 HIL，因此只形成 `public_path_verified` 的部署、readiness、bootstrap
+和 release 证据；真实 ASR/LLM/TTS、媒体和交互结果仍来自上一节明确绑定的当前代码 image 回归，不能提升为本次
+deployment-specific HIL。
 
 ## 当前发布门禁
 
