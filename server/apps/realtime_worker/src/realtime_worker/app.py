@@ -164,6 +164,9 @@ class RvaSessionRegistry:
                             runner_timeout_seconds=self._settings.rva_runner_timeout_seconds,
                             close_timeout_seconds=self._settings.rva_close_timeout_seconds,
                             agent_close_stage_timeout_seconds=self._settings.agent_close_stage_timeout_seconds,
+                            playback_terminal_timeout_seconds=(
+                                self._settings.rva_playback_terminal_timeout_seconds
+                            ),
                             playback_prebuffer_packets=self._settings.rva_playback_prebuffer_packets,
                         ),
                         interruption_policy=_create_interruption_policy(self._settings),

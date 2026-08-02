@@ -198,3 +198,22 @@ async def test_completed_playback_requires_positive_played_samples() -> None:
     message["played_samples"] = 960
     effect = await binding.receive_control(json.dumps(message))
     assert effect.playback_ended is not None
+
+
+@pytest.mark.contract
+async def test_completed_server_response_accepts_endpoint_playback_failure() -> None:
+    binding = await _binding()
+    record, _ = await binding.response_begin(response_id="resp-001", producer_epoch=1)
+    binding.reserve_downlink_media(record)
+    await binding.response_end(record=record)
+
+    effect = await binding.receive_control(
+        _playback_ended(record.response_id, record.target.generation, outcome="failed")
+    )
+
+    assert effect.playback_ended is not None
+    assert effect.playback_ended.outcome == "failed"
+    assert binding.current_playback is None
+    next_record, begin = await binding.response_begin(response_id="resp-002", producer_epoch=2)
+    assert begin is not None
+    assert next_record.target.generation > record.target.generation

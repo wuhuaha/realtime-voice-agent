@@ -1,5 +1,6 @@
 #pragma once
 
+#include <atomic>
 #include <cstdint>
 
 #include <freertos/FreeRTOS.h>
@@ -69,6 +70,8 @@ private:
 
     void BuildHome();
     void DrainCommands();
+    bool PostLatestState(CommandKind kind, uint32_t value);
+    bool ApplyLatestState();
     void Apply(UiCommand command);
     void Publish(const UiEvent& event);
     void Render();
@@ -100,6 +103,8 @@ private:
     lv_obj_t* textarea_ = nullptr;
     lv_obj_t* keyboard_ = nullptr;
     UiState state_{};
+    std::atomic<uint32_t> latest_state_snapshot_{0};
+    uint32_t applied_state_snapshot_ = 0;
     FontAssets font_assets_;
     UiLifecycle lifecycle_;
     bool port_initialized_ = false;

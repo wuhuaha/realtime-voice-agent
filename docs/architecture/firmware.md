@@ -85,11 +85,19 @@ UDP 下行通过 reorder/jitter 与 generation fence 后，在 decode/playout �
 年龄的 frame 清零并丢弃、递增 `media_age_dropped`，runtime 分类为 `udp_media_age` 并结束当前 session；后续按策略
 fresh bootstrap，不播放已经失去实时价值的旧 TTS。
 
+UDP cursor resync、playout queue replacement 和 media-age drop 都递增 runtime 的 `playout_quality_epoch`。Playback
+owner 在 response 开始时保存 epoch；若结束前发生变化，就把该 target 标记为 degraded，只能上报 `failed` 或进入
+fresh-session 逃生路径，不能把“已到 final sequence”误当作完整播放。
+
 ## 6. UI 与配置
 
 Home UI 显示 AI、连接/对话状态、流式 ASR/response 和 `WSS`/`UDP` 文字模式。Idle+online 点击 mic 发出 start；
 listening/thinking/speaking 点击只产生显式用户 stop request，不与端侧 VAD 复用。中文字体作为
 Product-owned/generated asset 注入并由 native target 管理。
+
+连接状态、对话状态、preferred/active transport 合并为一个 32-bit atomic latest-state snapshot，由 LVGL owner
+level-triggered 读取；文本和配置仍走原有固定容量 queue。状态更新不会因字幕突发被永久挤掉，也没有新增 task、锁或
+媒体热路径 allocation。
 
 当前配置关闭 `CONFIG_RVA_AUTO_START_CONVERSATION` 并启用 `CONFIG_RVA_MIC_BUTTON_CONTROLS_SESSION`。设备联网后保持
 idle WakeNet；`Hi ESP` 或 Idle 状态 MIC 点击建立 fresh session，活跃状态 MIC 点击发出显式 stop/cancel。模式切换只在

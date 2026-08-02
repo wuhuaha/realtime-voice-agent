@@ -35,6 +35,11 @@
 - Device exact release 的认证、重复/stale fence 幂等，以及 lease identity 有效但 media 字段无效时仍可释放 lease。
 - JSON duplicate/unknown/oversize/state parsing。
 - UDP header/nonce/AAD/replay/reorder/generation。
+- UDP 双向 authenticated cursor resync、replay state 保留、forward-jump bound、live-edge queue replacement 和
+  playout quality epoch。
+- playback final drain deadline、exact-final 单包 PLC、degraded/failed、Server exact-target terminal watchdog，以及
+  Endpoint `session.opened` deadline。
+- Roomless segment task failure -> runner terminal -> RVA failure 的传播，且 failure 后不发送虚假 `response.end`。
 - queue overflow、timeout、double close、cancellation 和 provider error mapping。
 - Redis connect/command timeout、Worker 10 秒总关停预算/有界 release heartbeat、TTS queue timeout 与 MiMo SSE
   line/event/data-line/audio-chunk/total-response 上限。
@@ -77,6 +82,8 @@
 - clean build、size、artifact SHA-256。
 - 确认目标设备与串口并获得授权后才 flash；记录 flash 命令、boot log 和 artifact identity。
 - WSS/UDP、UI/NVS、AEC、字幕、打断、音量、网络切换、Server restart 分项验收。
+- 注入 final media 丢包、cursor resync 和 playback terminal 丢失，核对 UI 能回到可恢复状态、Endpoint 不虚报
+  `completed`、Server 在配置 deadline 后 fresh close。
 - ESP-SR `model` 分区存在/缺失各启动一次；缺失时验证只禁用神经降噪，并重新执行 AEC/VAD、播放中
   double-talk、上行 PCM 与 ASR 项。代码路径或 build 通过不能替代这组声学证据。
 

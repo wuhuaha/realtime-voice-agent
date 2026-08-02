@@ -29,6 +29,20 @@ public:
         }
         return true;
     }
+    static uint32_t MinimumBufferedSequence(const UdpSession& session) {
+        uint32_t minimum = UINT32_MAX;
+        for (const auto& frame : session.future_frames_) {
+            if (frame.used) minimum = std::min(minimum, frame.sequence);
+        }
+        return minimum;
+    }
+    static uint32_t MaximumBufferedSequence(const UdpSession& session) {
+        uint32_t maximum = 0;
+        for (const auto& frame : session.future_frames_) {
+            if (frame.used) maximum = std::max(maximum, frame.sequence);
+        }
+        return maximum;
+    }
 };
 }  // namespace rva::udp
 
@@ -287,9 +301,11 @@ int main() {
     size = Downlink(downlink, grant, wire::DatagramType::kAudio,
                     11, 2, opus, sizeof(opus), datagram);
     assert(session.Receive(Server(), datagram.data(), size, 270000) ==
-           AdmissionResult::kQueueFull);
+           AdmissionResult::kFutureGeneration);
     assert(session.Receive(Server(), datagram.data(), size, 270000) ==
            AdmissionResult::kReplay);
+    assert(UdpSessionTestPeer::MinimumBufferedSequence(session) == 8);
+    assert(UdpSessionTestPeer::MaximumBufferedSequence(session) == 11);
 
     assert(UdpSessionTestPeer::AdvanceGeneration(&session, 2));
     assert(session.downlink_generation() == 2);
@@ -368,6 +384,44 @@ int main() {
     assert(cadence.PopPlayout(3000).kind == PlayoutKind::kAudio);
     assert(cadence.PopPlayout(200000).kind == PlayoutKind::kNone);
     assert(cadence.stats().lost == 0);
+
+    // Four missing global sequences must move the authenticated media cursor
+    // to the live edge. A later KEEPALIVE must also advance the same cursor
+    // instead of being rejected forever by the fixed jitter window.
+    FakeAead resync_uplink;
+    FakeAead resync_downlink;
+    UdpSession resync(resync_uplink, resync_downlink);
+    assert(resync.Configure(grant));
+    size = Downlink(resync_downlink, grant, wire::DatagramType::kProbeAck,
+                    0, 0, nullptr, 0, datagram);
+    assert(resync.Receive(Server(), datagram.data(), size, 0) ==
+           AdmissionResult::kAcceptedProbeAck);
+    assert(UdpSessionTestPeer::AdvanceGeneration(&resync, 1));
+    size = Downlink(resync_downlink, grant, wire::DatagramType::kAudio,
+                    1, 1, opus, sizeof(opus), datagram);
+    assert(resync.Receive(Server(), datagram.data(), size, 1000) ==
+           AdmissionResult::kAcceptedAudio);
+    assert(resync.PopPlayout(1000).sequence == 1);
+    size = Downlink(resync_downlink, grant, wire::DatagramType::kAudio,
+                    6, 1, opus, sizeof(opus), datagram);
+    assert(resync.Receive(Server(), datagram.data(), size, 2000) ==
+           AdmissionResult::kAcceptedAudio);
+    assert(resync.PopPlayout(2000).sequence == 6);
+    size = Downlink(resync_downlink, grant, wire::DatagramType::kKeepalive,
+                    11, 0, nullptr, 0, datagram);
+    assert(resync.Receive(Server(), datagram.data(), size, 3000) ==
+           AdmissionResult::kAcceptedKeepalive);
+    assert(resync.PopPlayout(3000).kind == PlayoutKind::kNone);
+    size = Downlink(resync_downlink, grant, wire::DatagramType::kAudio,
+                    12, 1, opus, sizeof(opus), datagram);
+    assert(resync.Receive(Server(), datagram.data(), size, 4000) ==
+           AdmissionResult::kAcceptedAudio);
+    assert(resync.PopPlayout(4000).sequence == 12);
+    const Stats resync_stats = resync.stats();
+    assert(resync_stats.resync_total == 2);
+    assert(resync_stats.skipped_sequences_total == 8);
+    assert(resync.Receive(Server(), datagram.data(), size, 4000) ==
+           AdmissionResult::kReplay);
 
     // Initial and post-cancel audio can beat response.begin over UDP. Neither
     // generation becomes playable until the WSS control owner activates it.

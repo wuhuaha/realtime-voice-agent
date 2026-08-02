@@ -10,14 +10,28 @@ int main() {
     PlayoutQueue queue;
     queue.Open(1);
     for (size_t index = 0; index < PlayoutQueue::kCapacity; ++index) {
-        PlayoutFrame frame{.kind = PlayoutKind::kAudio, .generation = 1};
+        PlayoutFrame frame{
+            .kind = PlayoutKind::kAudio,
+            .sequence = static_cast<uint32_t>(index),
+            .generation = 1,
+        };
         frame.payload_size = 1;
         frame.payload[0] = static_cast<uint8_t>(index);
         assert(queue.Push(frame) == PlayoutPushResult::kAccepted);
     }
     assert(queue.size() == 4);
-    queue.AdvanceGeneration(2);
+    PlayoutFrame live_edge{
+        .kind = PlayoutKind::kAudio,
+        .sequence = 4,
+        .generation = 1,
+    };
+    live_edge.payload_size = 1;
+    live_edge.payload[0] = 4;
+    assert(queue.Push(live_edge) == PlayoutPushResult::kReplacedOldest);
     PlayoutFrame output;
+    assert(queue.Pop(&output));
+    assert(output.sequence == 1 && output.payload[0] == 1);
+    queue.AdvanceGeneration(2);
     assert(queue.size() == 0);
     assert(!queue.Pop(&output));
     assert(queue.Push({.kind = PlayoutKind::kAudio, .generation = 1}) ==

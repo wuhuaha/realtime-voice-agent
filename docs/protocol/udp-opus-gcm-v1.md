@@ -43,6 +43,11 @@ authentication 成功后才能推进 replay window、绑定 source、提交 sequ
 Canonical anti-replay history 为 64 packet，最大 forward jump 为 1024 packet，jitter window 为 4 packet，缺口等待
 上限 120 ms 后用 Opus PLC 推进。未认证 packet 不触发 PROBE_ACK；source 绑定后拒绝其他 address，即使 AEAD valid。
 
+认证通过且仍位于 anti-replay 最大前跳内的 packet，如果越过 4 packet jitter window，接收端会清空旧 reorder 内容并把
+media cursor 推进到该 live edge，记录 `resync_total` 与 `skipped_sequences_total`。该动作只移动媒体排序 cursor；不得
+重置 replay bitmap、AES-GCM key/salt、nonce history、source pin、media epoch 或 generation fence。超过 1024 packet 的
+forward jump 仍由 replay admission 拒绝，并按 fresh session 策略恢复。
+
 ## 5. Liveness 与恢复
 
 设备在 probe timeout 内未 ready 则关闭整个 session。设备按 heartbeat interval 发送认证 KEEPALIVE，Server 回送认证
@@ -54,5 +59,6 @@ WSS 断开、grant expiry、sequence exhaustion、source change 或 fatal socket
 ## 6. 验证
 
 Server 与 Firmware 直接消费 `protocol/udp_opus_gcm_v1/fixtures/` 的固定 bytes，覆盖 wire version、AAD/tag
-tamper、authenticated uplink non-zero generation、non-AUDIO generation、replay、source pin、jitter/loss/PLC、fence、
-teardown 和 reconnect。Host/contract 证据不能替代当前 artifact 的双向媒体、弱网、声学与长稳 HIL。
+tamper、authenticated uplink non-zero generation、non-AUDIO generation、replay、source pin、jitter/loss/PLC、
+authenticated cursor resync、forward-jump bound、fence、teardown 和 reconnect。Host/contract 证据不能替代当前
+artifact 的双向媒体、弱网、声学与长稳 HIL。

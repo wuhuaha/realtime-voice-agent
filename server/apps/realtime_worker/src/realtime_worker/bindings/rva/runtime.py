@@ -97,6 +97,10 @@ class RvaAgentRuntimeFailedError(RvaRuntimeError):
     pass
 
 
+class RvaPlaybackTerminalTimeoutError(RvaRuntimeError):
+    pass
+
+
 class RvaIdleTimeoutError(RvaRuntimeError):
     pass
 
@@ -117,6 +121,7 @@ class RvaRuntimeLimits:
     runner_timeout_seconds: float = 5.0
     close_timeout_seconds: float = 5.0
     agent_close_stage_timeout_seconds: float = 2.0
+    playback_terminal_timeout_seconds: float = 3.0
     idle_timeout_seconds: float = 45.0
     playback_prebuffer_packets: int = 4
     max_consecutive_invalid_opus_packets: int = 8
@@ -133,6 +138,7 @@ class RvaRuntimeLimits:
             self.runner_timeout_seconds,
             self.close_timeout_seconds,
             self.agent_close_stage_timeout_seconds,
+            self.playback_terminal_timeout_seconds,
             self.idle_timeout_seconds,
             self.max_consecutive_invalid_opus_packets,
         )
@@ -396,6 +402,8 @@ class RvaWssConnection:
         self._tasks: set[asyncio.Task[None]] = set()
         self._aux_tasks: set[asyncio.Task[None]] = set()
         self._close_task: asyncio.Task[None] | None = None
+        self._playback_watchdog_task: asyncio.Task[None] | None = None
+        self._playback_watchdog_target: tuple[str, int] | None = None
         self._closed = False
         self._minimum_producer_epoch = 1
         self._active_producer_epoch: int | None = None
@@ -524,6 +532,9 @@ class RvaWssConnection:
         except RvaAgentRuntimeFailedError:
             logger.warning("rva_agent_runtime_failed session=%s", self._binding_id)
             close_code, close_reason = 1_011, "runtime_failure"
+        except RvaPlaybackTerminalTimeoutError:
+            logger.warning("rva_playback_terminal_timeout session=%s", self._binding_id)
+            close_code, close_reason = 1_011, "playback_terminal_timeout"
         except UdpProbeTimeoutError:
             close_code, close_reason = 1_008, "udp_probe_timeout"
         except UdpGrantExpiredError:
@@ -662,6 +673,8 @@ class RvaWssConnection:
             self._generation_changed.set()
         for event in effect.outbound:
             await self._send_control_serialized(event)
+        if effect.interrupt is not None:
+            self._arm_playback_terminal_watchdog(effect.interrupt)
         runner = self._runner
         if effect.playback_started is not None and runner is not None:
             self._playback_started_at = self._clock()
@@ -669,6 +682,7 @@ class RvaWssConnection:
             await runner.playback_started(time.time())
         if effect.playback_ended is not None and runner is not None:
             fact = effect.playback_ended
+            self._cancel_playback_terminal_watchdog(fact.record)
             await runner.playback_finished(
                 fact.played_samples / SAMPLE_RATE,
                 fact.outcome != "completed",
@@ -1077,8 +1091,59 @@ class RvaWssConnection:
                 raise
             return
         await self._send_control_serialized(event)
+        self._arm_playback_terminal_watchdog(record)
         if self._active_producer_epoch == producer_epoch:
             self._active_producer_epoch = None
+
+    def _arm_playback_terminal_watchdog(self, record: ResponseRecord) -> None:
+        target = (record.response_id, record.target.generation)
+        current = self._binding.current_playback
+        if current is not record:
+            return
+        if (
+            self._playback_watchdog_task is not None
+            and not self._playback_watchdog_task.done()
+            and self._playback_watchdog_target == target
+        ):
+            return
+        if self._playback_watchdog_task is not None:
+            self._playback_watchdog_task.cancel()
+        task = asyncio.create_task(
+            self._playback_terminal_watchdog(target),
+            name=f"rva-playback-terminal-{self._binding_id}",
+        )
+        self._playback_watchdog_task = task
+        self._playback_watchdog_target = target
+        self._aux_tasks.add(task)
+        task.add_done_callback(self._on_playback_watchdog_done)
+
+    def _cancel_playback_terminal_watchdog(self, record: ResponseRecord) -> None:
+        target = (record.response_id, record.target.generation)
+        if self._playback_watchdog_target != target:
+            return
+        task = self._playback_watchdog_task
+        self._playback_watchdog_task = None
+        self._playback_watchdog_target = None
+        if task is not None:
+            task.cancel()
+
+    async def _playback_terminal_watchdog(self, target: tuple[str, int]) -> None:
+        await asyncio.sleep(self._limits.playback_terminal_timeout_seconds)
+        current = self._binding.current_playback
+        if current is None or (current.response_id, current.target.generation) != target:
+            return
+        self._primary_close_cause = (1_011, "playback_terminal_timeout")
+        await self._send_session_error_best_effort(
+            code="playback_terminal_timeout",
+            message="Endpoint playback terminal was not received; reconnect required",
+        )
+        raise RvaPlaybackTerminalTimeoutError("endpoint playback terminal timed out")
+
+    def _on_playback_watchdog_done(self, task: asyncio.Task[None]) -> None:
+        if task is self._playback_watchdog_task:
+            self._playback_watchdog_task = None
+            self._playback_watchdog_target = None
+        self._on_aux_done(task)
 
     async def _interrupt_runner(self, record: ResponseRecord) -> None:
         await self._agent_port.interrupt(record.target)

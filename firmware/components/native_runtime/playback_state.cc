@@ -12,9 +12,12 @@ void PlaybackState::Reset() {
     last_sample_sequence_.reset();
     last_completed_sequence_.reset();
     played_samples_ = 0;
+    drain_deadline_us_ = 0;
     active_ = false;
     started_ = false;
     stop_recorded_ = false;
+    degraded_ = false;
+    final_plc_requested_ = false;
 }
 
 bool PlaybackState::Begin(const protocol::ResponseTarget& target) {
@@ -27,27 +30,38 @@ bool PlaybackState::Begin(const protocol::ResponseTarget& target) {
     last_sample_sequence_.reset();
     last_completed_sequence_.reset();
     played_samples_ = 0;
+    drain_deadline_us_ = 0;
     active_ = true;
     started_ = false;
     last_stop_fence_generation_ = 0;
     stop_recorded_ = false;
+    degraded_ = false;
+    final_plc_requested_ = false;
     return true;
 }
 
 bool PlaybackState::SetFinalMediaSequence(
     const protocol::ResponseTarget& target,
     uint32_t final_media_sequence,
+    int64_t now_us,
     std::optional<PlaybackFact>* fact) {
-    if (fact == nullptr || !active_ || !TargetMatches(target) ||
+    if (fact == nullptr || now_us < 0 || !active_ || !TargetMatches(target) ||
         final_media_sequence_.has_value() ||
+        (last_sample_sequence_.has_value() &&
+         *last_sample_sequence_ > final_media_sequence) ||
         (last_completed_sequence_.has_value() &&
          *last_completed_sequence_ > final_media_sequence)) {
         return false;
     }
     fact->reset();
     final_media_sequence_ = final_media_sequence;
+    drain_deadline_us_ =
+        now_us > std::numeric_limits<int64_t>::max() - kDrainDeadlineUs
+            ? std::numeric_limits<int64_t>::max()
+            : now_us + kDrainDeadlineUs;
     if (last_completed_sequence_ == final_media_sequence_) {
-        *fact = End(protocol::PlaybackEndedOutcome::kCompleted);
+        *fact = End(degraded_ ? protocol::PlaybackEndedOutcome::kFailed
+                              : protocol::PlaybackEndedOutcome::kCompleted);
     }
     return true;
 }
@@ -78,6 +92,41 @@ bool PlaybackState::Fail(std::optional<PlaybackFact>* fact) {
     return true;
 }
 
+bool PlaybackState::MarkDegraded() {
+    if (!active_) return false;
+    degraded_ = true;
+    return true;
+}
+
+bool PlaybackState::RequestFinalPlc(int64_t now_us, uint32_t* media_sequence) {
+    if (media_sequence == nullptr || !active_ || !started_ ||
+        !final_media_sequence_.has_value() || drain_deadline_us_ == 0 ||
+        now_us < drain_deadline_us_ || final_plc_requested_ ||
+        !last_completed_sequence_.has_value() ||
+        *last_completed_sequence_ == std::numeric_limits<uint32_t>::max() ||
+        *last_completed_sequence_ + 1 != *final_media_sequence_) {
+        return false;
+    }
+    final_plc_requested_ = true;
+    *media_sequence = *final_media_sequence_;
+    return true;
+}
+
+bool PlaybackState::ExpireDrain(
+    int64_t now_us, std::optional<PlaybackFact>* fact) {
+    if (fact == nullptr || !active_ || !final_media_sequence_.has_value() ||
+        drain_deadline_us_ == 0 || now_us < drain_deadline_us_) {
+        return false;
+    }
+    const bool plc_eligible =
+        started_ && last_completed_sequence_.has_value() &&
+        *last_completed_sequence_ != std::numeric_limits<uint32_t>::max() &&
+        *last_completed_sequence_ + 1 == *final_media_sequence_;
+    if (plc_eligible && !final_plc_requested_) return false;
+    *fact = End(protocol::PlaybackEndedOutcome::kFailed);
+    return true;
+}
+
 bool PlaybackState::CanPlay(uint32_t generation) const {
     return active_ && generation == target_.generation && generation > fence_generation_;
 }
@@ -88,6 +137,7 @@ bool PlaybackState::RecordWritten(
     std::optional<PlaybackFact>* fact) {
     if (fact == nullptr || !active_ || samples == 0 ||
         samples > std::numeric_limits<uint64_t>::max() - played_samples_ ||
+        (final_media_sequence_.has_value() && media_sequence > *final_media_sequence_) ||
         (last_sample_sequence_.has_value() && media_sequence < *last_sample_sequence_)) {
         return false;
     }
@@ -121,7 +171,8 @@ bool PlaybackState::FinishFrame(
     fact->reset();
     last_completed_sequence_ = media_sequence;
     if (final_media_sequence_ == last_completed_sequence_) {
-        *fact = End(protocol::PlaybackEndedOutcome::kCompleted);
+        *fact = End(degraded_ ? protocol::PlaybackEndedOutcome::kFailed
+                              : protocol::PlaybackEndedOutcome::kCompleted);
     }
     return true;
 }
@@ -147,8 +198,11 @@ PlaybackFact PlaybackState::End(protocol::PlaybackEndedOutcome outcome) {
     last_sample_sequence_.reset();
     last_completed_sequence_.reset();
     played_samples_ = 0;
+    drain_deadline_us_ = 0;
     active_ = false;
     started_ = false;
+    degraded_ = false;
+    final_plc_requested_ = false;
     return fact;
 }
 

@@ -33,6 +33,8 @@ Assert-Contains $header "SemaphoreHandle_t supervisor_work_signal_ = nullptr;" `
     "VoiceRuntime must own the coalescing supervisor work signal"
 Assert-Contains $header "std::atomic<bool> websocket_started_{false};" `
     "VoiceRuntime must distinguish a started client from an allocated owner"
+Assert-Contains $header "std::atomic<int64_t> session_open_deadline_us_{0};" `
+    "VoiceRuntime must own an application-level session.opened deadline"
 
 $startSection = Get-SourceSection $source "bool VoiceRuntime::Start(" "void VoiceRuntime::Stop()"
 $ownerStart = $startSection.IndexOf("owner_->Start()")
@@ -87,3 +89,7 @@ $supervisorSection = Get-SourceSection `
     $source "void VoiceRuntime::RunSupervisor()" "void VoiceRuntime::HandleControl("
 Assert-Contains $supervisorSection "xSemaphoreTake(supervisor_work_signal_" `
     "Supervisor idle wait must consume the shared work signal"
+Assert-Contains $supervisorSection 'events_.OnFailure("session_open_timeout")' `
+    "Supervisor must terminate a connected socket that never returns session.opened"
+Assert-Contains $supervisorSection "session_open_deadline_us_ = esp_timer_get_time() + kSessionOpenDeadlineUs;" `
+    "The session.opened deadline must begin only after session.open is sent"

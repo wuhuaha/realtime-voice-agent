@@ -27,10 +27,17 @@ PlayoutPushResult PlayoutQueue::Push(const PlayoutFrame& frame) {
     std::lock_guard<std::mutex> lock(mutex_);
     if (!open_) return PlayoutPushResult::kClosed;
     if (frame.generation != generation_) return PlayoutPushResult::kStale;
-    if (size_ == kCapacity) return PlayoutPushResult::kFull;
+    bool replaced = false;
+    if (size_ == kCapacity) {
+        ClearFrame(&items_[head_]);
+        head_ = (head_ + 1) % kCapacity;
+        size_--;
+        replaced = true;
+    }
     items_[(head_ + size_) % kCapacity] = frame;
     size_++;
-    return PlayoutPushResult::kAccepted;
+    return replaced ? PlayoutPushResult::kReplacedOldest
+                    : PlayoutPushResult::kAccepted;
 }
 
 bool PlayoutQueue::Pop(PlayoutFrame* frame) {

@@ -153,10 +153,10 @@ class ResponseCoordinator:
             raise RvaBindingError("duplicate_playback_ended")
         if record is not self._playback:
             raise RvaBindingError("stale_generation")
-        expected = {"completed": "completed", "cancelled": "stopped", "failed": "failed"}.get(record.outcome)
-        if record.outcome == "completed" and record.stop_sent:
-            expected = "stopped"
-        if expected is None or outcome != expected:
+        expected = {"cancelled": {"stopped"}, "failed": {"failed"}}.get(record.outcome)
+        if record.outcome == "completed":
+            expected = {"stopped"} if record.stop_sent else {"completed", "failed"}
+        if expected is None or outcome not in expected:
             raise RvaBindingError("invalid_playback_outcome")
         if outcome == "completed" and played_samples == 0:
             raise RvaBindingError("playback_evidence_mismatch")
@@ -171,7 +171,8 @@ class ResponseCoordinator:
             if invalid_last_sequence:
                 raise RvaBindingError("invalid_playback_sequence")
         record.playback_ended = True
-        if outcome == "completed" and not await self._state.finish_playback(record.target):
+        needs_finish = record.outcome == "completed" and not record.stop_sent
+        if needs_finish and not await self._state.finish_playback(record.target):
             raise RvaBindingError("stale_generation")
         self._playback = None
         return PlaybackEndedFact(record, outcome, played_samples, last_media_sequence)

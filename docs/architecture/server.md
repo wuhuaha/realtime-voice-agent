@@ -113,6 +113,10 @@ event 在 owner 未发起关闭时发布 `runtime_failed`，同时关闭 audio i
 input/output task 并行等待该 terminal；unexpected terminal 会 best-effort 发送 `session.error`，再以
 `1011/runtime_failure` fresh close/reopen。通知失败或 teardown timeout 不得覆盖已锁定的 primary close cause。
 
+Roomless output 的每个 segment delivery task 都把首次异常发布到 runner terminal health；`wait_for_playout()` 在存在
+delivery failure 时拒绝生成 `response.end`。RVA failure loop 因而立即收敛为 `runtime_failure`，不会把后台 task 异常
+只写日志后继续等待或伪造 response terminal。
+
 Standalone FunASR 的空识别结果严格限于 `no_speech`、空 `final`，以及兼容旧 provider 的精确
 `invalid_audio + "FunASR returned empty text"`；它们产生空 final 并结束当前 turn，不视为 provider fatal。其他
 `invalid_audio`、malformed event/audio 和协议状态错误仍是 provider contract failure；`busy`、`inference_failed` 才按
@@ -138,6 +142,8 @@ reference 时不使用额外 AEC warmup 静音窗口。strict explicit policy �
 一个 Agent speech 从 `response.begin` 到 `response.end` 只使用一个 `response_id + generation`；provider 多次 TTS
 flush 不能创建多个 wire response。服务端取消顺序为：原子提升 fence -> 立即发送 `playback.stop` -> 在锁外停止
 Agent/provider。Endpoint 用 `playback.started/ended` 上报真实 DAC 播放事实，不用网络发送完成代替物理播放完成。
+`response.end` 成功交给 WSS send owner 后，Worker 对 exact target 启动默认 3 秒、可配置的 terminal watchdog；匹配
+`playback.ended` 会取消它。超时只关闭当前 session 并 fresh reopen，不推断设备已播放完成。
 
 ## 5. 并发与背压
 

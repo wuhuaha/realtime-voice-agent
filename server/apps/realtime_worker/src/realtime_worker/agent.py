@@ -120,6 +120,10 @@ class RoomlessAudioInputOverloadedError(BufferError):
         self.capacity = capacity
 
 
+class RoomlessOutputDeliveryError(RuntimeError):
+    """A buffered output segment could not reach the binding owner."""
+
+
 class DeterministicAgentRunner:
     def __init__(self, emit_segment: SegmentSink, response_end: StopSink | None = None) -> None:
         self._emit_segment = emit_segment
@@ -291,7 +295,14 @@ class RoomlessTextOutput(io.TextOutput):
 
 
 class RoomlessAudioOutput(io.AudioOutput):
-    def __init__(self, emit_segment: SegmentSink, response_end: StopSink, *, max_segment_frames: int = 1_500) -> None:
+    def __init__(
+        self,
+        emit_segment: SegmentSink,
+        response_end: StopSink,
+        *,
+        max_segment_frames: int = 1_500,
+        report_failure: Callable[[BaseException], None] | None = None,
+    ) -> None:
         if max_segment_frames <= 0:
             raise ValueError("max_segment_frames must be positive")
         super().__init__(
@@ -301,6 +312,8 @@ class RoomlessAudioOutput(io.AudioOutput):
         )
         self._emit_segment = emit_segment
         self._response_end = response_end
+        self._report_failure = report_failure
+        self._segment_failure: BaseException | None = None
         self._max_segment_frames = max_segment_frames
         self._frames: list[PcmFrame] = []
         self._pending_pcm = bytearray()
@@ -387,6 +400,11 @@ class RoomlessAudioOutput(io.AudioOutput):
                 current = asyncio.current_task()
                 if not self._closed or (current is not None and current.cancelling()):
                     raise
+            except BaseException as exc:
+                if self._segment_failure is None:
+                    self._segment_failure = exc
+        if self._segment_failure is not None:
+            raise RoomlessOutputDeliveryError("output segment delivery failed") from self._segment_failure
         self._response_end(producer_epoch)
         result = await super().wait_for_playout()
         if self._producer_epoch == producer_epoch:
@@ -412,6 +430,9 @@ class RoomlessAudioOutput(io.AudioOutput):
             return
         exception = task.exception()
         if exception is not None:
+            self._segment_failure = exception
+            if self._report_failure is not None:
+                self._report_failure(exception)
             logger.error(
                 "Roomless output segment delivery failed",
                 exc_info=(type(exception), exception, exception.__traceback__),
@@ -584,6 +605,7 @@ class LiveKitAgentRunner:
     def __init__(self, settings: Settings, emit_segment: SegmentSink, response_end: StopSink) -> None:
         settings.require_livekit()
         self._settings = settings
+        self._terminal_state = _TerminalState()
         self._input = RoomlessAudioInput(
             settings.media_queue_frames,
             queue_timeout_seconds=settings.rva_queue_timeout_seconds,
@@ -592,6 +614,7 @@ class LiveKitAgentRunner:
             emit_segment,
             response_end,
             max_segment_frames=settings.output_segment_max_frames,
+            report_failure=self._handle_output_failure,
         )
         self._session: AgentSession | None = None
         self._tts: object | None = None
@@ -604,7 +627,6 @@ class LiveKitAgentRunner:
         self._assistant_text_sink: AssistantTextSink | None = None
         self._text_output: RoomlessTextOutput | None = None
         self._response_gate = _PlaybackResponseGate()
-        self._terminal_state = _TerminalState()
         self._owner_closing = False
         self._close_owner_task: asyncio.Task[None] | None = None
         self._close_result: asyncio.Future[None] | None = None
@@ -671,6 +693,11 @@ class LiveKitAgentRunner:
         terminal = AgentRunnerTerminal(kind)
         if kind is AgentRunnerTerminalKind.RUNTIME_FAILED:
             self._input.close(terminal)
+        self._terminal_state.publish(terminal)
+
+    def _handle_output_failure(self, _error: BaseException) -> None:
+        terminal = AgentRunnerTerminal(AgentRunnerTerminalKind.RUNTIME_FAILED)
+        self._input.close(terminal)
         self._terminal_state.publish(terminal)
 
     def _handle_user_transcript(self, text: str, is_final: bool) -> None:

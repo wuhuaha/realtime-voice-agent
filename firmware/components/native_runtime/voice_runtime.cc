@@ -53,6 +53,7 @@ constexpr uint32_t kWebsocketTeardownTimeoutMs = 1500;
 // comfortably above the server heartbeat/idle contract.
 constexpr int kWebsocketNetworkTimeoutMs = 60000;
 constexpr int kWebsocketPingIntervalSec = 10;
+constexpr int64_t kSessionOpenDeadlineUs = 8 * 1000 * 1000;
 constexpr int64_t kUdpProbeRetryIntervalUs = 250000;
 constexpr size_t kDecodedSamplesPerFrame = 960;
 constexpr size_t kNominalResampledSamplesPerFrame = 1440;
@@ -140,6 +141,7 @@ bool VoiceRuntime::Start(
     fallback_to_wss_ = false;
     wss_playback_queue_dropped_ = 0;
     media_started_ = false;
+    session_open_deadline_us_ = 0;
     playback_state_.Reset();
     expected_session_epoch_ = grant.session_epoch;
     std::array<char, 24> request{};
@@ -331,6 +333,7 @@ void VoiceRuntime::Stop() {
     playback_task_ = nullptr;
     expected_task_bits_.store(0, std::memory_order_release);
     session_opened_ = false;
+    session_open_deadline_us_ = 0;
     media_owner_ = voice::core::MediaOwner::kNone;
 }
 
@@ -515,6 +518,13 @@ void VoiceRuntime::RunSupervisor() {
             continue;
         }
         const int64_t now_us = esp_timer_get_time();
+        const int64_t session_open_deadline_us = session_open_deadline_us_.load();
+        if (!session_opened_.load() && session_open_deadline_us > 0 &&
+            now_us >= session_open_deadline_us) {
+            events_.OnFailure("session_open_timeout");
+            running_ = false;
+            continue;
+        }
         if (media_started_.load() && now_us >= next_uplink_metrics_us) {
             LogAndResetUplinkMetrics();
             next_uplink_metrics_us = now_us + kUplinkMetricsIntervalUs;
@@ -580,6 +590,8 @@ void VoiceRuntime::RunSupervisor() {
             if (!SendSessionOpen()) {
                 events_.OnFailure("session_open_send");
                 running_ = false;
+            } else {
+                session_open_deadline_us_ = esp_timer_get_time() + kSessionOpenDeadlineUs;
             }
             continue;
         }
@@ -639,6 +651,7 @@ void VoiceRuntime::HandleControl(const std::vector<uint8_t>& frame) {
             selected_owner == voice::core::MediaOwner::kUdp ? MediaPreference::kUdp
                                                              : MediaPreference::kWss);
         session_opened_ = true;
+        session_open_deadline_us_ = 0;
         if (!StartMediaRuntime()) {
             events_.OnFailure("media_runtime_start");
             running_ = false;
@@ -789,7 +802,8 @@ bool VoiceRuntime::ProcessPlaybackCommands() {
             playback_generation_ = target.generation;
             playback_enabled_ = true;
         } else if (command.type == PlaybackCommandType::kComplete) {
-            if (!playback_state_.SetFinalMediaSequence(target, command.value, &fact)) {
+            if (!playback_state_.SetFinalMediaSequence(
+                    target, command.value, esp_timer_get_time(), &fact)) {
                 return false;
             }
         } else {
@@ -1394,12 +1408,26 @@ void VoiceRuntime::RunUplinkSender() {
 
 void VoiceRuntime::RunPlayback() {
     MediaPacket packet;
+    uint32_t observed_wss_dropped = wss_playback_queue_dropped_.load();
+    uint32_t observed_udp_quality =
+        udp_runtime_ != nullptr ? udp_runtime_->playout_quality_epoch() : 0;
     const auto fail_active_playback = [this]() {
         std::optional<PlaybackFact> fact;
         if (playback_state_.Fail(&fact) && fact.has_value()) {
             playback_enabled_ = false;
             PublishPlaybackFact(*fact);
         }
+    };
+    const auto observe_playout_quality = [this, &observed_wss_dropped,
+                                          &observed_udp_quality]() {
+        const uint32_t wss_dropped = wss_playback_queue_dropped_.load();
+        const uint32_t udp_quality =
+            udp_runtime_ != nullptr ? udp_runtime_->playout_quality_epoch() : 0;
+        const bool degraded = wss_dropped != observed_wss_dropped ||
+                              udp_quality != observed_udp_quality;
+        observed_wss_dropped = wss_dropped;
+        observed_udp_quality = udp_quality;
+        if (degraded && playback_state_.active()) playback_state_.MarkDegraded();
     };
     if (playback_pcm_ == nullptr || playback_resampled_ == nullptr ||
         playback_resampled_capacity_ == 0) {
@@ -1410,6 +1438,7 @@ void VoiceRuntime::RunPlayback() {
         return;
     }
     while (running_) {
+        observe_playout_quality();
         if (!ProcessPlaybackCommands()) {
             fail_active_playback();
             events_.OnFailure("playback_command");
@@ -1418,16 +1447,40 @@ void VoiceRuntime::RunPlayback() {
         }
         udp::PlayoutFrame udp_frame;
         const bool using_udp = media_owner_ == voice::core::MediaOwner::kUdp;
+        bool have_media = false;
         if (using_udp) {
-            if (udp_runtime_ == nullptr || !udp_runtime_->PollPlayout(&udp_frame)) {
-                // CONFIG_FREERTOS_HZ is 100, so pdMS_TO_TICKS(5) truncates to
-                // zero and turns the listening path into a priority-6 busy loop.
-                // Block for one scheduler tick while no downlink frame is due.
-                vTaskDelay(1);
+            have_media = udp_runtime_ != nullptr && udp_runtime_->PollPlayout(&udp_frame);
+        } else {
+            have_media = xQueueReceive(playback_queue_, &packet, pdMS_TO_TICKS(10)) == pdTRUE;
+        }
+
+        uint32_t frame_generation = 0;
+        uint32_t frame_sequence = 0;
+        bool decode_plc = false;
+        if (have_media) {
+            frame_generation = using_udp ? udp_frame.generation : packet.generation;
+            frame_sequence = using_udp ? udp_frame.sequence : packet.sequence;
+            decode_plc = using_udp && udp_frame.kind == udp::PlayoutKind::kPlc;
+        } else {
+            std::optional<PlaybackFact> terminal_fact;
+            const int64_t now_us = esp_timer_get_time();
+            if (playback_state_.RequestFinalPlc(now_us, &frame_sequence)) {
+                frame_generation = playback_generation_.load();
+                decode_plc = true;
+            } else if (playback_state_.ExpireDrain(now_us, &terminal_fact)) {
+                playback_enabled_ = false;
+                events_.OnConversationPhase(ConversationPhase::kListening);
+                if (!terminal_fact.has_value() || !PublishPlaybackFact(*terminal_fact)) {
+                    events_.OnFailure("playback_fact_queue");
+                    running_ = false;
+                    break;
+                }
+                continue;
+            } else {
+                // CONFIG_FREERTOS_HZ is 100; one tick avoids a priority-6 busy loop.
+                if (using_udp) vTaskDelay(1);
                 continue;
             }
-        } else if (xQueueReceive(playback_queue_, &packet, pdMS_TO_TICKS(10)) != pdTRUE) {
-            continue;
         }
         if (!ProcessPlaybackCommands()) {
             fail_active_playback();
@@ -1435,11 +1488,10 @@ void VoiceRuntime::RunPlayback() {
             running_ = false;
             break;
         }
-        const uint32_t frame_generation = using_udp ? udp_frame.generation : packet.generation;
-        const uint32_t frame_sequence = using_udp ? udp_frame.sequence : packet.sequence;
+        observe_playout_quality();
         if (!playback_state_.CanPlay(frame_generation)) continue;
         size_t samples = 0;
-        const bool decoded = using_udp && udp_frame.kind == udp::PlayoutKind::kPlc
+        const bool decoded = decode_plc
                                  ? codec_.DecodePlc60Ms(
                                        playback_pcm_.get(), kDecodedSamplesPerFrame, &samples)
                                  : codec_.Decode60Ms(

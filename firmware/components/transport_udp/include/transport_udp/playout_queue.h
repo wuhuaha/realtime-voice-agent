@@ -9,7 +9,12 @@
 
 namespace rva::udp {
 
-enum class PlayoutPushResult : uint8_t { kAccepted, kFull, kClosed, kStale };
+enum class PlayoutPushResult : uint8_t {
+    kAccepted,
+    kReplacedOldest,
+    kClosed,
+    kStale,
+};
 
 // Fixed-lifetime queue that atomically couples queue contents to the playback
 // generation. It is safe for one producer, one consumer and a supervisor.

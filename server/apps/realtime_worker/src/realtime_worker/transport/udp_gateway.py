@@ -97,6 +97,8 @@ class UdpMediaStats:
     sent: int = 0
     lost: int = 0
     reordered: int = 0
+    resync_total: int = 0
+    skipped_sequences_total: int = 0
 
 
 @dataclass(slots=True)
@@ -175,6 +177,11 @@ class UdpMediaSession:
             self._queue.put_nowait((data, addr))
         except asyncio.QueueFull:
             self.stats.queue_dropped += 1
+            dropped = self._queue.get_nowait()
+            if dropped is None:
+                self._queue.put_nowait(None)
+                return
+            self._queue.put_nowait((data, addr))
 
     async def wait_ready(self, timeout: float) -> None:
         started_at = time.monotonic()
@@ -390,10 +397,9 @@ class UdpMediaSession:
         if header.sequence < expected:
             self.stats.replayed += 1
             return
-        if (
-            header.sequence >= expected + UDP_JITTER_WINDOW_PACKETS
-            or (header.sequence != expected and len(self._reorder) >= UDP_JITTER_WINDOW_PACKETS)
-        ):
+        if header.sequence >= expected + UDP_JITTER_WINDOW_PACKETS:
+            self._resync_media_cursor(header.sequence)
+        elif header.sequence != expected and len(self._reorder) >= UDP_JITTER_WINDOW_PACKETS:
             self.stats.queue_dropped += 1
             return
         self._probe_reack_open = False
@@ -416,8 +422,8 @@ class UdpMediaSession:
             self.stats.replayed += 1
             return
         if header.sequence >= expected + UDP_JITTER_WINDOW_PACKETS:
-            self.stats.queue_dropped += 1
-            return
+            self._resync_media_cursor(header.sequence)
+            expected = header.sequence
         if len(self._reorder) >= UDP_JITTER_WINDOW_PACKETS:
             if header.sequence != expected:
                 self.stats.queue_dropped += 1
@@ -436,6 +442,21 @@ class UdpMediaSession:
             header.generation,
         )
         await self._drain_reorder()
+
+    def _resync_media_cursor(self, sequence: int) -> None:
+        expected = self._next_audio_sequence
+        if expected is None or sequence <= expected:
+            return
+        skipped = sequence - expected
+        self.stats.resync_total += 1
+        self.stats.skipped_sequences_total += skipped
+        self.stats.lost += skipped
+        self.stats.queue_dropped += len(self._reorder)
+        self._reorder.clear()
+        if self._reorder_timer is not None:
+            self._reorder_timer.cancel()
+            self._reorder_timer = None
+        self._next_audio_sequence = sequence
 
     async def _drain_reorder(self) -> None:
         expected = self._next_audio_sequence

@@ -14,6 +14,7 @@ from realtime_worker.agent import (
     LiveKitAgentRunner,
     RoomlessAudioInput,
     RoomlessAudioOutput,
+    RoomlessOutputDeliveryError,
     _DefaultAgent,
 )
 from realtime_worker.audio import PcmFrame
@@ -107,6 +108,32 @@ async def test_output_allows_multiple_flushes_while_previous_segment_is_pending(
     await asyncio.sleep(0)
     assert len(segments) == 2
     release.set()
+    await output.close()
+
+
+@pytest.mark.asyncio
+async def test_output_segment_failure_is_terminal_and_suppresses_response_end() -> None:
+    failure = RuntimeError("segment sink failed")
+    reported: list[BaseException] = []
+    response_ends: list[int] = []
+
+    async def emit(_segment):  # noqa: ANN001
+        raise failure
+
+    output = RoomlessAudioOutput(
+        emit,
+        response_ends.append,
+        report_failure=reported.append,
+    )
+    frame = rtc.AudioFrame(data=b"\x00" * 640, sample_rate=16_000, num_channels=1, samples_per_channel=320)
+    await output.capture_frame(frame)
+    output.flush()
+
+    with pytest.raises(RoomlessOutputDeliveryError, match="segment delivery failed"):
+        await output.wait_for_playout()
+
+    assert reported == [failure]
+    assert response_ends == []
     await output.close()
 
 

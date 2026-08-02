@@ -27,11 +27,12 @@ stateDiagram-v2
 | Phase | 必须有界 | 超时结果 |
 | --- | --- | --- |
 | bootstrap/grant | HTTP client deadline | 不创建 Worker session，退避后重试 |
-| WSS connect/session.open | connect + handshake timeout | close，best-effort release 当前精确 lease，fresh bootstrap |
+| WSS connect/session.open | connect + handshake timeout；Endpoint 发出 open 后 8 秒内必须收到 `session.opened` | close，best-effort release 当前精确 lease，fresh bootstrap |
 | UDP probe | grant `probe_timeout_ms` | close整个 session，fresh bootstrap |
 | Agent startup/terminal | session start timeout；unexpected typed terminal | `session.error` best-effort 后 close `1011/runtime_failure` |
 | media queue/freshness | 小于可接受 media age | 丢弃 stale backlog 到 live edge；当前 close `1013/media_overloaded` 后 fresh reopen |
 | provider request | provider-specific deadline | cancel/close，禁止无界等待 |
+| endpoint playback terminal | `response.end` send ack 后默认 3 秒，可由 `VOICE_RVA_PLAYBACK_TERMINAL_TIMEOUT_SECONDS` 配置 | `session.error(playback_terminal_timeout)` 后 close `1011/playback_terminal_timeout` |
 | drain/teardown | process shutdown deadline | 强制撤销并记录未收敛 owner |
 
 ## 3. WebSocket close 映射
@@ -46,7 +47,7 @@ ASCII reason：
 | 1002 | protocol error | `protocol_error`、错误状态/hello |
 | 1008 | authentication/policy | `unauthorized`、`handshake_timeout` |
 | 1009 | message too large | `message_too_large` |
-| 1011 | runtime/provider fatal | `runtime_failure` |
+| 1011 | runtime/provider fatal | `runtime_failure`、`playback_terminal_timeout` |
 | 1013 | overload/retry later | `session_overloaded`、`media_overloaded` |
 
 Reason 不包含 provider body、token、URL query、设备隐私或堆栈。实现可细分内部 `close_reason` metric，但 wire
@@ -69,6 +70,10 @@ LiveKit `AgentSession` unexpected terminal 映射为 `session.error(runtime_fail
 `1011/runtime_failure`。Owner 发起的正常 close 不得误报为 runtime failure。Terminal 发布必须 exactly-once；一旦发布，
 audio input admission 立即失效，已经阻塞和后续的 input push 均快速返回稳定错误，不能等 queue 填满后再归因为
 `media_overloaded`。
+
+Server 只有在 `response.end` 已被 WSS send owner 确认交付后才启动 exact-target playback terminal watchdog。收到匹配的
+`playback.ended` 即取消 watchdog；deadline 到达仍是同一 active target 才 fail current session。Server 不伪造 Endpoint
+物理事实，通知发送失败也不得覆盖 `playback_terminal_timeout` primary cause。
 
 ## 5. Freshness fences
 

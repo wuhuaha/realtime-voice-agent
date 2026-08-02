@@ -14,6 +14,18 @@ namespace {
 
 constexpr char kTag[] = "rva_voice_ui";
 constexpr uint32_t kLvglLockTimeoutMs = 2000;
+constexpr uint32_t kConnectionShift = 0;
+constexpr uint32_t kConversationShift = 8;
+constexpr uint32_t kPreferredTransportShift = 16;
+constexpr uint32_t kActiveTransportShift = 24;
+constexpr uint32_t kStateFieldMask = 0xffU;
+
+uint32_t PackState(const UiState& state) {
+    return static_cast<uint32_t>(state.connection) |
+           (static_cast<uint32_t>(state.conversation) << kConversationShift) |
+           (static_cast<uint32_t>(state.preferred_transport) << kPreferredTransportShift) |
+           (static_cast<uint32_t>(state.active_transport) << kActiveTransportShift);
+}
 
 lv_color_t Background() { return lv_color_hex(0x101516); }
 lv_color_t Surface() { return lv_color_hex(0x1B2324); }
@@ -147,6 +159,8 @@ bool VoiceUi::Start() {
 
     LockLvglOrRestart("start");
     BuildHome();
+    latest_state_snapshot_.store(PackState(state_), std::memory_order_release);
+    applied_state_snapshot_ = PackState(state_);
     command_timer_ = lv_timer_create(CommandTimer, 10, this);
     const bool initialized = root_ != nullptr && command_timer_ != nullptr;
     lvgl_port_unlock();
@@ -206,6 +220,10 @@ bool VoiceUi::Stop() {
 bool VoiceUi::Post(const UiCommand& command) {
     if (!lifecycle_.active() || command_queue_ == nullptr) {
         return false;
+    }
+    if (PostLatestState(command.kind, command.value)) {
+        lvgl_port_task_wake(LVGL_PORT_EVENT_USER, nullptr);
+        return true;
     }
     CommandPacket packet = {.kind = command.kind, .value = command.value, .text = {}};
     const std::string text = TruncateUtf8(command.text, kCommandTextBytes - 1);
@@ -449,7 +467,7 @@ void VoiceUi::BuildHome() {
 
 void VoiceUi::DrainCommands() {
     CommandPacket packet{};
-    bool processed_command = false;
+    bool processed_command = ApplyLatestState();
     for (uint32_t count = 0; count < kMaxCommandsPerTick; ++count) {
         if (xQueueReceive(command_queue_, &packet, 0) != pdTRUE) {
             break;
@@ -466,10 +484,75 @@ void VoiceUi::DrainCommands() {
     }
 }
 
+bool VoiceUi::PostLatestState(CommandKind kind, uint32_t value) {
+    uint32_t shift = 0;
+    uint32_t upper_bound = 0;
+    switch (kind) {
+        case CommandKind::kSetConnection:
+            shift = kConnectionShift;
+            upper_bound = static_cast<uint32_t>(ConnectionState::kError) + 1;
+            break;
+        case CommandKind::kSetConversation:
+            shift = kConversationShift;
+            upper_bound = static_cast<uint32_t>(ConversationState::kSpeaking) + 1;
+            break;
+        case CommandKind::kSetPreferredTransport:
+            shift = kPreferredTransportShift;
+            upper_bound = static_cast<uint32_t>(Transport::kUdp) + 1;
+            break;
+        case CommandKind::kSetActiveTransport:
+            shift = kActiveTransportShift;
+            upper_bound = static_cast<uint32_t>(Transport::kUdp) + 1;
+            break;
+        default:
+            return false;
+    }
+    if (value >= upper_bound) return false;
+    const uint32_t mask = kStateFieldMask << shift;
+    uint32_t observed = latest_state_snapshot_.load(std::memory_order_relaxed);
+    const uint32_t replacement = (value & kStateFieldMask) << shift;
+    while (!latest_state_snapshot_.compare_exchange_weak(
+        observed, (observed & ~mask) | replacement,
+        std::memory_order_release, std::memory_order_relaxed)) {
+    }
+    return true;
+}
+
+bool VoiceUi::ApplyLatestState() {
+    const uint32_t snapshot = latest_state_snapshot_.load(std::memory_order_acquire);
+    if (snapshot == applied_state_snapshot_) return false;
+    const auto apply_field = [this, snapshot](
+                                 CommandKind kind, uint32_t shift) {
+        const uint32_t value = (snapshot >> shift) & kStateFieldMask;
+        Reduce(&state_, {.kind = kind, .value = value, .text = {}});
+    };
+    apply_field(CommandKind::kSetConnection, kConnectionShift);
+    apply_field(CommandKind::kSetConversation, kConversationShift);
+    apply_field(CommandKind::kSetPreferredTransport, kPreferredTransportShift);
+    apply_field(CommandKind::kSetActiveTransport, kActiveTransportShift);
+    applied_state_snapshot_ = snapshot;
+    return true;
+}
+
 void VoiceUi::Apply(UiCommand command) {
     const std::optional<UiEvent> event = Reduce(&state_, command);
     if (event.has_value()) {
         Publish(*event);
+    }
+    if (command.kind == CommandKind::kMicPressed) {
+        PostLatestState(
+            CommandKind::kSetConversation,
+            static_cast<uint32_t>(state_.conversation));
+        applied_state_snapshot_ =
+            (applied_state_snapshot_ & ~(kStateFieldMask << kConversationShift)) |
+            (static_cast<uint32_t>(state_.conversation) << kConversationShift);
+    } else if (command.kind == CommandKind::kTransportPressed) {
+        PostLatestState(
+            CommandKind::kSetPreferredTransport,
+            static_cast<uint32_t>(state_.preferred_transport));
+        applied_state_snapshot_ =
+            (applied_state_snapshot_ & ~(kStateFieldMask << kPreferredTransportShift)) |
+            (static_cast<uint32_t>(state_.preferred_transport) << kPreferredTransportShift);
     }
     Render();
 }

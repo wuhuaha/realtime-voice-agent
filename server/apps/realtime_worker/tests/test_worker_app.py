@@ -12,6 +12,7 @@ from realtime_worker import app as app_module
 from realtime_worker.admission import SharedSessionAdmission
 from realtime_worker.app import DirectorGrantConsumer, RvaSessionRegistry, WorkerHeartbeatLoop, create_app
 from realtime_worker.auth import AuthContext
+from realtime_worker.bindings.rva import RvaRuntimeLimits
 from realtime_worker.config import Settings
 from realtime_worker.lifecycle import detached_shutdown_task_count
 from voice_contracts import LeaseRenewal
@@ -44,6 +45,38 @@ def test_shared_udp_gateway_uses_neutral_environment_prefix(monkeypatch: pytest.
     assert value.udp_bind_port == 18092
     assert value.udp_advertise_host == "voice.example.test"
     assert value.udp_advertise_port == 28092
+
+
+@pytest.mark.asyncio
+async def test_registry_passes_configured_playback_terminal_timeout_to_runtime(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured_limits: list[RvaRuntimeLimits] = []
+
+    class FakeConnection:
+        async def run(self) -> None:
+            return None
+
+        async def wait_closed(self) -> None:
+            return None
+
+    def build_connection(*_args: object, **kwargs: object) -> FakeConnection:
+        captured_limits.append(kwargs["limits"])  # type: ignore[arg-type]
+        return FakeConnection()
+
+    monkeypatch.setattr(app_module, "RvaWssConnection", build_connection)
+    registry = RvaSessionRegistry(
+        settings(rva_playback_terminal_timeout_seconds=7.5),
+        SharedSessionAdmission(1),
+    )
+    auth = AuthContext(tenant_id="tenant-1", device_id="device-1")
+    reservation = await registry.reserve(auth)
+    assert reservation is not None
+
+    await registry.run(object(), auth, reservation)  # type: ignore[arg-type]
+
+    assert len(captured_limits) == 1
+    assert captured_limits[0].playback_terminal_timeout_seconds == 7.5
 
 
 def test_production_requires_provider_readiness_gate() -> None:

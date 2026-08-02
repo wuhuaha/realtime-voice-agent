@@ -59,6 +59,7 @@ bool UdpRuntime::Start() {
     stop_requested_.store(false);
     queue_dropped_.store(0);
     media_age_dropped_.store(0);
+    quality_epoch_.store(0);
     playout_queue_.Open(session_.downlink_generation());
     TaskHandle_t created = nullptr;
     if (xTaskCreateWithCaps(TaskEntry, "rva_udp", kRuntimeTaskStackBytes, this, 4,
@@ -124,7 +125,10 @@ bool UdpRuntime::PollPlayout(PlayoutFrame* frame) {
     uint32_t expired = 0;
     const bool ready = playout_queue_.PopFresh(
         frame, esp_timer_get_time(), kMaximumMediaAgeUs, &expired);
-    if (expired != 0) media_age_dropped_.fetch_add(expired);
+    if (expired != 0) {
+        media_age_dropped_.fetch_add(expired);
+        quality_epoch_.fetch_add(1);
+    }
     return ready;
 }
 
@@ -163,6 +167,7 @@ void UdpRuntime::TaskEntry(void* context) {
 
 void UdpRuntime::Run() {
     std::array<uint8_t, wire::kMaxDatagramBytes> datagram{};
+    Stats observed = session_.stats();
     while (!stop_requested_.load()) {
         size_t size = 0;
         Endpoint source{};
@@ -173,11 +178,18 @@ void UdpRuntime::Run() {
             PlayoutFrame frame = session_.PopPlayout(esp_timer_get_time());
             if (frame.kind == PlayoutKind::kNone) break;
             const auto pushed = playout_queue_.Push(frame);
-            if (pushed == PlayoutPushResult::kFull) {
+            if (pushed == PlayoutPushResult::kReplacedOldest) {
                 queue_dropped_.fetch_add(1);
-                break;
+                quality_epoch_.fetch_add(1);
             }
         }
+        const Stats current = session_.stats();
+        if (current.queue_dropped != observed.queue_dropped ||
+            current.lost != observed.lost ||
+            current.resync_total != observed.resync_total) {
+            quality_epoch_.fetch_add(1);
+        }
+        observed = current;
     }
     ESP_LOGI(kLogTag, "udp task minimum free stack: %lu bytes",
              static_cast<unsigned long>(uxTaskGetStackHighWaterMark(nullptr)));

@@ -126,13 +126,22 @@ bool UdpSession::AdvanceGeneration(uint32_t generation) {
 
 bool UdpSession::BufferFutureAudio(const wire::Header& header, int64_t now_us) {
     FutureFrame* free = nullptr;
+    FutureFrame* oldest_matching = nullptr;
     for (auto& frame : future_frames_) {
         if (frame.used && frame.sequence == header.sequence) return true;
         if (!frame.used && free == nullptr) free = &frame;
+        if (frame.used && frame.generation == header.generation &&
+            (oldest_matching == nullptr || frame.sequence < oldest_matching->sequence)) {
+            oldest_matching = &frame;
+        }
     }
     if (free == nullptr) {
         stats_.queue_dropped++;
-        return false;
+        if (oldest_matching == nullptr || header.sequence <= oldest_matching->sequence) {
+            return false;
+        }
+        ClearFutureFrame(oldest_matching);
+        free = oldest_matching;
     }
     free->used = true;
     free->sequence = header.sequence;

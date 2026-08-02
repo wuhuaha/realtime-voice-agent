@@ -14,6 +14,7 @@ from realtime_worker.transport.udp_gateway import (
 )
 from realtime_worker.transport.udp_wire import (
     UDP_FLAG_AUDIO,
+    UDP_FLAG_KEEPALIVE,
     UDP_FLAG_PROBE,
     UDP_FLAG_PROBE_ACK,
     UDP_HEADER_BYTES,
@@ -231,6 +232,79 @@ async def test_probe_ack_uses_zero_generation_required_by_wire(caplog: pytest.Lo
             while len(received_audio) < 2:
                 await asyncio.sleep(0)
         assert received_audio == [(audio_payload, 960, 0), (reordered_payload, 1920, 0)]
+    finally:
+        await session.close()
+
+
+@pytest.mark.asyncio
+async def test_authenticated_forward_gap_resyncs_uplink_media_cursor() -> None:
+    gateway = FakeGateway()
+    grant = UdpGrant(
+        media_id=bytes.fromhex("0102030405060708"),
+        media_epoch=7,
+        uplink_key=bytes.fromhex("00112233445566778899aabbccddeeff"),
+        uplink_salt=bytes.fromhex("0102030405060708"),
+        downlink_key=bytes.fromhex("ffeeddccbbaa99887766554433221100"),
+        downlink_salt=bytes.fromhex("0807060504030201"),
+        host="127.0.0.1",
+        port=8093,
+        expires_at=int(time.time()) + 60,
+        probe_timeout_ms=500,
+    )
+    received_audio: list[tuple[bytes, int, int]] = []
+
+    async def receive_audio(payload: bytes, timestamp: int, generation: int) -> None:
+        received_audio.append((payload, timestamp, generation))
+
+    session = UdpMediaSession(
+        gateway,  # type: ignore[arg-type]
+        grant,
+        receive_audio,
+        lambda _exc: None,
+        queue_size=8,
+        reorder_wait_seconds=0.01,
+    )
+    source = ("192.0.2.10", 45678)
+
+    def datagram(flags: int, sequence: int, payload: bytes, timestamp: int = 0) -> bytes:
+        header = UdpPacketHeader(
+            flags=flags,
+            media_id=grant.media_id,
+            media_epoch=grant.media_epoch,
+            sequence=sequence,
+            timestamp=timestamp,
+            generation=0,
+            payload_length=len(payload),
+        )
+        aad = header.encode()
+        encrypted = AESGCM(grant.uplink_key).encrypt(
+            grant.uplink_salt + sequence.to_bytes(4, "big"), payload, aad
+        )
+        return aad + encrypted
+
+    try:
+        session.enqueue(datagram(UDP_FLAG_PROBE, 0, b""), source)
+        await session.wait_ready(0.5)
+        session.enqueue(datagram(UDP_FLAG_AUDIO, 1, b"one", 960), source)
+        async with asyncio.timeout(0.5):
+            while len(received_audio) < 1:
+                await asyncio.sleep(0)
+
+        session.enqueue(datagram(UDP_FLAG_AUDIO, 6, b"six", 5760), source)
+        async with asyncio.timeout(0.5):
+            while len(received_audio) < 2:
+                await asyncio.sleep(0)
+
+        session.enqueue(datagram(UDP_FLAG_KEEPALIVE, 11, b""), source)
+        session.enqueue(datagram(UDP_FLAG_AUDIO, 12, b"twelve", 11520), source)
+        async with asyncio.timeout(0.5):
+            while len(received_audio) < 3:
+                await asyncio.sleep(0)
+
+        assert received_audio == [(b"one", 960, 0), (b"six", 5760, 0), (b"twelve", 11520, 0)]
+        assert session.stats.resync_total == 2
+        assert session.stats.skipped_sequences_total == 8
+        assert session.stats.lost == 8
     finally:
         await session.close()
 

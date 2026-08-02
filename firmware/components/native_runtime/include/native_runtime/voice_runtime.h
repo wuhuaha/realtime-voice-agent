@@ -220,6 +220,7 @@ private:
     std::atomic<bool> websocket_started_{false};
     std::atomic<bool> media_started_{false};
     std::atomic<bool> session_opened_{false};
+    std::atomic<int64_t> session_open_deadline_us_{0};
     std::atomic<MediaPreference> preferred_media_{MediaPreference::kWss};
     std::atomic<voice::core::MediaOwner> media_owner_{voice::core::MediaOwner::kNone};
     std::atomic<uint32_t> playback_generation_{1};

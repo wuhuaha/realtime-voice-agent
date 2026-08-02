@@ -24,17 +24,23 @@ struct PlaybackFact final {
 // commands and emitted facts cross task boundaries through bounded POD queues.
 class PlaybackState final {
 public:
+    static constexpr int64_t kDrainDeadlineUs = 1'500'000;
+
     void Reset();
     bool Begin(const protocol::ResponseTarget& target);
     bool SetFinalMediaSequence(
         const protocol::ResponseTarget& target,
         uint32_t final_media_sequence,
+        int64_t now_us,
         std::optional<PlaybackFact>* fact);
     bool Stop(
         const protocol::ResponseTarget& target,
         uint32_t fence_generation,
         std::optional<PlaybackFact>* fact);
     bool Fail(std::optional<PlaybackFact>* fact);
+    bool MarkDegraded();
+    bool RequestFinalPlc(int64_t now_us, uint32_t* media_sequence);
+    bool ExpireDrain(int64_t now_us, std::optional<PlaybackFact>* fact);
     [[nodiscard]] bool CanPlay(uint32_t generation) const;
     bool RecordWritten(
         uint32_t media_sequence,
@@ -56,9 +62,12 @@ private:
     std::optional<uint32_t> last_sample_sequence_;
     std::optional<uint32_t> last_completed_sequence_;
     uint64_t played_samples_ = 0;
+    int64_t drain_deadline_us_ = 0;
     bool active_ = false;
     bool started_ = false;
     bool stop_recorded_ = false;
+    bool degraded_ = false;
+    bool final_plc_requested_ = false;
 };
 
 }  // namespace rva::runtime

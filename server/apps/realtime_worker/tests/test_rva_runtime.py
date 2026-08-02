@@ -489,6 +489,27 @@ async def test_three_uplink_packets_produce_text_and_generation_framed_audio() -
 
 
 @pytest.mark.integration
+async def test_missing_endpoint_playback_terminal_closes_for_fresh_reopen() -> None:
+    websocket = FakeWebSocket()
+    limits = RvaRuntimeLimits(playback_terminal_timeout_seconds=0.05)
+    connection, runners = create_connection(websocket, limits=limits)
+    websocket.feed_open()
+    task = asyncio.create_task(connection.run())
+    await websocket.wait_control("session.opened")
+
+    for packet in uplink_packets(3):
+        websocket.feed_media(packet)
+    await websocket.wait_control("response.end")
+    error = await websocket.wait_control("session.error")
+    await asyncio.wait_for(task, timeout=2.0)
+
+    assert error["code"] == "playback_terminal_timeout"
+    assert error["retryable"] is True
+    assert runners[0].response_gate == [True]
+    assert websocket.closed == [(1_011, "playback_terminal_timeout")]
+
+
+@pytest.mark.integration
 async def test_exact_cancel_wakes_pacing_and_fences_old_segment() -> None:
     websocket = FakeWebSocket()
     limits = RvaRuntimeLimits(playback_prebuffer_packets=0)

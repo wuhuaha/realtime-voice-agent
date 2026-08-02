@@ -64,6 +64,9 @@ public:
     [[nodiscard]] uint32_t playout_media_age_dropped() const {
         return media_age_dropped_.load();
     }
+    [[nodiscard]] uint32_t playout_quality_epoch() const {
+        return quality_epoch_.load();
+    }
     [[nodiscard]] int64_t last_authenticated_receive_us() const {
         return session_.last_authenticated_receive_us();
     }
@@ -82,6 +85,7 @@ private:
     std::atomic<bool> stop_requested_{false};
     std::atomic<uint32_t> queue_dropped_{0};
     std::atomic<uint32_t> media_age_dropped_{0};
+    std::atomic<uint32_t> quality_epoch_{0};
     std::atomic<bool> closed_{false};
     std::mutex send_mutex_;
     std::mutex control_mutex_;

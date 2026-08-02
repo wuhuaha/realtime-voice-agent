@@ -128,6 +128,7 @@ class Settings(BaseSettings):
     rva_handshake_timeout_seconds: float = Field(default=5.0, gt=0, le=10)
     rva_runner_timeout_seconds: float = Field(default=5.0, gt=0, le=30)
     rva_close_timeout_seconds: float = Field(default=5.0, gt=0, le=30)
+    rva_playback_terminal_timeout_seconds: float = Field(default=3.0, gt=0, le=30)
     rva_playback_prebuffer_packets: int = Field(default=4, ge=0, le=8)
     provider_readiness_required: bool = Field(
         default=False,

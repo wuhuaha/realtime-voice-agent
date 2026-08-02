@@ -56,6 +56,8 @@ struct Stats final {
     uint32_t late = 0;
     uint32_t lost = 0;
     uint32_t queue_dropped = 0;
+    uint32_t resync_total = 0;
+    uint32_t skipped_sequences_total = 0;
     uint32_t played = 0;
     uint32_t max_media_age_ms = 0;
 };

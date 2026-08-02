@@ -20,8 +20,13 @@ JitterInsertResult JitterBuffer::Reserve(uint32_t sequence, uint32_t generation,
         return JitterInsertResult::kLate;
     }
     if (sequence - expected_ >= kSlotCount) {
-        if (stats) stats->queue_dropped++;
-        return JitterInsertResult::kOutOfWindow;
+        const uint32_t skipped = sequence - expected_;
+        for (auto& slot : slots_) ClearSlot(&slot);
+        expected_ = sequence;
+        if (stats) {
+            stats->resync_total++;
+            stats->skipped_sequences_total += skipped;
+        }
     }
     Slot* free = nullptr;
     for (auto& slot : slots_) {

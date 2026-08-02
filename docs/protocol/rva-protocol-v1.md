@@ -59,6 +59,11 @@ generation，也不触发 `playback.started/ended`。
 `response.end` 只描述 Server generation，不能冒充物理播放完成。正常链路中，endpoint 收到
 `response.end(completed)` 后继续 drain 到 exact `final_media_sequence`，随后发送一次 `playback.ended(completed)`。
 
+Endpoint 的 final drain 最多等待 1.5 秒。若只缺 exact final packet、decoder 已有历史且当前 response 未 degraded，允许
+一次 Opus PLC 代替该末帧；其他缺失、queue loss、cursor resync 或 media expiry 必须产生
+`playback.ended(outcome=failed)`，不能虚报 `completed`。因此 Server 的 `response.end(completed)` 与 Endpoint 的
+`playback.ended(failed)` 是合法组合：前者证明发送完成，后者证明物理播放未完整收敛。
+
 `playback.started` 必须携带 exact `target` 与 `first_media_sequence`，只在首个 sample 实际进入 DAC-near render
 boundary 时发送，收到 packet、decode 或入 queue 都不算 started。
 
