@@ -84,6 +84,18 @@ idf.py build
 idf.py size
 ```
 
+Windows 不要求也不推荐依赖当前 PowerShell 会话是否激活过 ESP-IDF。仓库根目录的
+`scripts/build-firmware.ps1` 会校验 `third_party/sources.lock.yaml` 中的 ESP-IDF revision，固定已安装的
+Python/CMake/Ninja/Xtensa 工具，并设置 `PYTHONUTF8=1`，避免 ESP-SR 模型脚本在中文 Windows 默认 GBK 下失败：
+
+```powershell
+pwsh -File .\scripts\build-firmware.ps1 -Clean
+```
+
+默认 build/config 均在 ignored 的 `firmware/apps/voice_terminal/build-local`；部署配置必须通过
+`-Sdkconfig` 和独立 `-BuildDir` 显式传入。脚本不调用 `export.ps1`，因此缺少其他芯片的工具不会阻塞 ESP32-S3
+构建。其他安装位置通过 `RVA_IDF_PATH`、`RVA_IDF_TOOLS_PATH` 指定。
+
 Wi-Fi、Director URL 和 bootstrap token 使用 local Kconfig/build input，不进入 tracked defaults。配置改变后重新
 configure/build，不能复用不匹配的 `sdkconfig`。烧录需要明确目标端口；记录 source identity、artifact digest、
 board、IDF、命令和观察范围。

@@ -29,15 +29,9 @@ try {
         if ($LASTEXITCODE -ne 0) { throw 'Desktop reference tests failed.' }
     }
     if ($BuildFirmware) {
-        Push-Location (Join-Path $Root 'firmware/apps/voice_terminal')
-        try {
-            idf.py -B build-verify build
-            if ($LASTEXITCODE -ne 0) { throw 'Native firmware build failed.' }
-            idf.py -B build-verify size
-            if ($LASTEXITCODE -ne 0) { throw 'Native firmware size check failed.' }
-        } finally {
-            Pop-Location
-        }
+        & (Join-Path $Root 'scripts/build-firmware.ps1') `
+            -BuildDir 'firmware/apps/voice_terminal/build-verify'
+        if ($LASTEXITCODE -ne 0) { throw 'Native firmware build/size check failed.' }
     }
 } finally {
     Pop-Location

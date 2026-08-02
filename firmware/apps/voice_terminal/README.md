@@ -42,10 +42,30 @@ WakeNet 不运行，打断裁决仍由服务端负责；MIC 再次点击发送�
 
 要求 ESP-IDF 5.5.2（revision `30aaf64524299d3bde422ca9a2848090d1bc5d0f`）：
 
+Windows 推荐从仓库根目录使用确定性入口；它会校验锁定的 IDF checkout，固定已安装的 Python/CMake/Ninja/
+Xtensa 工具，并自动设置 ESP-SR 模型打包所需的 UTF-8 模式：
+
 ```powershell
-# ESP-SR 2.3.1 的模型打包脚本按 Python 默认编码读取 sdkconfig；
-# Windows 上只要 local 配置含非 ASCII 文本，就必须启用 UTF-8 模式。
-$env:PYTHONUTF8 = "1"
+pwsh -File .\scripts\build-firmware.ps1 -Clean
+```
+
+默认生成公共构建，配置和缓存位于 ignored 的
+`firmware/apps/voice_terminal/build-local`。如需使用本地 ignored 的部署配置，必须显式传入同一工程下的
+`sdkconfig` 文件和独立 build 目录：
+
+```powershell
+pwsh -File .\scripts\build-firmware.ps1 `
+  -BuildDir firmware/apps/voice_terminal/build-provisioned-local `
+  -Sdkconfig firmware/apps/voice_terminal/sdkconfig.provisioned-local
+```
+
+不要先运行系统安装的 `idf.py`，也不要依赖 `export.ps1`：后者会检查所有芯片工具，缺少与 ESP32-S3 无关的
+`riscv32-esp-elf` 时会整体失败。脚本通过 `RVA_IDF_PATH` 和 `RVA_IDF_TOOLS_PATH` 支持在其他机器上指定
+同版本的外部安装；缺失工具会在构建开始前明确报错。
+
+```powershell
+# Linux/WSL 或已手动准备好同一工具链时，也可直接运行 idf.py；Windows
+# 的可复现构建应优先使用上面的脚本。
 idf.py set-target esp32s3
 idf.py build
 idf.py size
