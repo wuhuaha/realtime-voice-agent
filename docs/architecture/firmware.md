@@ -63,8 +63,8 @@ JSON、不执行重连或无界日志。
 
 ## 5. Session 与 transport
 
-1. Wi-Fi 连接后向 Director bootstrap，声明 `rva-control-v2` 和支持的 profiles。
-2. 使用短期 grant 连接 `/v2/voice`，发送 `session.open`。
+1. Wi-Fi 连接后向 Director bootstrap，声明 `rva/1` 和支持的 profiles。
+2. 使用短期 grant 连接 `/rva/v1/voice`，发送 `session.open`。
 3. `session.opened` commit 唯一 profile、session/media identity 和 limits。
 4. WSS 或 UDP media owner 驱动同一 audio/Agent session；不做 mid-session switch。
 5. Endpoint VAD/wake onset 只上报音频，不裁决打断、不清空播放队列。只有收到服务端 `playback.stop` 或用户通过

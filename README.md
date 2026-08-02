@@ -1,10 +1,10 @@
 # realtime-voice-agent
 
 面向嵌入式设备、浏览器和移动端的实时语音 Agent 端云工程。首个 endpoint 是立创实战派 ESP32-S3；
-设备通过项目定义的 `rva-control-v2` 与 `wss-opus-v3` / `udp-opus-gcm-v2` 接入 roomless LiveKit
+设备通过项目定义的 `rva/1` 与 `wss-opus/1` / `udp-opus-gcm/1` 接入 roomless LiveKit
 `AgentSession`。服务端由 Session Director、可水平扩展的 Realtime Worker 和 provider adapters 组成。
 
-默认产品路径是 native ESP-IDF endpoint、`/v2/voice` 和 RVA wire。
+默认产品路径是 native ESP-IDF endpoint、`/rva/v1/voice` 和 RVA wire。
 
 ## 当前能力
 

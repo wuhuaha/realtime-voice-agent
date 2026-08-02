@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from ..errors import ProtocolError
 
 MAGIC = b"VA"
-WIRE_VERSION = 2
+WIRE_VERSION = 1
 HEADER_BYTES = 32
 MAX_PAYLOAD_BYTES = 1200
 MAX_WSS_FRAME_BYTES = HEADER_BYTES + MAX_PAYLOAD_BYTES

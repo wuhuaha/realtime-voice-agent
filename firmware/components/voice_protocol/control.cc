@@ -254,20 +254,20 @@ ControlError ParseOpened(const cJSON* root, ServerMessage* message) {
         !GetString(root, "media_id", 16, false, &media_id) || !ParseMediaId(media_id, &opened.media_id) ||
         !GetU32(root, "media_epoch", false, &opened.media_epoch) ||
         !GetString(root, "selected_media_profile", 32, false, &profile) ||
-        !IsOneOf(profile, {"wss-opus-v3", "udp-opus-gcm-v2"}) ||
+        !IsOneOf(profile, {"wss-opus/1", "udp-opus-gcm/1"}) ||
         !IsAudioProfile(cJSON_GetObjectItemCaseSensitive(root, "audio")) ||
         !GetU32(root, "heartbeat_interval_ms", false, &opened.heartbeat_interval_ms) ||
         opened.heartbeat_interval_ms < 5000 || opened.heartbeat_interval_ms > 60000 ||
         !GetU32(root, "idle_timeout_ms", false, &opened.idle_timeout_ms) || opened.idle_timeout_ms < 15000 ||
         opened.idle_timeout_ms > 180000 || !GetU32(root, "max_control_message_bytes", false, &max_control) ||
         max_control != kMaxControlBytes) {
-        return profile.empty() || IsOneOf(profile, {"wss-opus-v3", "udp-opus-gcm-v2"})
+        return profile.empty() || IsOneOf(profile, {"wss-opus/1", "udp-opus-gcm/1"})
                    ? ControlError::kMissingOrInvalidField
                    : ControlError::kUnsupportedProfile;
     }
     opened.selected_media_profile = profile;
     const cJSON* udp_grant = cJSON_GetObjectItemCaseSensitive(root, "udp_grant");
-    if (profile == "udp-opus-gcm-v2") {
+    if (profile == "udp-opus-gcm/1") {
         UdpGrant parsed_grant;
         if (!ParseUdpGrant(udp_grant, &parsed_grant)) return ControlError::kMissingOrInvalidField;
         opened.udp_grant = std::move(parsed_grant);
@@ -490,7 +490,7 @@ ControlError EncodeSessionOpen(const SessionOpen& message, std::string* json) {
     }
     Json root(cJSON_CreateObject());
     if (root == nullptr || !AddString(root.get(), "type", "session.open") ||
-        cJSON_AddNumberToObject(root.get(), "protocol_version", 2) == nullptr ||
+        cJSON_AddNumberToObject(root.get(), "protocol_version", 1) == nullptr ||
         !AddString(root.get(), "request_id", message.request_id) ||
         !AddString(root.get(), "device_id", message.device_id)) {
         return ControlError::kMissingOrInvalidField;
@@ -499,7 +499,7 @@ ControlError EncodeSessionOpen(const SessionOpen& message, std::string* json) {
     if (profiles == nullptr) return ControlError::kMissingOrInvalidField;
     for (size_t index = 0; index < message.supported_media_profiles.size(); ++index) {
         const std::string& profile = message.supported_media_profiles[index];
-        if (!IsOneOf(profile, {"wss-opus-v3", "udp-opus-gcm-v2"}) ||
+        if (!IsOneOf(profile, {"wss-opus/1", "udp-opus-gcm/1"}) ||
             std::find(message.supported_media_profiles.begin(),
                       message.supported_media_profiles.begin() + index, profile) !=
                 message.supported_media_profiles.begin() + index ||

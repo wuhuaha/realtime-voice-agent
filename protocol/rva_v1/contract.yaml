@@ -1,9 +1,9 @@
 schema_version: 1
 protocol:
-  id: rva-control-v2
-  version: 2
+  id: rva/1
+  version: 1
   transport: websocket
-  path: /v2/voice
+  path: /rva/v1/voice
   schema: messages.schema.json
   max_control_message_bytes: 32768
   heartbeat_interval_ms:
@@ -193,7 +193,7 @@ state_rules:
     rule: Every media packet must match media_id and media_epoch returned by session.opened.
     violation: stale_media_identity
   - id: media_wire_version_match
-    rule: v2 media profiles accept shared header wire_version 2 and reject every other value.
+    rule: v1 media profiles accept shared header wire_version 1 and reject every other value.
     violation: unsupported_media_version
   - id: uplink_generation_zero
     rule: Every WSS and UDP uplink packet carries generation zero, including AUDIO and liveness packets.
@@ -226,11 +226,11 @@ audio:
 media_header:
   byte_order: network
   bytes: 32
-  wire_version: 2
+  wire_version: 1
   authenticated_as_aad_for_udp: true
   fields:
     - {name: magic, offset: 0, bytes: 2, type: fixed, value_hex: "5641"}
-    - {name: wire_version, offset: 2, bytes: 1, type: uint8, value: 2}
+    - {name: wire_version, offset: 2, bytes: 1, type: uint8, value: 1}
     - {name: flags, offset: 3, bytes: 1, type: uint8}
     - {name: media_id, offset: 4, bytes: 8, type: opaque}
     - {name: media_epoch, offset: 12, bytes: 4, type: uint32}
@@ -245,9 +245,9 @@ media_header:
     keepalive: 8
 
 media_profiles:
-  - id: wss-opus-v3
+  - id: wss-opus/1
     carrier: websocket-binary
-    control: rva-control-v2
+    control: rva/1
     media_header: shared
     encrypted: false
     authenticated: websocket_tls
@@ -255,12 +255,12 @@ media_profiles:
     downlink_audio_generation: active_response_generation
     max_payload_bytes: 1200
     max_frame_bytes: 1232
-  - id: udp-opus-gcm-v2
+  - id: udp-opus-gcm/1
     carrier: udp
-    control: rva-control-v2
+    control: rva/1
     media_header: shared
-    canonical_positive_fixture: ../udp_opus_gcm_v2/fixtures/positive.json
-    canonical_negative_fixture: ../udp_opus_gcm_v2/fixtures/negative.json
+    canonical_positive_fixture: ../udp_opus_gcm_v1/fixtures/positive.json
+    canonical_negative_fixture: ../udp_opus_gcm_v1/fixtures/negative.json
     cipher: AES-128-GCM
     directional_keys: true
     nonce: directional_salt_8_bytes_plus_sequence_uint32

@@ -125,7 +125,7 @@ ConfigResult DeviceConfig::ParseEndpoint(const std::string& url, EndpointSnapsho
     }
     const std::string_view path = std::string_view(url).substr(authority_end);
     const bool websocket = scheme == "ws" || scheme == "wss";
-    if ((websocket && path != "/v2/voice") ||
+    if ((websocket && path != "/rva/v1/voice") ||
         (!websocket && path != "/v1/session/bootstrap")) {
         return ConfigResult::kInvalidArgument;
     }

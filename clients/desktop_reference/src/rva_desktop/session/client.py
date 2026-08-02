@@ -91,7 +91,7 @@ class DesktopSession:
                 raise ProtocolError("session_epoch_mismatch")
             if opened.selected_profile not in grant.allowed_profiles:
                 raise ProtocolError("unsupported_selection")
-            if opened.selected_profile is MediaProfile.UDP_OPUS_GCM_V2:
+            if opened.selected_profile is MediaProfile.UDP_OPUS_GCM_V1:
                 assert opened.udp_grant is not None
                 udp = self._udp_factory()
                 await udp.open(opened.udp_grant, media_id=opened.media_id, media_epoch=opened.media_epoch)
@@ -141,11 +141,11 @@ class DesktopSession:
 
     async def send_opus(self, payload: bytes, *, samples: int = 960) -> None:
         if samples != 960:
-            raise ValueError("RVA v2 requires one 60 ms / 960 sample Opus packet")
+            raise ValueError("RVA Protocol 1.0 requires one 60 ms / 960 sample Opus packet")
         state = self.state
         if state.closed:
             raise SessionClosed()
-        if state.opened.selected_profile is MediaProfile.UDP_OPUS_GCM_V2:
+        if state.opened.selected_profile is MediaProfile.UDP_OPUS_GCM_V1:
             assert self._udp is not None
             await self._udp.send_audio(payload, timestamp=self._uplink_timestamp)
         else:
@@ -166,7 +166,7 @@ class DesktopSession:
         state = self.state
         if state.closed:
             raise SessionClosed()
-        if state.opened.selected_profile is MediaProfile.UDP_OPUS_GCM_V2:
+        if state.opened.selected_profile is MediaProfile.UDP_OPUS_GCM_V1:
             assert self._udp is not None
             await self._udp.send_keepalive(timestamp=self._uplink_timestamp)
 
@@ -176,7 +176,7 @@ class DesktopSession:
             raise SessionClosed()
         if self._event_backlog:
             return self._event_backlog.popleft()
-        if state.opened.selected_profile is MediaProfile.WSS_OPUS_V3:
+        if state.opened.selected_profile is MediaProfile.WSS_OPUS_V1:
             while True:
                 event = self._from_wss(await self._wss_required().receive())
                 if event is not None:
@@ -277,7 +277,7 @@ class DesktopSession:
 
     def _from_wss(self, wire: str | bytes) -> SessionEvent | None:
         if isinstance(wire, bytes):
-            if self.state.opened.selected_profile is not MediaProfile.WSS_OPUS_V3:
+            if self.state.opened.selected_profile is not MediaProfile.WSS_OPUS_V1:
                 raise ProtocolError("transport_mismatch")
             frame = MediaFrame.decode_plain(wire)
             admitted = self.state.validate_media_admission(frame)

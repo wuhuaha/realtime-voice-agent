@@ -1,32 +1,32 @@
 schema_version: 2
 control_protocols:
-  - id: rva-control-v2
+  - id: rva/1
     transport: websocket
-    path: /v2/voice
-    version: "2"
-    contract: rva_control_v2/contract.yaml
-    schema: rva_control_v2/messages.schema.json
+    path: /rva/v1/voice
+    version: "1"
+    contract: rva_v1/contract.yaml
+    schema: rva_v1/messages.schema.json
     status: current
 media_profiles:
-  - id: wss-opus-v3
-    controls: [rva-control-v2]
+  - id: wss-opus/1
+    controls: [rva/1]
     carrier: websocket-binary
     codec: opus
     sample_rate_hz: 16000
     channels: 1
     frame_duration_ms: 60
-    media_wire_version: 2
+    media_wire_version: 1
     uplink_generation: 0
     status: current-default
-    wire: rva_control_v2/contract.yaml
-  - id: udp-opus-gcm-v2
-    controls: [rva-control-v2]
+    wire: rva_v1/contract.yaml
+  - id: udp-opus-gcm/1
+    controls: [rva/1]
     carrier: udp
     codec: opus
     sample_rate_hz: 16000
     channels: 1
     frame_duration_ms: 60
-    media_wire_version: 2
+    media_wire_version: 1
     uplink_generation: 0
     status: current-selectable
-    wire: udp_opus_gcm_v2/README.md
+    wire: udp_opus_gcm_v1/README.md

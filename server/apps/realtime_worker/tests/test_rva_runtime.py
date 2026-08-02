@@ -41,11 +41,11 @@ def session_open() -> str:
     return json.dumps(
         {
             "type": "session.open",
-            "protocol_version": 2,
+            "protocol_version": 1,
             "request_id": "open-001",
             "device_id": "device-001",
-            "supported_media_profiles": ["wss-opus-v3"],
-            "preferred_media_profile": "wss-opus-v3",
+            "supported_media_profiles": ["wss-opus/1"],
+            "preferred_media_profile": "wss-opus/1",
             "audio": {"codec": "opus", "sample_rate_hz": 16_000, "channels": 1, "frame_duration_ms": 60},
             "capabilities": {"aec": True, "vad": True},
         }
@@ -481,7 +481,7 @@ async def test_three_uplink_packets_produce_text_and_generation_framed_audio() -
     assert end["final_media_sequence"] == decoded_media[-1].sequence
     assert runner.response_gate == [True]
     assert runner.pushes == 9
-    # Physical playout is endpoint-owned in rva-control-v2 and is only
+    # Physical playout is endpoint-owned in rva/1 and is only
     # acknowledged after playback.started/playback.ended arrive from the device.
     assert runner.playback == []
     assert runner.close_calls == 1

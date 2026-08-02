@@ -79,7 +79,7 @@ async def test_expiry_reports_planned_grant_expiration() -> None:
 
 
 @pytest.mark.asyncio
-async def test_probe_ack_uses_zero_generation_required_by_v2_wire(caplog: pytest.LogCaptureFixture) -> None:
+async def test_probe_ack_uses_zero_generation_required_by_wire(caplog: pytest.LogCaptureFixture) -> None:
     caplog.set_level(logging.INFO, logger="realtime_worker.transport.udp_gateway")
     gateway = FakeGateway()
     grant = UdpGrant(

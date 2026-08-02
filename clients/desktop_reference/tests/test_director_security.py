@@ -54,8 +54,8 @@ def _config(**updates: object) -> ClientConfig:
         "director_url": "https://director.test",
         "bootstrap_token": "bootstrap-secret",
         "device_id": "desktop-1",
-        "supported_profiles": (MediaProfile.WSS_OPUS_V3,),
-        "preferred_profile": MediaProfile.WSS_OPUS_V3,
+        "supported_profiles": (MediaProfile.WSS_OPUS_V1,),
+        "preferred_profile": MediaProfile.WSS_OPUS_V1,
     }
     values.update(updates)
     return ClientConfig(**values)  # type: ignore[arg-type]
@@ -68,8 +68,8 @@ def _bootstrap(worker_url: str) -> dict[str, object]:
         "connect_grant": "connect-secret-value",
         "session_epoch": "epoch-1",
         "fencing_token": 1,
-        "allowed_profiles": ["wss-opus-v3"],
-        "control_protocol": "rva-control-v2",
+        "allowed_profiles": ["wss-opus/1"],
+        "control_protocol": "rva/1",
         "expires_at": 100.0,
     }
 
@@ -89,7 +89,7 @@ def test_secure_director_rejects_plain_worker_downgrade() -> None:
     async def scenario() -> None:
         client = DirectorClient(
             _config(),
-            client=_HttpClient(_Response(200, _bootstrap("ws://worker.test/v2/voice"))),
+            client=_HttpClient(_Response(200, _bootstrap("ws://worker.test/rva/v1/voice"))),
             wall_clock=lambda: 0.0,
         )
         with pytest.raises(ProtocolError, match="insecure_worker_wss_url"):
@@ -106,7 +106,7 @@ def test_explicit_loopback_policy_accepts_only_loopback_worker() -> None:
         )
         accepted = DirectorClient(
             config,
-            client=_HttpClient(_Response(200, _bootstrap("ws://127.0.0.1:8081/v2/voice"))),
+            client=_HttpClient(_Response(200, _bootstrap("ws://127.0.0.1:8081/rva/v1/voice"))),
             wall_clock=lambda: 0.0,
         )
         grant = await accepted.bootstrap()
@@ -114,7 +114,7 @@ def test_explicit_loopback_policy_accepts_only_loopback_worker() -> None:
 
         rejected = DirectorClient(
             config,
-            client=_HttpClient(_Response(200, _bootstrap("ws://voice.example.test/v2/voice"))),
+            client=_HttpClient(_Response(200, _bootstrap("ws://voice.example.test/rva/v1/voice"))),
             wall_clock=lambda: 0.0,
         )
         with pytest.raises(ProtocolError, match="insecure_worker_wss_url"):
@@ -141,7 +141,7 @@ def test_secret_material_is_absent_from_dataclass_repr() -> None:
     async def scenario() -> None:
         client = DirectorClient(
             _config(),
-            client=_HttpClient(_Response(200, _bootstrap("wss://worker.test/v2/voice"))),
+            client=_HttpClient(_Response(200, _bootstrap("wss://worker.test/rva/v1/voice"))),
             wall_clock=lambda: 0.0,
         )
         grant = await client.bootstrap()
@@ -174,11 +174,11 @@ def test_release_network_failure_is_a_stable_retryable_transport_error() -> None
         client = DirectorClient(_config(), client=_FailingHttpClient(failure))
         grant = BootstrapGrant(
             worker_id="worker-1",
-            worker_wss_url="wss://worker.test/v2/voice",
+            worker_wss_url="wss://worker.test/rva/v1/voice",
             connect_grant="connect-secret-value",
             session_epoch="epoch-1",
             fencing_token=1,
-            allowed_profiles=(MediaProfile.WSS_OPUS_V3,),
+            allowed_profiles=(MediaProfile.WSS_OPUS_V1,),
             expires_at=100.0,
         )
 
@@ -209,7 +209,7 @@ def test_bootstrap_json_failure_is_a_non_retryable_protocol_error() -> None:
 @pytest.mark.parametrize("expires_at", [math.nan, math.inf, -math.inf])
 def test_bootstrap_rejects_non_finite_expiry(expires_at: float) -> None:
     async def scenario() -> None:
-        body = _bootstrap("wss://worker.test/v2/voice")
+        body = _bootstrap("wss://worker.test/rva/v1/voice")
         body["expires_at"] = expires_at
         client = DirectorClient(
             _config(),
@@ -228,8 +228,8 @@ def test_bootstrap_rejects_non_finite_expiry(expires_at: float) -> None:
 
 def test_bootstrap_rejects_non_string_profile_values() -> None:
     async def scenario() -> None:
-        body = _bootstrap("wss://worker.test/v2/voice")
-        body["allowed_profiles"] = [MediaProfile.WSS_OPUS_V3]
+        body = _bootstrap("wss://worker.test/rva/v1/voice")
+        body["allowed_profiles"] = [MediaProfile.WSS_OPUS_V1]
         client = DirectorClient(
             _config(),
             client=_HttpClient(_Response(200, body)),

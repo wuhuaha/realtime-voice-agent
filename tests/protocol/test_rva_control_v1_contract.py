@@ -10,7 +10,7 @@ import yaml
 from jsonschema import Draft202012Validator, FormatChecker
 
 ROOT = Path(__file__).resolve().parents[2]
-PROTOCOL = ROOT / "protocol" / "rva_control_v2"
+PROTOCOL = ROOT / "protocol" / "rva_v1"
 
 
 def load_json(name: str) -> dict[str, Any]:
@@ -22,7 +22,7 @@ def make_validator(schema: dict[str, Any]) -> Draft202012Validator:
     return Draft202012Validator(schema, format_checker=FormatChecker())
 
 
-def test_contract_registry_defines_complete_v2_control_surface() -> None:
+def test_contract_registry_defines_complete_v1_control_surface() -> None:
     contract = yaml.safe_load((PROTOCOL / "contract.yaml").read_text(encoding="utf-8"))
     assert {entry["type"] for entry in contract["messages"]} == {
         "session.open",
@@ -40,10 +40,10 @@ def test_contract_registry_defines_complete_v2_control_surface() -> None:
         "session.close",
     }
     assert contract["protocol"] == {
-        "id": "rva-control-v2",
-        "version": 2,
+        "id": "rva/1",
+        "version": 1,
         "transport": "websocket",
-        "path": "/v2/voice",
+        "path": "/rva/v1/voice",
         "schema": "messages.schema.json",
         "max_control_message_bytes": 32768,
         "heartbeat_interval_ms": {"default": 15000, "minimum": 5000, "maximum": 60000},
@@ -73,36 +73,36 @@ def test_terminal_and_cancel_fields_match_the_frozen_contract() -> None:
     ]
 
 
-def test_media_profiles_share_v2_header_and_zero_uplink_generation() -> None:
+def test_media_profiles_share_v1_header_and_zero_uplink_generation() -> None:
     contract = yaml.safe_load((PROTOCOL / "contract.yaml").read_text(encoding="utf-8"))
     profiles = {profile["id"]: profile for profile in contract["media_profiles"]}
-    assert set(profiles) == {"wss-opus-v3", "udp-opus-gcm-v2"}
-    assert all(profile["control"] == "rva-control-v2" for profile in profiles.values())
+    assert set(profiles) == {"wss-opus/1", "udp-opus-gcm/1"}
+    assert all(profile["control"] == "rva/1" for profile in profiles.values())
     assert all(profile["uplink_generation"] == 0 for profile in profiles.values())
     assert contract["media_header"]["bytes"] == 32
-    assert contract["media_header"]["wire_version"] == 2
+    assert contract["media_header"]["wire_version"] == 1
     fields = {field["name"]: field for field in contract["media_header"]["fields"]}
     assert fields["generation"]["offset"] == 24
-    udp = profiles["udp-opus-gcm-v2"]
+    udp = profiles["udp-opus-gcm/1"]
     assert udp["cipher"] == "AES-128-GCM"
     assert udp["directional_keys"] is True
     assert udp["tag_bytes"] == 16
     assert udp["retransmission"] is False
 
 
-def test_udp_v2_canonical_byte_wire_has_zero_uplink_generation() -> None:
+def test_udp_v1_canonical_byte_wire_has_zero_uplink_generation() -> None:
     contract = yaml.safe_load((PROTOCOL / "contract.yaml").read_text(encoding="utf-8"))
     canonical = json.loads(
-        (ROOT / "protocol" / "udp_opus_gcm_v2" / "fixtures" / "positive.json").read_text(
+        (ROOT / "protocol" / "udp_opus_gcm_v1" / "fixtures" / "positive.json").read_text(
             encoding="utf-8"
         )
     )
-    udp = next(profile for profile in contract["media_profiles"] if profile["id"] == "udp-opus-gcm-v2")
+    udp = next(profile for profile in contract["media_profiles"] if profile["id"] == "udp-opus-gcm/1")
     magic = next(field for field in contract["media_header"]["fields"] if field["name"] == "magic")
     for vector in canonical["vectors"]:
         header = bytes.fromhex(vector["header_hex"])
         assert header[:2].hex() == magic["value_hex"]
-        assert header[2] == 2
+        assert header[2] == 1
         if vector["direction"] == "uplink":
             assert vector["fields"]["generation"] == 0
     assert canonical["header_bytes"] == contract["media_header"]["bytes"]
@@ -183,7 +183,7 @@ def test_opened_profile_requires_exactly_the_matching_transport_material() -> No
         for vector in positive
         if vector["message"]["type"] == "session.opened"
     }
-    assert "udp_grant" not in opened["opened-wss-v3"]
-    assert "udp_grant" in opened["opened-udp-v2"]
-    assert validator.is_valid(opened["opened-wss-v3"])
-    assert validator.is_valid(opened["opened-udp-v2"])
+    assert "udp_grant" not in opened["opened-wss-v1"]
+    assert "udp_grant" in opened["opened-udp-v1"]
+    assert validator.is_valid(opened["opened-wss-v1"])
+    assert validator.is_valid(opened["opened-udp-v1"])

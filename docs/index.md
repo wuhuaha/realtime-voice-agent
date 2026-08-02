@@ -11,15 +11,15 @@
 - [Server 架构](architecture/server.md)
 - [Firmware 架构](architecture/firmware.md)
 - [Native ESP-IDF 与 RVA 决策](decisions/0005-native-esp-idf-endpoint-and-rva-protocol.md)
-- [服务端打断裁决与 RVA v2 决策](decisions/0006-server-authoritative-interruption-and-rva-v2.md)
+- [服务端打断裁决与 RVA Protocol 1.0 决策](decisions/0006-server-authoritative-interruption-and-rva-v1.md)
 - [Python Desktop Reference Client 决策](decisions/0007-python-desktop-reference-client.md)
 
 ## 协议与开发
 
 - [协议总览](protocol/overview.md)
-- [RVA Control v2](protocol/rva-control-v2.md)
-- [WSS Opus v3](protocol/wss-opus-v3.md)
-- [UDP Opus GCM v2](protocol/udp-opus-gcm-v2.md)
+- [RVA Protocol 1.0](protocol/rva-protocol-v1.md)
+- [WSS Opus 1](protocol/wss-opus-v1.md)
+- [UDP Opus GCM 1](protocol/udp-opus-gcm-v1.md)
 - [生命周期与错误](protocol/lifecycle-errors.md)
 - [本地开发](operations/local-development.md)
 - [部署](operations/deployment.md)

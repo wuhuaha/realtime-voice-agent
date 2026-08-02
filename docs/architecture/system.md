@@ -31,8 +31,8 @@ flowchart LR
 
 ### Realtime Worker
 
-- 终止 `/v2/voice` RVA WSS control；active runtime 只注册 canonical v2 route，其他 route fail closed。
-- commit `wss-opus-v3` 或 `udp-opus-gcm-v2`，并持有对应媒体 transport。
+- 终止 `/rva/v1/voice` RVA WSS control；active runtime 只注册 canonical v1 route，其他 route fail closed。
+- commit `wss-opus/1` 或 `udp-opus-gcm/1`，并持有对应媒体 transport。
 - 一个 active session 内唯一持有 AgentSession、codec、provider stream、playback generation 和 teardown。
 - 通过 `InterruptionCoordinator` 独占语音打断裁决；Endpoint VAD 只产生观测事实，不改变播放状态。
 - 执行本地 `max_sessions` admission，默认 `5`，可按部署配置覆盖。
@@ -85,7 +85,7 @@ sequenceDiagram
     D->>S: read eligible workers and route lease
     D->>S: fenced lease + single-use grant metadata
     D-->>E: worker_wss_url + connect_grant + epoch
-    E->>W: WSS /v2/voice + grant
+    E->>W: WSS /rva/v1/voice + grant
     W->>D: consume grant through internal API
     D->>S: atomically consume jti + validate route/fence
     W-->>E: session.opened + committed profile
@@ -129,14 +129,14 @@ strict explicit policy 裁决打断。裁决成立后先发布 generation fence�
 
 ## 7. 当前实现与目标差距
 
-Server 实现 Director、memory/Redis store、单一 RVA v2 binding、shared admission/lease、Realtime Worker、roomless
+Server 实现 Director、memory/Redis store、单一 RVA Protocol 1.0 binding、shared admission/lease、Realtime Worker、roomless
 Agent runtime 和 providers。当前验证等级与未运行项只在 Release readiness 记录。
 
 Native ESP-IDF endpoint 已完成 board/audio/config/WSS/UI/UDP 组件化实现，composition 的完整性由 build、
 host test 与 HIL 分层验证。当前实现、构建和发布差距只在
 [Release readiness](../quality/release-readiness.md) 维护，架构文档不记录临时环境或 artifact 编年史。
 
-Python Desktop Reference Client 已提供与 native endpoint 相同的 RVA v2 session/transport 语义。它用于把协议与
+Python Desktop Reference Client 已提供与 native endpoint 相同的 RVA Protocol 1.0 session/transport 语义。它用于把协议与
 服务端问题从板级资源、声学环境和 UI 中隔离出来；host 通过不能替代 ESP32 HIL 或 acoustic verification。
 
 ## 8. 演进边界

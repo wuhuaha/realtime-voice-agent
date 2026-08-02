@@ -111,7 +111,7 @@ def test_two_worker_processes_spill_over_and_drain_with_redis(tmp_path: Path) ->
                         "max_sessions": 5,
                         "draining": False,
                         "healthy": True,
-                        "profiles": ["wss-opus-v3"],
+                        "profiles": ["wss-opus/1"],
                         "bindings": workers["worker-local-1"]["bindings"],
                         "released_leases": [
                             {

@@ -1,4 +1,4 @@
-"""Strict rva-control-v2 binding with server-owned response state."""
+"""Strict rva/1 binding with server-owned response state."""
 
 from __future__ import annotations
 
@@ -51,7 +51,7 @@ class ControlEffect:
 
 
 class RvaWssBinding:
-    """One immutable rva-control-v2 session and its response coordinator."""
+    """One immutable rva/1 session and its response coordinator."""
 
     def __init__(
         self,

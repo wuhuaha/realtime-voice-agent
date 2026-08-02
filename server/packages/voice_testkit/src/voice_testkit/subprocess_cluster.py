@@ -230,7 +230,7 @@ def running_process_cluster(
                 "VOICE_UDP_ADVERTISE_HOST": "127.0.0.1",
                 "VOICE_UDP_ADVERTISE_PORT": str(worker.udp_port),
                 "VOICE_RVA_UDP_ENABLED": str(udp_enabled).lower(),
-                "VOICE_RVA_PUBLIC_WS_URL": f"ws://127.0.0.1:{worker.http_port}/v2/voice",
+                "VOICE_RVA_PUBLIC_WS_URL": f"ws://127.0.0.1:{worker.http_port}/rva/v1/voice",
                 "VOICE_DIRECTOR_URL": cluster.director_url,
             }
             process_and_log = _start_process(

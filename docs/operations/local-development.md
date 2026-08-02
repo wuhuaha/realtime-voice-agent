@@ -66,7 +66,7 @@ coordination heartbeat 和启用的 provider/network policy。不得把 HTTP 200
 
 ## 4. Desktop 交互体验
 
-桌面端与 ESP32 使用同一 `rva-control-v2` 和 media profiles。真实麦克风/扬声器必须显式安装 interactive extras，
+桌面端与 ESP32 使用同一 `rva/1` 和 media profiles。真实麦克风/扬声器必须显式安装 interactive extras，
 并从 ignored `.env` 或进程环境提供 Director URL、bootstrap token 和唯一 device ID。CLI 不接受或输出 provider key；
 provider 仍只由 Worker 配置。首轮建议强制 WSS，确认 host 音频闭环后再显式选择 UDP。
 

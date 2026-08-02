@@ -24,14 +24,14 @@ ROOT = Path(__file__).resolve().parents[3]
 
 
 def test_canonical_control_schema_and_fixtures_are_consumed_without_copying() -> None:
-    schema = json.loads((ROOT / "protocol/rva_control_v2/messages.schema.json").read_text(encoding="utf-8"))
+    schema = json.loads((ROOT / "protocol/rva_v1/messages.schema.json").read_text(encoding="utf-8"))
     fixtures = json.loads(
-        (ROOT / "protocol/rva_control_v2/fixtures/positive.json").read_text(encoding="utf-8")
+        (ROOT / "protocol/rva_v1/fixtures/positive.json").read_text(encoding="utf-8")
     )["vectors"]
-    assert schema["$id"].endswith("/rva-control-v2/messages.schema.json")
-    assert {item["id"] for item in fixtures} >= {"open-with-v2-profiles", "opened-wss-v3", "opened-udp-v2"}
+    assert schema["$id"].endswith("/rva/1/messages.schema.json")
+    assert {item["id"] for item in fixtures} >= {"open-with-v1-profiles", "opened-wss-v1", "opened-udp-v1"}
 
-    opened = next(item["message"] for item in fixtures if item["id"] == "opened-udp-v2")
+    opened = next(item["message"] for item in fixtures if item["id"] == "opened-udp-v1")
     parsed = parse_session_opened(opened, request_id="open-002")
     assert parsed.media_id.hex() == "fedcba9876543210"
     assert parsed.udp_grant is not None
@@ -39,13 +39,13 @@ def test_canonical_control_schema_and_fixtures_are_consumed_without_copying() ->
 
 
 def test_all_canonical_control_schema_vectors_remain_authoritative() -> None:
-    schema = json.loads((ROOT / "protocol/rva_control_v2/messages.schema.json").read_text(encoding="utf-8"))
+    schema = json.loads((ROOT / "protocol/rva_v1/messages.schema.json").read_text(encoding="utf-8"))
     validator = Draft202012Validator(schema)
     positive = json.loads(
-        (ROOT / "protocol/rva_control_v2/fixtures/positive.json").read_text(encoding="utf-8")
+        (ROOT / "protocol/rva_v1/fixtures/positive.json").read_text(encoding="utf-8")
     )["vectors"]
     negative = json.loads(
-        (ROOT / "protocol/rva_control_v2/fixtures/negative.json").read_text(encoding="utf-8")
+        (ROOT / "protocol/rva_v1/fixtures/negative.json").read_text(encoding="utf-8")
     )["schema_vectors"]
 
     for vector in positive:
@@ -55,14 +55,14 @@ def test_all_canonical_control_schema_vectors_remain_authoritative() -> None:
 
 
 def test_generated_outbound_control_messages_validate_against_canonical_schema() -> None:
-    schema = json.loads((ROOT / "protocol/rva_control_v2/messages.schema.json").read_text(encoding="utf-8"))
+    schema = json.loads((ROOT / "protocol/rva_v1/messages.schema.json").read_text(encoding="utf-8"))
     validator = Draft202012Validator(schema)
     config = ClientConfig(
         director_url="https://director.test",
         bootstrap_token="validator-bootstrap-token",
         device_id="desktop-1",
-        supported_profiles=(MediaProfile.WSS_OPUS_V3,),
-        preferred_profile=MediaProfile.WSS_OPUS_V3,
+        supported_profiles=(MediaProfile.WSS_OPUS_V1,),
+        preferred_profile=MediaProfile.WSS_OPUS_V1,
     )
     opened = SessionOpened(
         request_id="open-1",
@@ -70,7 +70,7 @@ def test_generated_outbound_control_messages_validate_against_canonical_schema()
         session_epoch="epoch-1",
         media_id=bytes.fromhex("0123456789abcdef"),
         media_epoch=7,
-        selected_profile=MediaProfile.WSS_OPUS_V3,
+        selected_profile=MediaProfile.WSS_OPUS_V1,
         heartbeat_interval_ms=15_000,
         idle_timeout_ms=45_000,
         udp_grant=None,
@@ -106,7 +106,7 @@ def test_generated_outbound_control_messages_validate_against_canonical_schema()
 
 def test_udp_codec_matches_every_canonical_positive_vector() -> None:
     vectors = json.loads(
-        (ROOT / "protocol/udp_opus_gcm_v2/fixtures/positive.json").read_text(encoding="utf-8")
+        (ROOT / "protocol/udp_opus_gcm_v1/fixtures/positive.json").read_text(encoding="utf-8")
     )["vectors"]
     for vector in vectors:
         fields = vector["fields"]
@@ -145,6 +145,6 @@ def test_replay_window_does_not_advance_until_committed() -> None:
 
 def test_media_header_rejects_previous_wire_version() -> None:
     frame = bytearray(MediaFrame(1, bytes(8), 1, 0, 0, 0, b"opus").encode_plain())
-    frame[2] = 1
+    frame[2] = 2
     with pytest.raises(ProtocolError, match="unsupported_media_header"):
         MediaFrame.decode_plain(bytes(frame))

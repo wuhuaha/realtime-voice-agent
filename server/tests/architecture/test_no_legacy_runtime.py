@@ -18,13 +18,10 @@ def test_server_source_excludes_frozen_direct_protocols() -> None:
         "datachannel",
         "direct_session_v1",
         '"/v1/direct"',
-        "xiaozhi-control-v1",
-        "rva-control-v1",
-        "wss-opus-v1",
-        "wss-opus-v2",
-        "udp-opus-gcm-v1",
-        "/v1/voice",
-        "/v1/xiaozhi",
+        "legacy-control/0",
+        "rva/0",
+        "wss-opus/2",
+        "udp-opus-gcm/2",
     )
     violations: list[str] = []
     for root in SOURCE_ROOTS:

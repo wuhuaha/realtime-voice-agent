@@ -310,15 +310,12 @@ class RoomlessAudioOutput(io.AudioOutput):
         self._producer_epoch = 1
         self._sequence = 0
         self._tasks: set[asyncio.Task[None]] = set()
-        self._segment_rejected = False
         self._closed = False
         self._close_task: asyncio.Task[None] | None = None
 
     async def capture_frame(self, frame: rtc.AudioFrame) -> None:
         if self._closed:
             return
-        if self._segment_rejected:
-            raise BufferError("LiveKit output segment was already rejected; waiting for flush")
         await super().capture_frame(frame)
         pcm = bytes(frame.data)
         if len(pcm) in self._callback_sizes or len(self._callback_sizes) < 8:
@@ -326,37 +323,24 @@ class RoomlessAudioOutput(io.AudioOutput):
         else:
             self._callback_size_overflow += 1
         frame_bytes = PCM_SAMPLES * 2
-        complete_chunks = (len(self._pending_pcm) + len(pcm)) // frame_bytes
-        received_frames = len(self._frames) + complete_chunks
-        if received_frames > self._max_segment_frames:
-            self._frames.clear()
-            self._pending_pcm.clear()
-            self._frames_epoch = None
-            self._segment_rejected = True
-            frame_seconds = PCM_SAMPLES / PCM_SAMPLE_RATE
-            raise BufferError(
-                "LiveKit output segment exceeded its bounded frame limit: "
-                f"received_frames={received_frames} limit_frames={self._max_segment_frames} "
-                f"received_seconds={received_frames * frame_seconds:.3f} "
-                f"limit_seconds={self._max_segment_frames * frame_seconds:.3f}"
-            )
         self._pending_pcm.extend(pcm)
-        for _ in range(complete_chunks):
+        while len(self._pending_pcm) >= frame_bytes:
             chunk = bytes(self._pending_pcm[:frame_bytes])
             del self._pending_pcm[:frame_bytes]
             if self._frames_epoch is None:
                 self._frames_epoch = self._producer_epoch
             self._frames.append(PcmFrame(0, self._sequence, self._sequence * PCM_SAMPLES, chunk))
             self._sequence += 1
+            if len(self._frames) == self._max_segment_frames:
+                await self._emit_buffered_segment()
 
     def flush(self) -> None:
         super().flush()
-        if self._closed or self._segment_rejected:
+        if self._closed:
             self._frames.clear()
             self._pending_pcm.clear()
             self._reset_callback_diagnostics()
             self._frames_epoch = None
-            self._segment_rejected = False
             return
         pending_bytes = len(self._pending_pcm)
         if self._callback_sizes or self._callback_size_overflow:
@@ -368,19 +352,6 @@ class RoomlessAudioOutput(io.AudioOutput):
             )
         self._reset_callback_diagnostics()
         if self._pending_pcm:
-            received_frames = len(self._frames) + 1
-            if received_frames > self._max_segment_frames:
-                self._frames.clear()
-                self._pending_pcm.clear()
-                self._frames_epoch = None
-                self._segment_rejected = False
-                frame_seconds = PCM_SAMPLES / PCM_SAMPLE_RATE
-                raise BufferError(
-                    "LiveKit output segment exceeded its bounded frame limit: "
-                    f"received_frames={received_frames} limit_frames={self._max_segment_frames} "
-                    f"received_seconds={received_frames * frame_seconds:.3f} "
-                    f"limit_seconds={self._max_segment_frames * frame_seconds:.3f}"
-                )
             if self._frames_epoch is None:
                 self._frames_epoch = self._producer_epoch
             final_pcm = bytes(self._pending_pcm).ljust(PCM_SAMPLES * 2, b"\x00")
@@ -398,6 +369,14 @@ class RoomlessAudioOutput(io.AudioOutput):
         )
         self._tasks.add(task)
         task.add_done_callback(self._on_segment_task_done)
+
+    async def _emit_buffered_segment(self) -> None:
+        frames, self._frames = self._frames, []
+        producer_epoch, self._frames_epoch = self._frames_epoch, None
+        if not frames:
+            return
+        assert producer_epoch is not None
+        await self._emit_segment(AgentOutputSegment(producer_epoch, frames))
 
     async def wait_for_playout(self) -> io.PlaybackFinishedEvent:
         producer_epoch = self._producer_epoch
@@ -425,7 +404,6 @@ class RoomlessAudioOutput(io.AudioOutput):
         self._pending_pcm.clear()
         self._reset_callback_diagnostics()
         self._frames_epoch = None
-        self._segment_rejected = False
         return self._producer_epoch
 
     def _on_segment_task_done(self, task: asyncio.Task[None]) -> None:
@@ -465,7 +443,6 @@ class RoomlessAudioOutput(io.AudioOutput):
         self._pending_pcm.clear()
         self._reset_callback_diagnostics()
         self._frames_epoch = None
-        self._segment_rejected = False
         if self._tasks:
             tasks = tuple(self._tasks)
             for task in tasks:

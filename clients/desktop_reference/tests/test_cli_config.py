@@ -14,8 +14,8 @@ def _config(**updates: object) -> ClientConfig:
         "director_url": "https://director.test",
         "bootstrap_token": "bootstrap-secret",
         "device_id": "desktop-1",
-        "supported_profiles": (MediaProfile.WSS_OPUS_V3,),
-        "preferred_profile": MediaProfile.WSS_OPUS_V3,
+        "supported_profiles": (MediaProfile.WSS_OPUS_V1,),
+        "preferred_profile": MediaProfile.WSS_OPUS_V1,
     }
     values.update(updates)
     return ClientConfig(**values)  # type: ignore[arg-type]
@@ -36,8 +36,8 @@ def test_cli_defaults_to_explicit_wss_profile(monkeypatch: pytest.MonkeyPatch) -
 
     config = client_config(args)
 
-    assert config.preferred_profile is MediaProfile.WSS_OPUS_V3
-    assert config.supported_profiles == (MediaProfile.WSS_OPUS_V3,)
+    assert config.preferred_profile is MediaProfile.WSS_OPUS_V1
+    assert config.supported_profiles == (MediaProfile.WSS_OPUS_V1,)
     assert "top-secret" not in repr(config)
 
 
@@ -49,13 +49,13 @@ def test_cli_can_explicitly_select_udp_profile(monkeypatch: pytest.MonkeyPatch) 
             "--director-url",
             "https://director.test",
             "--profile",
-            "udp-opus-gcm-v2",
+            "udp-opus-gcm/1",
         ]
     )
 
     config = client_config(args)
 
-    assert config.supported_profiles == (MediaProfile.UDP_OPUS_GCM_V2,)
+    assert config.supported_profiles == (MediaProfile.UDP_OPUS_GCM_V1,)
 
 
 def test_cli_rejects_missing_credentials(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -65,7 +65,7 @@ def test_cli_rejects_missing_credentials(monkeypatch: pytest.MonkeyPatch) -> Non
         token_file=None,
         device_id="desktop-1",
         tenant_id="default",
-        profile="wss-opus-v3",
+        profile="wss-opus/1",
     )
 
     with pytest.raises(ValueError, match="director-url"):
@@ -203,8 +203,8 @@ def test_client_config_rejects_non_finite_durations(field: str, value: float) ->
 @pytest.mark.parametrize(
     "updates",
     [
-        {"supported_profiles": ("wss-opus-v3",)},
-        {"preferred_profile": "wss-opus-v3"},
+        {"supported_profiles": ("wss-opus/1",)},
+        {"preferred_profile": "wss-opus/1"},
         {"capabilities": {"display": True}},
     ],
 )

@@ -67,9 +67,9 @@ heartbeat 和进程日志三方核对唯一 incarnation。不要只修改 unit �
 
 ## 5. `session.open` / 控制失败
 
-- Client 首条且唯一的 open 消息是 `session.open(protocol_version=2)`；不得发送非 canonical v2 消息。
+- Client 首条且唯一的 open 消息是 `session.open(protocol_version=1)`；不得发送未注册消息。
 - `audio` 为 Opus/16 kHz/mono/60 ms，DTX on、FEC off。
-- `supported_media_profiles` 只包含 `wss-opus-v3`/`udp-opus-gcm-v2`，且与 grant allowed profiles 有交集；
+- `supported_media_profiles` 只包含 `wss-opus/1`/`udp-opus-gcm/1`，且与 grant allowed profiles 有交集；
   `preferred_media_profile` 必须属于该集合。
 - JSON 无 duplicate/unknown field，frame 未超过 hard limit。
 - 后续消息的 `session_id + session_epoch` 必须匹配 `session.opened` 建立的 identity。
@@ -123,14 +123,14 @@ LLM 失败时没有 TTS 下行是正常因果链，不应误诊为端侧没有�
 
 ## 7. UDP 无音频
 
-- `session.opened` 确实 commit `udp-opus-gcm-v2` 并包含 grant。
+- `session.opened` 确实 commit `udp-opus-gcm/1` 并包含 grant。
 - UDP advertise host/port 从设备网络可达，防火墙/NAT 放行。
 - PROBE 在 timeout 内到达，GCM auth 成功后才绑定 source并返回 PROBE_ACK。
 - `media_id/epoch/direction key/salt/nonce/AAD` 与 fixture 规则一致。
 - Replay、wrong source、queue dropped、lost/reordered/expiry 指标属于哪一类。
 - WSS 是否仍连接；WSS 断开会撤销 UDP。
 - 固件实际 build config 是否允许并选择 UDP。UI 显示、NVS preference 或源码默认值不等于最终编译配置；若
-  `session.opened` 始终为 `wss-opus-v3`，先检查 default profile 的 Kconfig/SDKCONFIG 是否被硬编码为 WSS，再分析
+  `session.opened` 始终为 `wss-opus/1`，先检查 default profile 的 Kconfig/SDKCONFIG 是否被硬编码为 WSS，再分析
   PROBE 或 GCM。修复后必须以新 artifact identity 重跑，不能沿用旧固件的 UDP 结论。
 
 若设备 `sendto` 连续成功但 PROBE timeout，必须在 Worker advertise endpoint 对应主机抓取目标 UDP 端口：
@@ -212,7 +212,7 @@ Wi-Fi、bootstrap 或 feature 配置的不可用固件。配置化 variant 与�
 故障记录至少包含环境、commit、artifact、redacted config shape、复现步骤、first failure、相关 metrics/log window、
 修复前后验证和仍为 `not_run` 的项目。
 
-任何历史 v1 artifact、commit 或 host synthetic 结果都不能作为当前 v2 闭环证据。若 ESP32 无 ASR，应使用同一
-Product commit 的 reference client 与设备解码 PCM 做分层对照，并分别记录 bootstrap、`session.opened`、media
-admission、provider 和 playout 证据；未执行的层级保持 `not_run`。Launcher stop 只终止 PID、启动时间与 executable
-identity 都匹配的记录进程；不匹配条目会保留并告警，禁止按复用 PID 误杀其他进程。
+其他 source、artifact、commit 或 host synthetic 结果都不能作为当前闭环证据。若 ESP32 无 ASR，应使用同一
+Product source identity 的 reference client 与设备解码 PCM 做分层对照，并分别记录 bootstrap、`session.opened`、
+media admission、provider 和 playout 证据；未执行的层级保持 `not_run`。Launcher stop 只终止 PID、启动时间与
+executable identity 都匹配的记录进程；不匹配条目会保留并告警，禁止按复用 PID 误杀其他进程。

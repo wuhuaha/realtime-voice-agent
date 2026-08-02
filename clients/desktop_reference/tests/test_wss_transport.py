@@ -34,7 +34,7 @@ def test_wss_transport_sets_bound_identity_headers_and_preserves_frame_types() -
             return connection
 
         transport = WssTransport(connector)
-        await transport.open("wss://worker.test/v2/voice", grant="secret-grant", device_id="desktop-1")
+        await transport.open("wss://worker.test/rva/v1/voice", grant="secret-grant", device_id="desktop-1")
         await transport.send_control("{}")
         await transport.send_media(b"opus")
         connection.inbound.put_nowait("control")
@@ -44,7 +44,7 @@ def test_wss_transport_sets_bound_identity_headers_and_preserves_frame_types() -
         await transport.close(reason="done")
 
         assert captured == {
-            "url": "wss://worker.test/v2/voice",
+            "url": "wss://worker.test/rva/v1/voice",
             "headers": {"Authorization": "Bearer secret-grant", "Device-Id": "desktop-1"},
         }
         assert connection.sent == ["{}", b"opus"]
@@ -72,7 +72,7 @@ def test_wss_close_finishes_when_caller_is_cancelled() -> None:
             return connection
 
         transport = WssTransport(connector)
-        await transport.open("wss://worker.test/v2/voice", grant="secret-grant", device_id="desktop-1")
+        await transport.open("wss://worker.test/rva/v1/voice", grant="secret-grant", device_id="desktop-1")
         closing = asyncio.create_task(transport.close(reason="cancelled-caller"))
         await asyncio.wait_for(connection.close_started.wait(), timeout=1)
         closing.cancel()
@@ -100,7 +100,7 @@ def test_default_websocket_logger_redacts_authorization_grant(monkeypatch, caplo
 
         monkeypatch.setattr("websockets.asyncio.client.connect", fake_connect)
         result = await _connect(
-            "wss://worker.test/v2/voice",
+            "wss://worker.test/rva/v1/voice",
             {"Authorization": "Bearer connect-grant-secret"},
         )
         assert result is connection

@@ -1,15 +1,15 @@
 {
   "schema_vectors": [
     {
-      "id": "reject-v1-open",
+      "id": "reject-unsupported-open-version",
       "reason": "unsupported_version",
       "message": {
         "type": "session.open",
-        "protocol_version": 1,
+        "protocol_version": 2,
         "request_id": "open-001",
         "device_id": "device-001",
-        "supported_media_profiles": ["wss-opus-v3"],
-        "preferred_media_profile": "wss-opus-v3",
+        "supported_media_profiles": ["wss-opus/1"],
+        "preferred_media_profile": "wss-opus/1",
         "audio": {"codec": "opus", "sample_rate_hz": 16000, "channels": 1, "frame_duration_ms": 60},
         "capabilities": {}
       }
@@ -19,11 +19,11 @@
       "reason": "unsupported_profile",
       "message": {
         "type": "session.open",
-        "protocol_version": 2,
+        "protocol_version": 1,
         "request_id": "open-001",
         "device_id": "device-001",
-        "supported_media_profiles": ["wss-opus-v2"],
-        "preferred_media_profile": "wss-opus-v2",
+        "supported_media_profiles": ["wss-opus/0"],
+        "preferred_media_profile": "wss-opus/0",
         "audio": {"codec": "opus", "sample_rate_hz": 16000, "channels": 1, "frame_duration_ms": 60},
         "capabilities": {}
       }
@@ -33,11 +33,11 @@
       "reason": "duplicate_profile",
       "message": {
         "type": "session.open",
-        "protocol_version": 2,
+        "protocol_version": 1,
         "request_id": "open-001",
         "device_id": "device-001",
-        "supported_media_profiles": ["wss-opus-v3", "wss-opus-v3"],
-        "preferred_media_profile": "wss-opus-v3",
+        "supported_media_profiles": ["wss-opus/1", "wss-opus/1"],
+        "preferred_media_profile": "wss-opus/1",
         "audio": {"codec": "opus", "sample_rate_hz": 16000, "channels": 1, "frame_duration_ms": 60},
         "capabilities": {}
       }
@@ -246,7 +246,7 @@
         "session_epoch": "epoch-001",
         "media_id": "0123456789abcdef",
         "media_epoch": 1,
-        "selected_media_profile": "udp-opus-gcm-v2",
+        "selected_media_profile": "udp-opus-gcm/1",
         "audio": {"codec": "opus", "sample_rate_hz": 16000, "channels": 1, "frame_duration_ms": 60},
         "heartbeat_interval_ms": 15000,
         "idle_timeout_ms": 45000,
@@ -263,7 +263,7 @@
         "session_epoch": "epoch-001",
         "media_id": "0123456789abcdef",
         "media_epoch": 1,
-        "selected_media_profile": "wss-opus-v3",
+        "selected_media_profile": "wss-opus/1",
         "audio": {"codec": "opus", "sample_rate_hz": 16000, "channels": 1, "frame_duration_ms": 60},
         "heartbeat_interval_ms": 15000,
         "idle_timeout_ms": 45000,
@@ -331,11 +331,11 @@
     {"id": "reject-second-playback-ended", "rule": "playback_ended_once", "ended": true, "reason": "playback_already_ended"},
     {"id": "reject-completed-cursor-mismatch", "rule": "playback_completed_evidence", "response_final_media_sequence": 41, "received_last_media_sequence": 40, "played_samples": 1920, "reason": "playback_evidence_mismatch"},
     {"id": "reject-zero-samples-cursor", "rule": "zero_samples_no_cursor", "played_samples": 0, "received_last_media_sequence": 0, "reason": "playback_evidence_mismatch"},
-    {"id": "reject-unsupported-preference", "rule": "preferred_profile_supported", "supported_media_profiles": ["wss-opus-v3"], "preferred_media_profile": "udp-opus-gcm-v2", "reason": "unsupported_preference"},
-    {"id": "reject-unoffered-selection", "rule": "selected_profile_offered", "supported_media_profiles": ["wss-opus-v3"], "selected_media_profile": "udp-opus-gcm-v2", "reason": "unsupported_selection"},
-    {"id": "reject-mid-session-transport-switch", "rule": "single_active_transport", "active_profile": "wss-opus-v3", "received_profile": "udp-opus-gcm-v2", "reason": "transport_mismatch"},
+    {"id": "reject-unsupported-preference", "rule": "preferred_profile_supported", "supported_media_profiles": ["wss-opus/1"], "preferred_media_profile": "udp-opus-gcm/1", "reason": "unsupported_preference"},
+    {"id": "reject-unoffered-selection", "rule": "selected_profile_offered", "supported_media_profiles": ["wss-opus/1"], "selected_media_profile": "udp-opus-gcm/1", "reason": "unsupported_selection"},
+    {"id": "reject-mid-session-transport-switch", "rule": "single_active_transport", "active_profile": "wss-opus/1", "received_profile": "udp-opus-gcm/1", "reason": "transport_mismatch"},
     {"id": "reject-stale-media-identity", "rule": "media_identity_match", "active": {"media_id": "0123456789abcdef", "media_epoch": 8}, "received": {"media_id": "0123456789abcdef", "media_epoch": 7}, "reason": "stale_media_identity"},
-    {"id": "reject-media-wire-version-one", "rule": "media_wire_version_match", "expected_wire_version": 2, "received_wire_version": 1, "reason": "unsupported_media_version"},
+    {"id": "reject-media-wire-version-zero", "rule": "media_wire_version_match", "expected_wire_version": 1, "received_wire_version": 0, "reason": "unsupported_media_version"},
     {"id": "reject-uplink-playback-generation", "rule": "uplink_generation_zero", "direction": "uplink", "received_generation": 5, "reason": "invalid_uplink_generation"},
     {"id": "reject-probe-generation", "rule": "non_audio_generation_zero", "flag": "probe_ack", "received_generation": 5, "reason": "invalid_media_generation"},
     {"id": "drop-wrong-downlink-generation", "rule": "downlink_generation_exact", "active_generation": 6, "received_generation": 5, "reason": "stale_generation"},

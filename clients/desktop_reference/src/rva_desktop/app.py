@@ -214,14 +214,14 @@ class DesktopApp:
     async def _run_keepalive(self) -> None:
         while True:
             await self._session_ready.wait()
-            if self._session.selected_profile is not MediaProfile.UDP_OPUS_GCM_V2:
+            if self._session.selected_profile is not MediaProfile.UDP_OPUS_GCM_V1:
                 await asyncio.sleep(1)
                 continue
             interval = max(0.1, self._session.state.opened.heartbeat_interval_ms / 2_000)
             await asyncio.sleep(interval)
             await self._session_ready.wait()
             async with self._session_operation:
-                if self._session.selected_profile is MediaProfile.UDP_OPUS_GCM_V2:
+                if self._session.selected_profile is MediaProfile.UDP_OPUS_GCM_V1:
                     try:
                         await self._session.send_keepalive()
                     except FreshReopenRequired:
@@ -357,7 +357,7 @@ class DesktopApp:
         previous_sequence = playback.last_media_sequence
         previous_timestamp = playback.last_media_timestamp
         if (
-            self._session.selected_profile is not MediaProfile.UDP_OPUS_GCM_V2
+            self._session.selected_profile is not MediaProfile.UDP_OPUS_GCM_V1
             or previous_sequence is None
             or previous_timestamp is None
         ):

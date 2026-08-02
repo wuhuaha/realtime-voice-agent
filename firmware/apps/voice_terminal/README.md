@@ -4,7 +4,7 @@
 
 - `board_lichuang_s3`、`audio_pipeline` 与 `audio_frontend_esp_sr`；
 - `device_config`、Wi-Fi/NVS 和 Director bootstrap；
-- `rva-control-v2`、`wss-opus-v3`/`udp-opus-gcm-v2` 与 session/playback lifecycle；
+- `rva/1`、`wss-opus/1`/`udp-opus-gcm/1` 与 session/playback lifecycle；
 - 可选 `ui_lvgl`，核心语音组件不依赖显示。
 
 ## 配置

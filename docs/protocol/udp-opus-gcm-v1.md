@@ -1,17 +1,17 @@
-# UDP Opus GCM Media Profile v2
+# UDP Opus GCM Media Profile 1.0
 
 状态：current selectable（发布仍受 HIL/弱网门禁约束）
-Profile ID：`udp-opus-gcm-v2`
-Control：`rva-control-v2`
-Byte authority：`protocol/udp_opus_gcm_v2/README.md` 与 fixtures
+Profile ID：`udp-opus-gcm/1`
+Control：`rva/1`
+Byte authority：`protocol/udp_opus_gcm_v1/README.md` 与 fixtures
 
 ## 1. 边界
 
-UDP 只承载媒体与 liveness；`/v2/voice` WSS 始终负责鉴权、profile commit、transcript、response、playback stop、
-物理事实和 session lifecycle。v2 不包含 ICE/STUN/TURN、DTLS、RTCP、NACK、RTX 或同 session transport migration。
+UDP 只承载媒体与 liveness；`/rva/v1/voice` WSS 始终负责鉴权、profile commit、transcript、response、playback stop、
+物理事实和 session lifecycle。本 profile 不包含 ICE/STUN/TURN、DTLS、RTCP、NACK、RTX 或同 session transport migration。
 
-新 profile 使用 shared header `wire_version=0x02` 并把 generation 从 uplink 完全移除。旧
-`udp-opus-gcm-v1`/header `0x01` fail closed。
+该 profile 使用 shared header `wire_version=0x01` 并把 generation 从 uplink 完全移除。其他 profile ID 或 wire
+version 均 fail closed。
 
 ## 2. Grant 与 datagram
 
@@ -53,6 +53,6 @@ WSS 断开、grant expiry、sequence exhaustion、source change 或 fatal socket
 
 ## 6. 验证
 
-Server 与 Firmware 直接消费 `protocol/udp_opus_gcm_v2/fixtures/` 的固定 bytes，覆盖 `wire_version=2`、AAD/tag
+Server 与 Firmware 直接消费 `protocol/udp_opus_gcm_v1/fixtures/` 的固定 bytes，覆盖 wire version、AAD/tag
 tamper、authenticated uplink non-zero generation、non-AUDIO generation、replay、source pin、jitter/loss/PLC、fence、
 teardown 和 reconnect。Host/contract 证据不能替代当前 artifact 的双向媒体、弱网、声学与长稳 HIL。

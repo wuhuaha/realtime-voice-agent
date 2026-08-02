@@ -27,7 +27,7 @@ from .events import SessionEvent
 from .session import DesktopSession
 from .trace import LoggingTrace
 
-_PROFILE_CHOICES = (MediaProfile.WSS_OPUS_V3.value, MediaProfile.UDP_OPUS_GCM_V2.value)
+_PROFILE_CHOICES = (MediaProfile.WSS_OPUS_V1.value, MediaProfile.UDP_OPUS_GCM_V1.value)
 _MAX_TOKEN_FILE_BYTES = 4_096
 _TRUE_ENV_VALUES = frozenset({"1", "true", "yes", "on"})
 _FALSE_ENV_VALUES = frozenset({"0", "false", "no", "off", ""})
@@ -49,7 +49,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--profile",
         choices=_PROFILE_CHOICES,
-        default=os.getenv("RVA_MEDIA_PROFILE", MediaProfile.WSS_OPUS_V3.value),
+        default=os.getenv("RVA_MEDIA_PROFILE", MediaProfile.WSS_OPUS_V1.value),
     )
     parser.add_argument("--input-pcm", type=Path)
     parser.add_argument("--output-pcm", type=Path)

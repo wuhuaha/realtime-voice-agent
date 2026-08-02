@@ -21,7 +21,7 @@ def test_worker_registers_only_current_voice_route() -> None:
     app = create_app(_settings())
     paths = {route.path for route in app.routes}
 
-    assert "/v2/voice" in paths
+    assert "/rva/v1/voice" in paths
     assert sum(path.endswith("/voice") for path in paths) == 1
 
 
@@ -29,7 +29,7 @@ def test_current_voice_route_requires_bearer_and_device_identity() -> None:
     app = create_app(_settings())
     with TestClient(app) as client:
         try:
-            with client.websocket_connect("/v2/voice"):
+            with client.websocket_connect("/rva/v1/voice"):
                 raise AssertionError("unauthenticated websocket unexpectedly opened")
         except Exception as exc:
             assert getattr(exc, "code", None) == 1_008

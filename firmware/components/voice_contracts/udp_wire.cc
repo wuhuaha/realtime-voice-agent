@@ -2,7 +2,7 @@
 
 #include <algorithm>
 
-namespace voice::contracts::udp_v2 {
+namespace voice::contracts::udp_v1 {
 
 namespace {
 
@@ -130,4 +130,4 @@ Nonce MakeNonce(const DirectionalSalt& salt, std::uint32_t sequence) {
     return nonce;
 }
 
-}  // namespace voice::contracts::udp_v2
+}  // namespace voice::contracts::udp_v1

@@ -1,4 +1,4 @@
-# 决策 0006：服务端独占语义打断并以 RVA Control v2 收敛端云协议
+# 决策 0006：服务端独占语义打断并以 RVA Protocol 1.0 收敛端云协议
 
 日期：2026-07-23
 状态：accepted
@@ -22,9 +22,9 @@ Worker 同时会在播放期间抑制上行音频，LiveKit 默认也会把不�
 - Endpoint 不从 VAD、wake onset 或普通 speech 推导 cancel；AEC、NS 和 VAD 继续服务音频质量、UI 和观测。
 - Endpoint 只执行服务端精确 `playback.stop`、generation fence 和 sequence drain，并回报物理
   `playback.started/ended`。明确按钮操作可以立即关闭本地 render gate并请求取消。
-- Current wire提升为 `rva-control-v2`、`/v2/voice`、`wss-opus-v3` 和 `udp-opus-gcm-v2`。不运行旧 wire
+- Current wire提升为 `rva/1`、`/rva/v1/voice`、`wss-opus/1` 和 `udp-opus-gcm/1`。不运行旧 wire
   dual stack，也不保留 legacy firmware route。
-- 两个 v2 media profile 的 uplink generation固定为0；downlink generation只约束 render freshness。
+- 两个 v1 media profile 的 uplink generation固定为0；downlink generation只约束 render freshness。
 - 正常 response terminal携带最后媒体序号，设备播放到该序号后才报告 completed；取消和失败不冒充正常完成。
 
 ## 实现约束
@@ -46,10 +46,11 @@ Worker 同时会在播放期间抑制上行音频，LiveKit 默认也会把不�
 - LiveKit native adaptive/VAD interruption直接裁决：不能表达 strict explicit policy，暂不采用。
 - 正常 turn与打断分别运行 ASR：资源与一致性成本更高，仅在单 stream public API不满足时复查。
 
-## 后果与迁移
+## 后果与部署
 
-Server与Firmware必须作为匹配 artifact部署，旧 v1 endpoint不能连接 v2 Worker。旧 wire、profile和兼容实现由 Git
-历史保留，不进入 current runtime。浏览器与移动端继续使用标准 LiveKit Room，不使用 ESP32 RVA profile。
+Server 与 Firmware 必须作为匹配 artifact 部署；当前 endpoint 只连接注册表中的 `rva/1` Worker。任一组件的
+protocol/profile identity 不匹配时必须 fail closed，并通过 fresh bootstrap/reconnect 恢复。浏览器与移动端继续
+使用标准 LiveKit Room，不使用 ESP32 RVA profile。
 
 ## 复查触发条件
 
@@ -62,4 +63,4 @@ Server与Firmware必须作为匹配 artifact部署，旧 v1 endpoint不能连接
 - [决策 0005：Native ESP-IDF endpoint](0005-native-esp-idf-endpoint-and-rva-protocol.md)
 - [Server 架构](../architecture/server.md)
 - [Firmware 架构](../architecture/firmware.md)
-- [RVA Control v2](../protocol/rva-control-v2.md)
+- [RVA Protocol 1.0](../protocol/rva-protocol-v1.md)

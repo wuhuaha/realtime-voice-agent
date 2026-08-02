@@ -20,8 +20,8 @@ FORBIDDEN_PARTS = {
 FORBIDDEN_SUFFIXES = {".bin", ".elf", ".map", ".wav", ".pcm", ".key", ".pem"}
 FORBIDDEN_PREFIXES = (
     "firmware/targets/lichuang-dev/",
-    "protocol/rva_control_v1/",
-    "protocol/udp_opus_gcm_v1/",
+    "protocol/rva_control_v2/",
+    "protocol/udp_opus_gcm_v2/",
     "protocol/xiaozhi_control_v1/",
     "server/apps/realtime_worker/src/realtime_worker/bindings/xiaozhi/",
 )
@@ -144,9 +144,9 @@ def validate_firmware_composition(root: Path) -> list[str]:
         ),
         root / "firmware" / "apps" / "voice_terminal" / "README.md": (
             "Product native ESP-IDF endpoint",
-            "rva-control-v2",
-            "wss-opus-v3",
-            "udp-opus-gcm-v2",
+            "rva/1",
+            "wss-opus/1",
+            "udp-opus-gcm/1",
         ),
         root / ".github" / "workflows" / "ci.yml": (
             "native-firmware-host-contracts:",
@@ -257,20 +257,20 @@ def validate_protocol(root: Path) -> list[str]:
                     errors.append(
                         f"protocol registry reference missing: {entry.get('id')}:{field}: {reference}"
                     )
-    if control_ids != {"rva-control-v2"}:
+    if control_ids != {"rva/1"}:
         errors.append(f"unexpected control protocols: {sorted(control_ids)}")
     profile_ids = {profile["id"] for profile in registry["media_profiles"]}
-    if profile_ids != {"wss-opus-v3", "udp-opus-gcm-v2"}:
+    if profile_ids != {"wss-opus/1", "udp-opus-gcm/1"}:
         errors.append(f"unexpected media profiles: {sorted(profile_ids)}")
     for profile in registry["media_profiles"]:
         controls = set(profile.get("controls", ()))
         if not controls or not controls <= control_ids:
             errors.append(f"media profile has invalid controls: {profile.get('id')}")
-        if profile.get("media_wire_version") != 2:
-            errors.append(f"media profile must use wire version 2: {profile.get('id')}")
+        if profile.get("media_wire_version") != 1:
+            errors.append(f"media profile must use wire version 1: {profile.get('id')}")
         if profile.get("uplink_generation") != 0:
             errors.append(f"media profile must use uplink generation zero: {profile.get('id')}")
-    positive_path = root / "protocol" / "udp_opus_gcm_v2" / "fixtures" / "positive.json"
+    positive_path = root / "protocol" / "udp_opus_gcm_v1" / "fixtures" / "positive.json"
     positive = json.loads(positive_path.read_text(encoding="utf-8"))
     for vector in positive["vectors"]:
         datagram = bytes.fromhex(vector["datagram_hex"])
@@ -283,7 +283,7 @@ def validate_protocol(root: Path) -> list[str]:
         if len(datagram) > positive["max_datagram_bytes"]:
             errors.append(f"UDP fixture exceeds MTU: {vector['id']}")
 
-    rva_root = root / "protocol" / "rva_control_v2"
+    rva_root = root / "protocol" / "rva_v1"
     schema = json.loads((rva_root / "messages.schema.json").read_text(encoding="utf-8"))
     try:
         Draft202012Validator.check_schema(schema)

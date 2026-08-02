@@ -133,9 +133,9 @@ class RvaSessionRegistry:
     async def run(self, websocket: WebSocket, auth: AuthContext, token: str) -> None:
         principal = (auth.tenant_id, auth.device_id)
         session_epoch = auth.session_epoch or f"lab-{secrets.token_hex(16)}"
-        enabled_profiles = {"wss-opus-v3"}
+        enabled_profiles = {"wss-opus/1"}
         if self._settings.rva_udp_enabled and self._udp_gateway is not None:
-            enabled_profiles.add("udp-opus-gcm-v2")
+            enabled_profiles.add("udp-opus-gcm/1")
         claim = self._lease_claim(auth)
         connection: RvaWssConnection | None = None
         try:
@@ -722,12 +722,12 @@ class WorkerHeartbeatLoop:
         bindings: list[BindingAdvertisement] = []
         profiles: list[str] = []
         if self._settings.rva_enabled:
-            rva_profiles: tuple[str, ...] = ("wss-opus-v3",)
+            rva_profiles: tuple[str, ...] = ("wss-opus/1",)
             if self._settings.rva_udp_enabled and udp_ready:
-                rva_profiles = ("wss-opus-v3", "udp-opus-gcm-v2")
+                rva_profiles = ("wss-opus/1", "udp-opus-gcm/1")
             bindings.append(
                 BindingAdvertisement(
-                    control_protocol="rva-control-v2",
+                    control_protocol="rva/1",
                     public_wss_url=self._settings.rva_public_ws_url,
                     profiles=rva_profiles,
                 )
@@ -1003,21 +1003,21 @@ def create_app(
 
     if settings.rva_enabled:
 
-        @app.websocket("/v2/voice")
+        @app.websocket("/rva/v1/voice")
         async def rva_voice(websocket: WebSocket) -> None:
             device_id = resolve_device_id(websocket.headers.get("device-id"), websocket.headers.get("client-id"))
             verified = authenticator.verify(
                 websocket.headers.get("authorization"),
                 device_id,
-                control_protocol="rva-control-v2",
+                control_protocol="rva/1",
             )
-            enabled_profiles = {"wss-opus-v3"}
+            enabled_profiles = {"wss-opus/1"}
             if settings.rva_udp_enabled:
-                enabled_profiles.add("udp-opus-gcm-v2")
+                enabled_profiles.add("udp-opus-gcm/1")
             if verified is None:
                 _log_websocket_rejected(
                     settings,
-                    binding="rva-control-v2",
+                    binding="rva/1",
                     reason="invalid_credentials",
                     device_id=device_id,
                 )
@@ -1026,7 +1026,7 @@ def create_app(
             if not enabled_profiles.intersection(verified.context.allowed_profiles):
                 _log_websocket_rejected(
                     settings,
-                    binding="rva-control-v2",
+                    binding="rva/1",
                     reason="no_compatible_profile",
                     auth=verified.context,
                 )
@@ -1036,7 +1036,7 @@ def create_app(
             if reservation is None:
                 _log_websocket_rejected(
                     settings,
-                    binding="rva-control-v2",
+                    binding="rva/1",
                     reason="session_overloaded",
                     auth=verified.context,
                 )
@@ -1051,7 +1051,7 @@ def create_app(
                 await rva_registry.release_reservation(reservation)
                 _log_websocket_rejected(
                     settings,
-                    binding="rva-control-v2",
+                    binding="rva/1",
                     reason="grant_rejected",
                     auth=verified.context,
                 )
@@ -1062,13 +1062,13 @@ def create_app(
             except BaseException:
                 _log_websocket_rejected(
                     settings,
-                    binding="rva-control-v2",
+                    binding="rva/1",
                     reason="accept_failed",
                     auth=verified.context,
                 )
                 await rva_registry.abort_startup(verified.context, reservation)
                 raise
-            _log_websocket_accepted(settings, binding="rva-control-v2", auth=verified.context)
+            _log_websocket_accepted(settings, binding="rva/1", auth=verified.context)
             await rva_registry.run(websocket, verified.context, reservation)
 
     return app

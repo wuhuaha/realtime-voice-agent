@@ -57,13 +57,13 @@ GET  /health/ready
 Worker API：
 
 ```text
-WS   /v2/voice
+WS   /rva/v1/voice
 POST /internal/v1/drain
 GET  /health/live
 GET  /health/ready
 ```
 
-`/v2/voice` 是唯一设备语音入口。当前 runtime 只注册 canonical v2 route；不支持的旧 path 或 wire 会 fail closed，
+`/rva/v1/voice` 是唯一设备语音入口。当前 runtime 只注册 canonical route；不支持的非 canonical path 或 wire 会 fail closed，
 协议升级通过 fresh session 完成，不在同一进程保留 dual stack。
 
 Worker `max_sessions` 默认 `5`，可用 `VOICE_WORKER_MAX_SESSIONS` 覆盖。生产多 Director/多 Worker 必须使用

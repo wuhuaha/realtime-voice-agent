@@ -63,6 +63,13 @@ if ($stopSection -notmatch $closePattern) {
     throw "An owner that never started must be destroyed synchronously without teardown allocations"
 }
 
+$senderSection = Get-SourceSection `
+    $source "void VoiceRuntime::RunUplinkSender()" "void VoiceRuntime::RunPlayback()"
+$udpStopRacePattern = "(?s)!udp_runtime_->SendAudio\(.*?\)\s*&&\s*running_"
+if ($senderSection -notmatch $udpStopRacePattern) {
+    throw "An expected UDP send cancellation during Stop must not be reported as a runtime failure"
+}
+
 $notifySection = Get-SourceSection `
     $source "void VoiceRuntime::NotifySupervisorWork(" "bool VoiceRuntime::CloseWebsocketBounded("
 Assert-Contains $notifySection "xSemaphoreGive(runtime->supervisor_work_signal_)" `

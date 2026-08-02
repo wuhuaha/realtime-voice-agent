@@ -1,25 +1,25 @@
-# WSS Opus Media Profile v3
+# WSS Opus Media Profile 1.0
 
 状态：current default
-Profile ID：`wss-opus-v3`
-Control：`rva-control-v2`
+Profile ID：`wss-opus/1`
+Control：`rva/1`
 
 ## 1. 边界
 
-`wss-opus-v3` 在 `/v2/voice` 同一 WSS 上传输 JSON control 与 typed binary Opus。每个 binary message 携带
-32-byte shared media header。v3 把 byte discriminator 升为 `wire_version=0x02`，并把 uplink generation 固定为
-`0`；旧 `wss-opus-v2`/header `0x01` 不接受。
+`wss-opus/1` 在 `/rva/v1/voice` 同一 WSS 上传输 JSON control 与 typed binary Opus。每个 binary message 携带
+32-byte shared media header。该 profile 使用 `wire_version=0x01`，并把 uplink generation 固定为 `0`；其他 profile
+或 wire version 均不接受。
 
 ## 2. Framing
 
 ```text
-32-byte RVA v2 media header | one complete Opus packet
+32-byte RVA media header | one complete Opus packet
 ```
 
 | Offset | Bytes | Field | 规则 |
 | ---: | ---: | --- | --- |
 | 0 | 2 | `magic` | 固定 `0x5641` (`VA`) |
-| 2 | 1 | `wire_version` | 固定 `0x02` |
+| 2 | 1 | `wire_version` | 固定 `0x01` |
 | 3 | 1 | `flags` | 固定 AUDIO=`0x01` |
 | 4 | 8 | `media_id` | 匹配 `session.opened` |
 | 12 | 4 | `media_epoch` | 匹配 `session.opened` |

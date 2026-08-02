@@ -61,7 +61,7 @@ class DirectorClient:
                     "tenant_id": self._config.tenant_id,
                     "device_id": self._config.device_id,
                     "supported_profiles": [item.value for item in self._config.supported_profiles],
-                    "control_protocol": "rva-control-v2",
+                    "control_protocol": "rva/1",
                 },
             )
         except Exception as exc:
@@ -119,7 +119,7 @@ class DirectorClient:
             "worker_id", "worker_wss_url", "connect_grant", "session_epoch", "fencing_token",
             "allowed_profiles", "control_protocol", "expires_at",
         }
-        if set(value) != expected or value.get("control_protocol") != "rva-control-v2":
+        if set(value) != expected or value.get("control_protocol") != "rva/1":
             raise ProtocolError("invalid_bootstrap_response")
         raw_profiles = value["allowed_profiles"]
         if type(raw_profiles) is not list or any(type(item) is not str for item in raw_profiles):
@@ -140,7 +140,7 @@ class DirectorClient:
                 raise ProtocolError("invalid_bootstrap_response")
         worker_url = urlsplit(value["worker_wss_url"])
         if (
-            worker_url.path != "/v2/voice"
+            worker_url.path != "/rva/v1/voice"
             or worker_url.query
             or worker_url.fragment
             or not worker_url.hostname

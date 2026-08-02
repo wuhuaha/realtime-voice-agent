@@ -6,11 +6,11 @@ from urllib.parse import quote, urlsplit
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 Identifier = Annotated[str, Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,95}$")]
-ControlProtocol = Literal["rva-control-v2"]
-TransportProfile = Literal["wss-opus-v3", "udp-opus-gcm-v2"]
+ControlProtocol = Literal["rva/1"]
+TransportProfile = Literal["wss-opus/1", "udp-opus-gcm/1"]
 
 _CONTROL_TRANSPORT_PROFILES: dict[ControlProtocol, frozenset[TransportProfile]] = {
-    "rva-control-v2": frozenset({"wss-opus-v3", "udp-opus-gcm-v2"}),
+    "rva/1": frozenset({"wss-opus/1", "udp-opus-gcm/1"}),
 }
 
 
@@ -49,7 +49,7 @@ class BindingAdvertisement(ContractModel):
     @model_validator(mode="after")
     def canonical_endpoint(self) -> BindingAdvertisement:
         parsed = urlsplit(self.public_wss_url)
-        expected_path = "/v2/voice"
+        expected_path = "/rva/v1/voice"
         if (
             parsed.scheme not in {"ws", "wss"}
             or parsed.hostname is None
@@ -71,7 +71,7 @@ class WorkerHeartbeat(ContractModel):
     max_sessions: int = Field(default=5, ge=1, le=1024)
     draining: bool = False
     healthy: bool = True
-    profiles: tuple[TransportProfile, ...] = ("wss-opus-v3",)
+    profiles: tuple[TransportProfile, ...] = ("wss-opus/1",)
     bindings: tuple[BindingAdvertisement, ...] = ()
     active_leases: tuple[LeaseRenewal, ...] = ()
     released_leases: tuple[LeaseRenewal, ...] = Field(default=(), max_length=64)
@@ -109,7 +109,7 @@ class WorkerHeartbeat(ContractModel):
             return self.bindings
         return (
             BindingAdvertisement(
-                control_protocol="rva-control-v2",
+                control_protocol="rva/1",
                 public_wss_url=self.public_wss_url,
                 profiles=self.profiles,
             ),
@@ -161,7 +161,7 @@ class ConnectGrantClaims(ContractModel):
     session_epoch: Identifier
     fencing_token: int = Field(ge=1)
     profiles: tuple[TransportProfile, ...]
-    control_protocol: ControlProtocol = "rva-control-v2"
+    control_protocol: ControlProtocol = "rva/1"
     iat: float
     exp: float
     jti: Identifier
@@ -182,8 +182,8 @@ class ConnectGrantClaims(ContractModel):
 class BootstrapRequest(ContractModel):
     tenant_id: Identifier = "default"
     device_id: Identifier
-    supported_profiles: tuple[TransportProfile, ...] = ("wss-opus-v3",)
-    control_protocol: ControlProtocol = "rva-control-v2"
+    supported_profiles: tuple[TransportProfile, ...] = ("wss-opus/1",)
+    control_protocol: ControlProtocol = "rva/1"
 
 
 class BootstrapResponse(ContractModel):

@@ -167,26 +167,29 @@ async def test_output_pads_only_the_final_partial_pcm_frame() -> None:
 
 
 @pytest.mark.asyncio
-async def test_output_limit_rejects_the_whole_segment_with_duration_diagnostics() -> None:
+async def test_output_limit_chunks_a_long_response_without_stalling_generation() -> None:
     segments = []
+    response_ends = []
 
     async def emit(segment):  # noqa: ANN001
         segments.append(segment)
 
-    output = RoomlessAudioOutput(emit, lambda _epoch: None, max_segment_frames=2)
+    output = RoomlessAudioOutput(emit, response_ends.append, max_segment_frames=2)
     frame = rtc.AudioFrame(data=b"\x00" * 640, sample_rate=16_000, num_channels=1, samples_per_channel=320)
     await output.capture_frame(frame)
     await output.capture_frame(frame)
-
-    with pytest.raises(
-        BufferError,
-        match=r"received_frames=3 .*limit_frames=2 .*received_seconds=0\.060 .*limit_seconds=0\.040",
-    ):
-        await output.capture_frame(frame)
+    await output.capture_frame(frame)
 
     output.flush()
+    output.on_playback_started(created_at=1.0)
+    output.on_playback_finished(playback_position=0.06, interrupted=False)
+    result = await output.wait_for_playout()
     await output.close()
-    assert segments == []
+    assert [len(segment.frames) for segment in segments] == [2, 1]
+    assert [segment.producer_epoch for segment in segments] == [1, 1]
+    assert [frame.sequence for segment in segments for frame in segment.frames] == [0, 1, 2]
+    assert response_ends == [1]
+    assert result.playback_position == 0.06 and not result.interrupted
 
 
 @pytest.mark.asyncio

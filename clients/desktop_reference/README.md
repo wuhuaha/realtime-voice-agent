@@ -1,7 +1,7 @@
 # Desktop Reference Client
 
-`rva-desktop` 是 RVA v2 的 Python 桌面参考端点，用于验证 Product 内 canonical control/media contract、
-Director bootstrap、`wss-opus-v3` / `udp-opus-gcm-v2` transport 与 playback facts。它提供可复现的
+`rva-desktop` 是 RVA Protocol 1.0 的 Python 桌面参考端点，用于验证 Product 内 canonical control/media contract、
+Director bootstrap、`wss-opus/1` / `udp-opus-gcm/1` transport 与 playback facts。它提供可复现的
 headless fixture 路径和使用本机麦克风/扬声器的 interactive 路径。
 
 它不是面向最终用户的桌面产品，不替代 ESP32 firmware、声学/AEC 验证、真实设备 HIL、弱网/长稳验证，
@@ -37,7 +37,7 @@ uv run --directory clients/desktop_reference rva-desktop --help
 | `RVA_BOOTSTRAP_TOKEN` | bootstrap token | 无；更推荐受限权限的 `--token-file` |
 | `RVA_DEVICE_ID` | bootstrap device identifier | `desktop-reference` |
 | `RVA_TENANT_ID` | tenant identifier | `default` |
-| `RVA_MEDIA_PROFILE` | `wss-opus-v3` 或 `udp-opus-gcm-v2` | `wss-opus-v3` |
+| `RVA_MEDIA_PROFILE` | `wss-opus/1` 或 `udp-opus-gcm/1` | `wss-opus/1` |
 | `RVA_ALLOW_INSECURE_LOOPBACK` | 允许显式的本机 `http://` 测试 | `false` |
 
 CLI 故意不提供 `--token`：不要把 token 写入 argv、命令历史、日志或文档。优先使用仅当前用户可读、
@@ -60,7 +60,7 @@ UDP 运行还要求 grant 中的 UDP endpoint 可从桌面主机访问。
 uv run --directory clients/desktop_reference rva-desktop headless \
   --director-url https://director.example \
   --token-file /secure/rva-bootstrap.token \
-  --profile wss-opus-v3 \
+  --profile wss-opus/1 \
   --input-pcm ./input.s16le.pcm \
   --output-pcm ./output.s16le.pcm
 ```
@@ -71,7 +71,7 @@ uv run --directory clients/desktop_reference rva-desktop headless \
 uv run --directory clients/desktop_reference rva-desktop headless \
   --director-url https://director.example \
   --token-file /secure/rva-bootstrap.token \
-  --profile udp-opus-gcm-v2 \
+  --profile udp-opus-gcm/1 \
   --input-pcm ./input.s16le.pcm \
   --output-pcm ./output.s16le.pcm
 ```
@@ -89,7 +89,7 @@ sounddevice 的设备 index 或名称。退出使用 `Ctrl+C`。
 uv run --directory clients/desktop_reference rva-desktop interactive \
   --director-url https://director.example \
   --token-file /secure/rva-bootstrap.token \
-  --profile wss-opus-v3
+  --profile wss-opus/1
 ```
 
 ## 验证与证据边界

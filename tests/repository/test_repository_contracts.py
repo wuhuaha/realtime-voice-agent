@@ -46,7 +46,7 @@ def test_allowed_templates_are_not_reported() -> None:
 
 def test_retired_protocol_and_compatibility_runtime_paths_are_rejected() -> None:
     paths = (
-        "protocol/rva_control_v1/contract.yaml",
+        "protocol/rva_control_v2/contract.yaml",
         "protocol/xiaozhi_control_v1/messages.schema.json",
         "firmware/targets/lichuang-dev/README.md",
         "server/apps/realtime_worker/src/realtime_worker/bindings/xiaozhi/protocol.py",

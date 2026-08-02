@@ -7,9 +7,9 @@ $core = Join-Path $repoRoot "firmware/components/voice_core"
 $sessionTest = Join-Path $deviceRoot "host_tests/session_gate_test.cc"
 $wireTest = Join-Path $deviceRoot "host_tests/udp_wire_fixture_test.cc"
 $positive = Get-Content -Raw -LiteralPath (
-    Join-Path $repoRoot "protocol/udp_opus_gcm_v2/fixtures/positive.json") | ConvertFrom-Json
+    Join-Path $repoRoot "protocol/udp_opus_gcm_v1/fixtures/positive.json") | ConvertFrom-Json
 $negative = Get-Content -Raw -LiteralPath (
-    Join-Path $repoRoot "protocol/udp_opus_gcm_v2/fixtures/negative.json") | ConvertFrom-Json
+    Join-Path $repoRoot "protocol/udp_opus_gcm_v1/fixtures/negative.json") | ConvertFrom-Json
 $compiler = Get-Command clang++, g++ -ErrorAction SilentlyContinue | Select-Object -First 1
 if ($null -eq $compiler) {
     throw "No supported C++ host compiler found (expected clang++ or g++)"

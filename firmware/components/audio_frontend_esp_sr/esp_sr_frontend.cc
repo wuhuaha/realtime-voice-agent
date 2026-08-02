@@ -77,8 +77,9 @@ PortResult EspSrFrontend::Start() {
     afe_config_->agc_init = false;
     afe_config_->memory_alloc_mode = AFE_MEMORY_ALLOC_MORE_PSRAM;
 #if CONFIG_RVA_UPLINK_AFFINITY_AUDIO_CPU1
-    // EXP-RVA-001 V3 moves the ESP-SR-owned processing task together with the
-    // audio owners. V1/V2 intentionally retain ESP-SR's resolved default.
+    // EXP-RVA-001's audio-affinity variant moves the ESP-SR-owned processing
+    // task together with the audio owners; the other variants retain ESP-SR's
+    // resolved default.
     afe_config_->afe_perferred_core = 1;
 #endif
     ESP_LOGI(kLogTag, "AFE scheduling: core=%d priority=%d ring_frames=%d",

@@ -8,7 +8,7 @@ from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from realtime_worker.transport.udp_wire import UdpPacketHeader
 
-FIXTURES = Path(__file__).resolve().parents[4] / "protocol" / "udp_opus_gcm_v2" / "fixtures"
+FIXTURES = Path(__file__).resolve().parents[4] / "protocol" / "udp_opus_gcm_v1" / "fixtures"
 
 
 def _fixture(name: str) -> dict[str, object]:
@@ -16,7 +16,7 @@ def _fixture(name: str) -> dict[str, object]:
 
 
 @pytest.mark.contract
-def test_udp_v2_positive_vectors_match_canonical_bytes() -> None:
+def test_udp_v1_positive_vectors_match_canonical_bytes() -> None:
     fixture = _fixture("positive.json")
     for vector in fixture["vectors"]:
         fields = vector["fields"]
@@ -40,7 +40,7 @@ def test_udp_v2_positive_vectors_match_canonical_bytes() -> None:
 
 
 @pytest.mark.contract
-def test_udp_v2_negative_vectors_fail_at_declared_stage() -> None:
+def test_udp_v1_negative_vectors_fail_at_declared_stage() -> None:
     positive = _fixture("positive.json")
     keys = {
         direction: next(vector for vector in positive["vectors"] if vector["direction"] == direction)

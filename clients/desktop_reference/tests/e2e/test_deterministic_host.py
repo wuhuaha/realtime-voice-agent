@@ -49,7 +49,7 @@ async def _exercise_profile(director_url: str, profile: MediaProfile) -> None:
         ClientConfig(
             director_url=director_url,
             bootstrap_token=BOOTSTRAP_TOKEN,
-            device_id=f"desktop-e2e-{profile.value}",
+            device_id=f"desktop-e2e-{profile.value.replace('/', '-')}",
             tenant_id="desktop-e2e",
             supported_profiles=(profile,),
             preferred_profile=profile,
@@ -127,7 +127,7 @@ async def _exercise_profile(director_url: str, profile: MediaProfile) -> None:
         assert response_end is not None
         assert response_end["outcome"] == "completed"
 
-        expected_first_sequence = 1 if profile is MediaProfile.UDP_OPUS_GCM_V2 else 0
+        expected_first_sequence = 1 if profile is MediaProfile.UDP_OPUS_GCM_V1 else 0
         assert [frame.sequence for frame in media] == list(range(expected_first_sequence, expected_first_sequence + 4))
         assert [frame.timestamp for frame in media] == [0, 960, 1_920, 2_880]
         assert {frame.generation for frame in media} == {by_kind["response.begin"]["generation"]}
@@ -158,7 +158,7 @@ async def _exercise_desktop_app_profile(director_url: str, profile: MediaProfile
         ClientConfig(
             director_url=director_url,
             bootstrap_token=BOOTSTRAP_TOKEN,
-            device_id=f"desktop-app-e2e-{profile.value}",
+            device_id=f"desktop-app-e2e-{profile.value.replace('/', '-')}",
             tenant_id="desktop-e2e",
             supported_profiles=(profile,),
             preferred_profile=profile,
@@ -191,7 +191,7 @@ async def _exercise_desktop_app_profile(director_url: str, profile: MediaProfile
     assert len(sink.frames) == 4
     assert len(sink.pcm) == WIRE_BYTES_PER_FRAME * 4
 
-    expected_first_sequence = 1 if profile is MediaProfile.UDP_OPUS_GCM_V2 else 0
+    expected_first_sequence = 1 if profile is MediaProfile.UDP_OPUS_GCM_V1 else 0
     assert [frame.sequence for frame in sink.frames] == list(
         range(expected_first_sequence, expected_first_sequence + 4)
     )
@@ -229,8 +229,8 @@ async def _exercise_desktop_app_profile(director_url: str, profile: MediaProfile
 @pytest.mark.parametrize(
     ("profile", "udp_enabled"),
     [
-        pytest.param(MediaProfile.WSS_OPUS_V3, False, id="wss-opus-v3"),
-        pytest.param(MediaProfile.UDP_OPUS_GCM_V2, True, id="udp-opus-gcm-v2"),
+        pytest.param(MediaProfile.WSS_OPUS_V1, False, id="wss-opus/1"),
+        pytest.param(MediaProfile.UDP_OPUS_GCM_V1, True, id="udp-opus-gcm/1"),
     ],
 )
 def test_deterministic_host_round_trip(
@@ -255,8 +255,8 @@ def test_deterministic_host_round_trip(
 @pytest.mark.parametrize(
     ("profile", "udp_enabled"),
     [
-        pytest.param(MediaProfile.WSS_OPUS_V3, False, id="wss-opus-v3"),
-        pytest.param(MediaProfile.UDP_OPUS_GCM_V2, True, id="udp-opus-gcm-v2"),
+        pytest.param(MediaProfile.WSS_OPUS_V1, False, id="wss-opus/1"),
+        pytest.param(MediaProfile.UDP_OPUS_GCM_V1, True, id="udp-opus-gcm/1"),
     ],
 )
 def test_desktop_app_deterministic_host_round_trip(

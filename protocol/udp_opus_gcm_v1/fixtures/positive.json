@@ -1,6 +1,6 @@
 {
-  "profile": "udp-opus-gcm-v2",
-  "wire_version": 2,
+  "profile": "udp-opus-gcm/1",
+  "wire_version": 1,
   "notice": "Public deterministic test material only. Never use these keys or salts in deployment.",
   "header_bytes": 32,
   "tag_bytes": 16,
@@ -22,10 +22,10 @@
         "payload_length": 0
       },
       "payload_hex": "",
-      "header_hex": "564102020123456789abcdef1020304000000000000000000000000000000000",
+      "header_hex": "564101020123456789abcdef1020304000000000000000000000000000000000",
       "nonce_hex": "a0a1a2a3a4a5a6a700000000",
-      "ciphertext_and_tag_hex": "22ac8541d05261f1a6866039cb304e51",
-      "datagram_hex": "564102020123456789abcdef102030400000000000000000000000000000000022ac8541d05261f1a6866039cb304e51"
+      "ciphertext_and_tag_hex": "98e72f27df6ca46349c8fa5b92fcd2d3",
+      "datagram_hex": "564101020123456789abcdef102030400000000000000000000000000000000098e72f27df6ca46349c8fa5b92fcd2d3"
     },
     {
       "id": "downlink-probe-ack-sequence-0",
@@ -42,10 +42,10 @@
         "payload_length": 0
       },
       "payload_hex": "",
-      "header_hex": "564102040123456789abcdef1020304000000000000000000000000000000000",
+      "header_hex": "564101040123456789abcdef1020304000000000000000000000000000000000",
       "nonce_hex": "b0b1b2b3b4b5b6b700000000",
-      "ciphertext_and_tag_hex": "4e568d9bc6311b3429c9710e7ba10673",
-      "datagram_hex": "564102040123456789abcdef10203040000000000000000000000000000000004e568d9bc6311b3429c9710e7ba10673"
+      "ciphertext_and_tag_hex": "90759a465cd10f7cac5b95b1a62abfbe",
+      "datagram_hex": "564101040123456789abcdef102030400000000000000000000000000000000090759a465cd10f7cac5b95b1a62abfbe"
     },
     {
       "id": "uplink-audio-sequence-1-generation-0",
@@ -62,10 +62,10 @@
         "payload_length": 3
       },
       "payload_hex": "f8fffe",
-      "header_hex": "564102010123456789abcdef1020304000000001000003c00000000000000003",
+      "header_hex": "564101010123456789abcdef1020304000000001000003c00000000000000003",
       "nonce_hex": "a0a1a2a3a4a5a6a700000001",
-      "ciphertext_and_tag_hex": "bdfd8e52602900f9790d756806e4cab14fde8d",
-      "datagram_hex": "564102010123456789abcdef1020304000000001000003c00000000000000003bdfd8e52602900f9790d756806e4cab14fde8d"
+      "ciphertext_and_tag_hex": "bdfd8efbdc833d389ef841ed907d75f22c4921",
+      "datagram_hex": "564101010123456789abcdef1020304000000001000003c00000000000000003bdfd8efbdc833d389ef841ed907d75f22c4921"
     },
     {
       "id": "downlink-audio-generation-2",
@@ -82,10 +82,10 @@
         "payload_length": 12
       },
       "payload_hex": "112233445566778899aabbcc",
-      "header_hex": "564102010123456789abcdef102030400000000100000780000000020000000c",
+      "header_hex": "564101010123456789abcdef102030400000000100000780000000020000000c",
       "nonce_hex": "b0b1b2b3b4b5b6b700000001",
-      "ciphertext_and_tag_hex": "bcea45b737676524371e045f2710018a0688cb1a79a7d8fda2dcac9f",
-      "datagram_hex": "564102010123456789abcdef102030400000000100000780000000020000000cbcea45b737676524371e045f2710018a0688cb1a79a7d8fda2dcac9f"
+      "ciphertext_and_tag_hex": "bcea45b737676524371e045fc5ef2ef6ebf9238e66a123b9aa41b666",
+      "datagram_hex": "564101010123456789abcdef102030400000000100000780000000020000000cbcea45b737676524371e045fc5ef2ef6ebf9238e66a123b9aa41b666"
     }
   ]
 }

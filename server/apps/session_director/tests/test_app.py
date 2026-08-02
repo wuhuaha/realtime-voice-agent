@@ -31,12 +31,12 @@ def test_heartbeat_bootstrap_and_drain_contract() -> None:
             headers=internal,
             json={
                 "worker_id": "worker-a",
-                "public_wss_url": "ws://worker-a.test/v2/voice",
+                "public_wss_url": "ws://worker-a.test/rva/v1/voice",
                 "active_sessions": 0,
                 "max_sessions": 5,
                 "draining": False,
                 "healthy": True,
-                "profiles": ["wss-opus-v3", "udp-opus-gcm-v2"],
+                "profiles": ["wss-opus/1", "udp-opus-gcm/1"],
             },
         )
         assert heartbeat.status_code == 200
@@ -44,14 +44,14 @@ def test_heartbeat_bootstrap_and_drain_contract() -> None:
         bootstrap = client.post(
             "/v1/session/bootstrap",
             headers={"Authorization": "Bearer validator-device-token"},
-            json={"tenant_id": "tenant-1", "device_id": "device-1", "supported_profiles": ["wss-opus-v3"]},
+            json={"tenant_id": "tenant-1", "device_id": "device-1", "supported_profiles": ["wss-opus/1"]},
         )
         assert bootstrap.status_code == 200
         body = bootstrap.json()
         assert body["worker_id"] == "worker-a"
-        assert body["allowed_profiles"] == ["wss-opus-v3"]
-        assert body["control_protocol"] == "rva-control-v2"
-        assert body["worker_wss_url"] == "ws://worker-a.test/v2/voice"
+        assert body["allowed_profiles"] == ["wss-opus/1"]
+        assert body["control_protocol"] == "rva/1"
+        assert body["worker_wss_url"] == "ws://worker-a.test/rva/v1/voice"
         assert body["connect_grant"].count(".") == 2
 
         consumed = client.post(
@@ -100,15 +100,15 @@ def test_grant_consume_reject_reason_is_specific_and_redacted(caplog: pytest.Log
             headers=internal,
             json={
                 "worker_id": "worker-a",
-                "public_wss_url": "ws://worker-a.test/v2/voice",
+                "public_wss_url": "ws://worker-a.test/rva/v1/voice",
                 "active_sessions": 0,
-                "profiles": ["wss-opus-v3"],
+                "profiles": ["wss-opus/1"],
             },
         ).status_code == 200
         opened = client.post(
             "/v1/session/bootstrap",
             headers={"Authorization": "Bearer validator-device-token"},
-            json={"tenant_id": "tenant-1", "device_id": "device-1", "supported_profiles": ["wss-opus-v3"]},
+            json={"tenant_id": "tenant-1", "device_id": "device-1", "supported_profiles": ["wss-opus/1"]},
         ).json()
 
         consumed = client.post(
@@ -163,7 +163,7 @@ def test_heartbeat_rejects_legacy_worker_routes(public_wss_url: str) -> None:
                 "worker_id": "worker-a",
                 "public_wss_url": public_wss_url,
                 "active_sessions": 0,
-                "profiles": ["wss-opus-v3"],
+                "profiles": ["wss-opus/1"],
             },
         )
 
@@ -180,7 +180,7 @@ def test_authenticated_release_is_idempotent_and_allows_immediate_bootstrap() ->
             headers=internal,
             json={
                 "worker_id": "worker-a",
-                "public_wss_url": "ws://worker-a.test/v2/voice",
+                "public_wss_url": "ws://worker-a.test/rva/v1/voice",
                 "active_sessions": 0,
             },
         ).status_code == 200
@@ -316,7 +316,7 @@ def test_bootstrap_redis_timeout_returns_generic_service_unavailable() -> None:
         response = client.post(
             "/v1/session/bootstrap",
             headers={"Authorization": "Bearer validator-device-token"},
-            json={"tenant_id": "tenant-1", "device_id": "device-1", "supported_profiles": ["wss-opus-v3"]},
+            json={"tenant_id": "tenant-1", "device_id": "device-1", "supported_profiles": ["wss-opus/1"]},
         )
 
     assert ready.status_code == 503

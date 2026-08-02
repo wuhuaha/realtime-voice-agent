@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://realtime-voice-agent.local/protocol/rva-control-v2/messages.schema.json",
-  "title": "Realtime Voice Agent Control Protocol v2",
+  "$id": "https://realtime-voice-agent.local/protocol/rva/1/messages.schema.json",
+  "title": "Realtime Voice Agent Control Protocol 1.0",
   "oneOf": [
     { "$ref": "#/$defs/sessionOpen" },
     { "$ref": "#/$defs/sessionOpened" },
@@ -128,7 +128,7 @@
       ],
       "properties": {
         "type": { "const": "session.open" },
-        "protocol_version": { "const": 2 },
+        "protocol_version": { "const": 1 },
         "request_id": { "$ref": "#/$defs/id" },
         "device_id": { "$ref": "#/$defs/id" },
         "supported_media_profiles": {
@@ -136,9 +136,9 @@
           "minItems": 1,
           "maxItems": 2,
           "uniqueItems": true,
-          "items": { "enum": ["wss-opus-v3", "udp-opus-gcm-v2"] }
+          "items": { "enum": ["wss-opus/1", "udp-opus-gcm/1"] }
         },
-        "preferred_media_profile": { "enum": ["wss-opus-v3", "udp-opus-gcm-v2"] },
+        "preferred_media_profile": { "enum": ["wss-opus/1", "udp-opus-gcm/1"] },
         "audio": { "$ref": "#/$defs/audio" },
         "capabilities": { "$ref": "#/$defs/capabilities" }
       },
@@ -166,7 +166,7 @@
         "session_epoch": { "$ref": "#/$defs/sessionEpoch" },
         "media_id": { "$ref": "#/$defs/mediaId" },
         "media_epoch": { "$ref": "#/$defs/mediaEpoch" },
-        "selected_media_profile": { "enum": ["wss-opus-v3", "udp-opus-gcm-v2"] },
+        "selected_media_profile": { "enum": ["wss-opus/1", "udp-opus-gcm/1"] },
         "audio": { "$ref": "#/$defs/audio" },
         "heartbeat_interval_ms": { "type": "integer", "minimum": 5000, "maximum": 60000 },
         "idle_timeout_ms": { "type": "integer", "minimum": 15000, "maximum": 180000 },
@@ -177,7 +177,7 @@
         {
           "if": {
             "required": ["selected_media_profile"],
-            "properties": { "selected_media_profile": { "const": "udp-opus-gcm-v2" } }
+            "properties": { "selected_media_profile": { "const": "udp-opus-gcm/1" } }
           },
           "then": { "required": ["udp_grant"] },
           "else": { "not": { "required": ["udp_grant"] } }

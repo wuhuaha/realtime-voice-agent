@@ -29,7 +29,7 @@ server/
         app.py
         config.py
         auth.py
-        bindings/rva/         # current /v2/voice control and session binding
+        bindings/rva/         # current /rva/v1/voice control and session binding
         transport/            # protocol-neutral media wire/gateway
         voice/livekit/        # roomless runner and audio/text I/O
         providers/
@@ -130,8 +130,8 @@ reference 时不使用额外 AEC warmup 静音窗口。strict explicit policy �
 ### 4.4 Binding 与 transport
 
 - `rva` binding：`session.open/opened`、typed WSS media、transcript/response、server stop fence 和 playback facts。
-- `wss-opus-v3`：共享 media header、session/media identity、directional sequence 和 generation admission。
-- `udp-opus-gcm-v2`：grant、socket/session map、AEAD、replay、source pin、reorder、expiry 和 stats。
+- `wss-opus/1`：共享 media header、session/media identity、directional sequence 和 generation admission。
+- `udp-opus-gcm/1`：grant、socket/session map、AEAD、replay、source pin、reorder、expiry 和 stats。
 - 所有 profile 对上暴露一致的 bounded audio/control port；不得把 WebSocket 或 `asyncio.DatagramTransport`
   泄漏到 Agent application。
 
@@ -187,9 +187,9 @@ provider error/429/timeout。日志不得替代 metrics，也不得记录 token�
 
 ## 8. 实现状态
 
-Director 只选择 RVA v2 binding；grant 绑定 Worker、device、session epoch、fencing token、profiles、control
+Director 只选择 RVA Protocol 1.0 binding；grant 绑定 Worker、device、session epoch、fencing token、profiles、control
 protocol、expiry 和单次 `jti`。Worker 的 binding registry 共用 process admission，并聚合 active lease、release、
 revoke 和 heartbeat。
 
-`/v2/voice`、RVA WSS binding/runtime、strict parser、Opus、bounded queues、transcript/response、server-authoritative
+`/rva/v1/voice`、RVA WSS binding/runtime、strict parser、Opus、bounded queues、transcript/response、server-authoritative
 interruption 和 playback facts 的精确证据只在 [Release readiness](../quality/release-readiness.md) 更新。

@@ -22,8 +22,8 @@ def _loopback_host(host: str | None) -> bool:
 
 
 class MediaProfile(StrEnum):
-    WSS_OPUS_V3 = "wss-opus-v3"
-    UDP_OPUS_GCM_V2 = "udp-opus-gcm-v2"
+    WSS_OPUS_V1 = "wss-opus/1"
+    UDP_OPUS_GCM_V1 = "udp-opus-gcm/1"
 
 
 @dataclass(frozen=True, slots=True)
@@ -55,10 +55,10 @@ class ClientConfig:
     device_id: str
     tenant_id: str = "default"
     supported_profiles: tuple[MediaProfile, ...] = (
-        MediaProfile.UDP_OPUS_GCM_V2,
-        MediaProfile.WSS_OPUS_V3,
+        MediaProfile.UDP_OPUS_GCM_V1,
+        MediaProfile.WSS_OPUS_V1,
     )
-    preferred_profile: MediaProfile = MediaProfile.UDP_OPUS_GCM_V2
+    preferred_profile: MediaProfile = MediaProfile.UDP_OPUS_GCM_V1
     capabilities: EndpointCapabilities = EndpointCapabilities()
     connect_timeout_seconds: float = 5.0
     control_timeout_seconds: float = 5.0

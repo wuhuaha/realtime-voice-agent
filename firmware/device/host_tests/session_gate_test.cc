@@ -22,12 +22,12 @@ int TestProfiles() {
     using voice::contracts::ToWireName;
     using voice::contracts::TransportProfile;
 
-    if (Expect(ParseTransportProfile("wss-opus-v3") == TransportProfile::kWssOpusV3, 10)) return 10;
-    if (Expect(ParseTransportProfile("udp-opus-gcm-v2") == TransportProfile::kUdpOpusGcmV2, 11)) return 11;
-    if (Expect(!ParseTransportProfile("wss-opus-v2"), 15)) return 15;
+    if (Expect(ParseTransportProfile("wss-opus/1") == TransportProfile::kWssOpusV1, 10)) return 10;
+    if (Expect(ParseTransportProfile("udp-opus-gcm/1") == TransportProfile::kUdpOpusGcmV1, 11)) return 11;
+    if (Expect(!ParseTransportProfile("wss-opus/0"), 15)) return 15;
     if (Expect(!ParseTransportProfile("websocket"), 12)) return 12;
-    if (Expect(ToWireName(TransportProfile::kWssOpusV3) == "wss-opus-v3", 13)) return 13;
-    if (Expect(ToWireName(TransportProfile::kUdpOpusGcmV2) == "udp-opus-gcm-v2", 14)) return 14;
+    if (Expect(ToWireName(TransportProfile::kWssOpusV1) == "wss-opus/1", 13)) return 13;
+    if (Expect(ToWireName(TransportProfile::kUdpOpusGcmV1) == "udp-opus-gcm/1", 14)) return 14;
     return 0;
 }
 
@@ -42,10 +42,10 @@ int TestSessionGate() {
     if (Expect(!gate.BeginFreshSession(0), 21)) return 21;
     if (Expect(gate.BeginFreshSession(1), 22)) return 22;
     if (Expect(!gate.BeginFreshSession(2), 23)) return 23;
-    if (Expect(!gate.CommitMedia(TransportProfile::kUdpOpusGcmV2, MediaOwner::kWss), 24)) return 24;
-    if (Expect(gate.CommitMedia(TransportProfile::kUdpOpusGcmV2, MediaOwner::kUdp), 25)) return 25;
+    if (Expect(!gate.CommitMedia(TransportProfile::kUdpOpusGcmV1, MediaOwner::kWss), 24)) return 24;
+    if (Expect(gate.CommitMedia(TransportProfile::kUdpOpusGcmV1, MediaOwner::kUdp), 25)) return 25;
     if (Expect(gate.media_owner() == MediaOwner::kUdp, 26)) return 26;
-    if (Expect(!gate.CommitMedia(TransportProfile::kWssOpusV3, MediaOwner::kWss), 27)) return 27;
+    if (Expect(!gate.CommitMedia(TransportProfile::kWssOpusV1, MediaOwner::kWss), 27)) return 27;
     if (Expect(gate.AdvancePlaybackGeneration(1), 28)) return 28;
     if (Expect(!gate.AdvancePlaybackGeneration(1), 29)) return 29;
     if (Expect(gate.BeginClose(), 30)) return 30;
@@ -57,7 +57,7 @@ int TestSessionGate() {
     if (Expect(gate.BeginClose() && gate.FinishClose(), 36)) return 36;
 
     if (Expect(gate.BeginFreshSession(3), 37)) return 37;
-    if (Expect(gate.CommitMedia(TransportProfile::kWssOpusV3, MediaOwner::kWss), 38)) return 38;
+    if (Expect(gate.CommitMedia(TransportProfile::kWssOpusV1, MediaOwner::kWss), 38)) return 38;
     if (Expect(gate.BeginClose() && gate.FinishClose(), 39)) return 39;
     return 0;
 }
@@ -222,14 +222,14 @@ int TestSessionBoundary() {
 
     if (Expect(session.BeginFreshSession(1), 40)) return 40;
     if (Expect(!session.CommitHello(
-            1, TransportProfile::kUdpOpusGcmV2, MediaOwner::kWss), 41)) {
+            1, TransportProfile::kUdpOpusGcmV1, MediaOwner::kWss), 41)) {
         return 41;
     }
     const auto first = session.CommitHello(
-        1, TransportProfile::kUdpOpusGcmV2, MediaOwner::kUdp);
+        1, TransportProfile::kUdpOpusGcmV1, MediaOwner::kUdp);
     if (Expect(first.has_value(), 42)) return 42;
     if (Expect(!session.CommitHello(
-            1, TransportProfile::kUdpOpusGcmV2, MediaOwner::kUdp), 43)) {
+            1, TransportProfile::kUdpOpusGcmV1, MediaOwner::kUdp), 43)) {
         return 43;
     }
     if (Expect(session.IsCurrentOwner(*first), 44)) return 44;
@@ -259,7 +259,7 @@ int TestSessionBoundary() {
     if (Expect(!session.BeginFreshSession(1), 58)) return 58;
     if (Expect(session.BeginFreshSession(2), 59)) return 59;
     const auto second = session.CommitHello(
-        2, TransportProfile::kWssOpusV3, MediaOwner::kWss);
+        2, TransportProfile::kWssOpusV1, MediaOwner::kWss);
     if (Expect(second.has_value(), 60)) return 60;
     if (Expect(!session.OnTransportClosed(*first), 61)) return 61;
     if (Expect(session.IsCurrentOwner(*second), 62)) return 62;
@@ -300,7 +300,7 @@ int TestReentrantTransitionOrdering() {
 
         if (Expect(session.BeginFreshSession(10), 70)) return 70;
         if (Expect(!session.CommitHello(
-                10, TransportProfile::kWssOpusV3, MediaOwner::kWss), 71)) {
+                10, TransportProfile::kWssOpusV1, MediaOwner::kWss), 71)) {
             return 71;
         }
         if (Expect(events.close_on_commit_result, 72)) return 72;
@@ -323,7 +323,7 @@ int TestReentrantTransitionOrdering() {
 
         if (Expect(session.BeginFreshSession(20), 75)) return 75;
         const auto owner = session.CommitHello(
-            20, TransportProfile::kUdpOpusGcmV2, MediaOwner::kUdp);
+            20, TransportProfile::kUdpOpusGcmV1, MediaOwner::kUdp);
         if (Expect(owner.has_value(), 76)) return 76;
         audio.close_during_generation = true;
         audio.finish_during_revoke = true;
@@ -356,7 +356,7 @@ int TestConcurrentCloseBarrier() {
 
     if (Expect(session.BeginFreshSession(30), 82)) return 82;
     const auto owner = session.CommitHello(
-        30, TransportProfile::kWssOpusV3, MediaOwner::kWss);
+        30, TransportProfile::kWssOpusV1, MediaOwner::kWss);
     if (Expect(owner.has_value(), 83)) return 83;
 
     auto close = std::async(std::launch::async, [&] {
@@ -391,7 +391,7 @@ int TestCloseRevokesBlockingSend() {
 
     if (Expect(session.BeginFreshSession(40), 87)) return 87;
     const auto owner = session.CommitHello(
-        40, TransportProfile::kWssOpusV3, MediaOwner::kWss);
+        40, TransportProfile::kWssOpusV1, MediaOwner::kWss);
     if (Expect(owner.has_value(), 88)) return 88;
 
     auto send = std::async(std::launch::async, [&] {

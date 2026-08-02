@@ -41,7 +41,7 @@ class SessionState:
         self._final_transcript_order: deque[str] = deque()
         self._response_text_sequence: dict[int, int] = {}
         self._last_media_timestamp: dict[int, int] = {}
-        self._next_downlink_sequence = 0 if opened.selected_profile.value == "wss-opus-v3" else 1
+        self._next_downlink_sequence = 0 if opened.selected_profile.value == "wss-opus/1" else 1
 
     def accept_control(self, message: dict[str, Any]) -> SessionEvent | None:
         if self.closed:
@@ -118,7 +118,7 @@ class SessionState:
         if self.closed:
             raise SessionClosed()
         admitted = self.validate_media_admission(frame)
-        if self.opened.selected_profile.value == "wss-opus-v3":
+        if self.opened.selected_profile.value == "wss-opus/1":
             if frame.sequence != self._next_downlink_sequence:
                 raise ProtocolError("invalid_media_sequence")
         elif frame.sequence < self._next_downlink_sequence:
@@ -150,7 +150,7 @@ class SessionState:
         previous_timestamp = self._last_media_timestamp.get(frame.generation)
         if previous_timestamp is not None:
             delta = (frame.timestamp - previous_timestamp) & 0xFFFFFFFF
-            if self.opened.selected_profile.value == "wss-opus-v3":
+            if self.opened.selected_profile.value == "wss-opus/1":
                 if delta != 960:
                     raise ProtocolError("invalid_media_timestamp")
             elif delta == 0 or delta % 960 != 0:

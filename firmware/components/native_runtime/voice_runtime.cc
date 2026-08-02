@@ -618,7 +618,7 @@ void VoiceRuntime::HandleControl(const std::vector<uint8_t>& frame) {
     if (const auto* opened = std::get_if<protocol::SessionOpened>(&message)) {
         const auto core_profile = voice::contracts::ParseTransportProfile(opened->selected_media_profile);
         const voice::core::MediaOwner selected_owner =
-            opened->selected_media_profile == "udp-opus-gcm-v2"
+            opened->selected_media_profile == "udp-opus-gcm/1"
                 ? voice::core::MediaOwner::kUdp
                 : voice::core::MediaOwner::kWss;
         if (opened->session.session_epoch != expected_session_epoch_ ||
@@ -887,9 +887,9 @@ bool VoiceRuntime::SendSessionOpen() {
     protocol::SessionOpen open;
     open.request_id = open_request_id_;
     open.device_id = device_id_;
-    open.supported_media_profiles = {"wss-opus-v3", "udp-opus-gcm-v2"};
+    open.supported_media_profiles = {"wss-opus/1", "udp-opus-gcm/1"};
     open.preferred_media_profile =
-        preferred_media_ == MediaPreference::kUdp ? "udp-opus-gcm-v2" : "wss-opus-v3";
+        preferred_media_ == MediaPreference::kUdp ? "udp-opus-gcm/1" : "wss-opus/1";
     open.capabilities = {
         config_.aec,
         config_.vad,
@@ -1341,7 +1341,8 @@ void VoiceRuntime::RunUplinkSender() {
             static_cast<uint32_t>(std::max<int64_t>(0, started_us - encoded.captured_at_us)));
         if (media_owner_ == voice::core::MediaOwner::kUdp) {
             if (udp_runtime_ == nullptr ||
-                !udp_runtime_->SendAudio(encoded.bytes.data(), encoded.size, encoded.timestamp)) {
+                (!udp_runtime_->SendAudio(encoded.bytes.data(), encoded.size, encoded.timestamp) &&
+                 running_)) {
                 events_.OnFailure("udp_uplink_send");
                 fallback_to_wss_ = true;
                 running_ = false;

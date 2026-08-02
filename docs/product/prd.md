@@ -11,8 +11,8 @@ endpoint 是立创实战派 ESP32-S3，但协议、服务端和测试体系不�
 
 首版以通用中文闲聊为评测载荷，目标不是业务知识正确性，而是证明端云语音链路、实时交互、打断、
 字幕、配置、故障恢复和水平扩展边界。Server 使用 roomless LiveKit `AgentSession` 组织 VAD、STT、LLM、
-TTS 和 interruption；ESP32 使用 `rva-control-v2`，媒体可选择 `wss-opus-v3` 或
-`udp-opus-gcm-v2`。
+TTS 和 interruption；ESP32 使用 `rva/1`，媒体可选择 `wss-opus/1` 或
+`udp-opus-gcm/1`。
 
 ## 2. 用户与场景
 
@@ -29,9 +29,9 @@ TTS 和 interruption；ESP32 使用 `rva-control-v2`，媒体可选择 `wss-opus
 
 - ESP32-S3 启动、联网、音频采集/播放、AEC 配置、触摸/唤醒、状态和流式字幕。
 - 未配置网络时的 Wi-Fi 扫描、选择、软键盘输入和持久化；LiveKit Agent 服务 endpoint 配置和持久化。
-- `rva-control-v2` 控制协议与 `/v2/voice` Worker endpoint。
-- 始终可用的 `wss-opus-v3` baseline。
-- 显式选择或灰度使用的 `udp-opus-gcm-v2` challenger；WSS 始终保留控制连接。
+- `rva/1` 控制协议与 `/rva/v1/voice` Worker endpoint。
+- 始终可用的 `wss-opus/1` baseline。
+- 显式选择或灰度使用的 `udp-opus-gcm/1` challenger；WSS 始终保留控制连接。
 - Session Director、可水平扩展 Realtime Worker、共享 coordination store 适配和 worker-bound grant。
 - roomless LiveKit Agent，支持流式 FunASR、DeepSeek-compatible LLM 和可配置流式 TTS provider。
 - 中文 VAD/EOU、流式字幕、提前准备回复、自然打断和 playback generation fence。
@@ -53,7 +53,7 @@ TTS 和 interruption；ESP32 使用 `rva-control-v2`，媒体可选择 `wss-opus
 | FR-001 | 设备配置 | 无有效 Wi-Fi 时可扫描、选择、输入并保存网络；可配置并保存服务 endpoint |
 | FR-002 | 会话 bootstrap | 设备可获得唯一 Worker endpoint、短期 connect grant、epoch、fencing token 和允许 profile |
 | FR-003 | 身份与鉴权 | Director/Worker 拒绝缺失、过期、错设备、错 Worker、重放或篡改的 grant |
-| FR-004 | 控制连接 | 客户端通过 `/v2/voice` 完成 session、transcript、response、server stop fence、playback facts 和 close 流程 |
+| FR-004 | 控制连接 | 客户端通过 `/rva/v1/voice` 完成 session、transcript、response、server stop fence、playback facts 和 close 流程 |
 | FR-005 | WSS 媒体 | WSS 二进制帧双向承载完整 Opus packet，控制与媒体队列均有界 |
 | FR-006 | UDP 媒体 | WSS 协商短期 UDP grant，UDP 通过 AES-128-GCM、anti-replay、source pin 和小型 jitter 传输 Opus |
 | FR-007 | Profile 选择 | 设备可在 UI 显式选择 WSS/UDP；`auto` 必须遵守 server policy 和设备 capability |
@@ -95,7 +95,7 @@ TTS 和 interruption；ESP32 使用 `rva-control-v2`，媒体可选择 `wss-opus
 
 1. 设备向 Director bootstrap；开发模式可使用明确标记的直连 Worker 路径。
 2. Director 选择 non-draining 且有容量、支持所需 profile 的 Worker，签发短期 grant。
-3. 设备连接 Worker `/v2/voice`，发送 `session.open`。
+3. 设备连接 Worker `/rva/v1/voice`，发送 `session.open`。
 4. Worker 返回 `session.opened` 并 commit 一个媒体 profile。WSS 立即可用；UDP 需完成 authenticated probe 后才 active。
 5. 设备开始上行音频，Worker 启动 roomless AgentSession。
 

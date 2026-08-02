@@ -1,21 +1,21 @@
 {
   "vectors": [
     {
-      "id": "open-with-v2-profiles",
+      "id": "open-with-v1-profiles",
       "direction": "device_to_server",
       "message": {
         "type": "session.open",
-        "protocol_version": 2,
+        "protocol_version": 1,
         "request_id": "open-001",
         "device_id": "esp32s3-a1b2c3",
-        "supported_media_profiles": ["udp-opus-gcm-v2", "wss-opus-v3"],
-        "preferred_media_profile": "wss-opus-v3",
+        "supported_media_profiles": ["udp-opus-gcm/1", "wss-opus/1"],
+        "preferred_media_profile": "wss-opus/1",
         "audio": {"codec": "opus", "sample_rate_hz": 16000, "channels": 1, "frame_duration_ms": 60},
         "capabilities": {"aec": true, "vad": true, "wake_word": true, "display": true, "touch": true}
       }
     },
     {
-      "id": "opened-wss-v3",
+      "id": "opened-wss-v1",
       "direction": "server_to_device",
       "message": {
         "type": "session.opened",
@@ -24,7 +24,7 @@
         "session_epoch": "epoch-007",
         "media_id": "0123456789abcdef",
         "media_epoch": 7,
-        "selected_media_profile": "wss-opus-v3",
+        "selected_media_profile": "wss-opus/1",
         "audio": {"codec": "opus", "sample_rate_hz": 16000, "channels": 1, "frame_duration_ms": 60},
         "heartbeat_interval_ms": 15000,
         "idle_timeout_ms": 45000,
@@ -32,7 +32,7 @@
       }
     },
     {
-      "id": "opened-udp-v2",
+      "id": "opened-udp-v1",
       "direction": "server_to_device",
       "notice": "Deterministic public fixture material; never use these keys in deployment.",
       "message": {
@@ -42,7 +42,7 @@
         "session_epoch": "epoch-008",
         "media_id": "fedcba9876543210",
         "media_epoch": 8,
-        "selected_media_profile": "udp-opus-gcm-v2",
+        "selected_media_profile": "udp-opus-gcm/1",
         "audio": {"codec": "opus", "sample_rate_hz": 16000, "channels": 1, "frame_duration_ms": 60},
         "heartbeat_interval_ms": 15000,
         "idle_timeout_ms": 45000,

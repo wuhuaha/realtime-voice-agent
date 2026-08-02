@@ -8,7 +8,7 @@
 
 namespace rva::udp {
 
-namespace wire = voice::contracts::udp_v2;
+namespace wire = voice::contracts::udp_v1;
 
 inline constexpr size_t kAes128KeyBytes = 16;
 using Aes128Key = std::array<uint8_t, kAes128KeyBytes>;

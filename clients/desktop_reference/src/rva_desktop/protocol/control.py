@@ -56,7 +56,7 @@ def build_session_open(config: ClientConfig, request_id: str) -> dict[str, Any]:
     _identifier(request_id, "request_id")
     return {
         "type": "session.open",
-        "protocol_version": 2,
+        "protocol_version": 1,
         "request_id": request_id,
         "device_id": config.device_id,
         "supported_media_profiles": [profile.value for profile in config.supported_profiles],
@@ -95,7 +95,7 @@ def parse_session_opened(message: dict[str, Any], *, request_id: str) -> Session
         raise ProtocolError("request_id_mismatch")
     selected = MediaProfile(message["selected_media_profile"])
     grant = _parse_udp_grant(message.get("udp_grant"))
-    if (selected is MediaProfile.UDP_OPUS_GCM_V2) != (grant is not None):
+    if (selected is MediaProfile.UDP_OPUS_GCM_V1) != (grant is not None):
         raise ProtocolError("invalid_udp_grant")
     return SessionOpened(
         request_id=request_id,
@@ -120,7 +120,7 @@ def validate_server_message(message: dict[str, Any]) -> None:
             "selected_media_profile", "audio", "heartbeat_interval_ms", "idle_timeout_ms",
             "max_control_message_bytes",
         }
-        if message.get("selected_media_profile") == MediaProfile.UDP_OPUS_GCM_V2.value:
+        if message.get("selected_media_profile") == MediaProfile.UDP_OPUS_GCM_V1.value:
             required.add("udp_grant")
         _exact(message, required)
         if message["audio"] != AUDIO_PROFILE or message["max_control_message_bytes"] != CONTROL_MAX_BYTES:

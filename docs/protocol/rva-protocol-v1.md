@@ -1,23 +1,23 @@
-# RVA Control Protocol v2
+# RVA Protocol 1.0
 
 状态：current
-Protocol ID：`rva-control-v2`
-Machine-readable authority：`protocol/rva_control_v2/contract.yaml`、`messages.schema.json`
+Protocol ID：`rva/1`
+Machine-readable authority：`protocol/rva_v1/contract.yaml`、`messages.schema.json`
 
 ## 1. 边界
 
-`rva-control-v2` 是 Product 唯一当前设备控制协议，运行在 `/v2/voice` WSS。它负责 session、transcript、
+`rva/1` 是 Product 唯一当前设备控制协议，运行在 `/rva/v1/voice` WSS。它负责 session、transcript、
 response generation、authoritative playback stop、设备物理播放事实、错误和关闭；Opus 媒体由本次 session 选定的
-`wss-opus-v3` 或 `udp-opus-gcm-v2` 承载。
+`wss-opus/1` 或 `udp-opus-gcm/1` 承载。
 
-v2 是 clean-slate wire，不接受 `response.cancel`、`response.cancelled`、`barge_in`、`new_wake` 或 legacy
-`hello/listen/tts/abort/mcp`。Product runtime 不实现旧 wire dual stack；旧协议只存在于 Research/Git 历史。
+这是唯一注册的 current wire。实现只接受本规范列出的消息和字段；未注册消息、字段、route 或 profile 均在产生副作用前
+拒绝，不提供兼容 alias 或 dual stack。
 
 ## 2. 建连
 
-1. 设备向 Director bootstrap，声明 `control_protocol=rva-control-v2` 以及 v2 media profiles。
-2. Director 返回绑定 Worker、device、session epoch、profiles、expiry 和 `/v2/voice` 的单次 connect grant。
-3. Worker 验证并消费 grant 后，设备在 handshake timeout 内发送唯一 `session.open(protocol_version=2)`。
+1. 设备向 Director bootstrap，声明 `control_protocol=rva/1` 以及 v1 media profiles。
+2. Director 返回绑定 Worker、device、session epoch、profiles、expiry 和 `/rva/v1/voice` 的单次 connect grant。
+3. Worker 验证并消费 grant 后，设备在 handshake timeout 内发送唯一 `session.open(protocol_version=1)`。
 4. Worker 返回 `session.opened`，commit 唯一 media profile、session/media identity 和运行 limits。
 
 Director bootstrap REST path 不属于本 control wire；本次只升 Worker WSS path。一个 WSS 只承载一个 session。
@@ -27,7 +27,7 @@ Director bootstrap REST path 不属于本 control wire；本次只升 Worker WSS
 
 | Type | Direction | 作用 |
 | --- | --- | --- |
-| `session.open` | device -> server | 声明 v2 profile、audio 与 endpoint capability |
+| `session.open` | device -> server | 声明 v1 profile、audio 与 endpoint capability |
 | `session.opened` | server -> device | 建立 session/media identity 并 commit 唯一 profile |
 | `transcript.delta/final` | server -> device | 发送一个 utterance 的流式/最终 ASR 文本 |
 | `response.begin` | server -> device | 为一个语义 response 打开唯一 `response_id + generation` |
@@ -101,17 +101,17 @@ substring 均无权生成该消息。
 - Generation 由 Server 单调分配，只用于 downlink AUDIO playback identity。
 - WSS/UDP 所有 uplink generation 固定 `0`；UDP non-AUDIO 双向固定 `0`。
 - Downlink AUDIO generation 必须 exact-match active target；旧、未来或已 fenced generation 在 decode/render 前丢弃。
-- 新 profile 的 shared media header `wire_version=0x02`；旧 `0x01` 不接受。
+- 新 profile 的 shared media header `wire_version=0x01`；其他版本值均不接受。
 
 ## 7. Media profile
 
-`session.open.supported_media_profiles` 只能包含 `wss-opus-v3`、`udp-opus-gcm-v2`。Preference 必须在 supported
+`session.open.supported_media_profiles` 只能包含 `wss-opus/1`、`udp-opus-gcm/1`。Preference 必须在 supported
 集合中，Worker 只能从 device offer、grant allow-list 和 server policy 的交集选择。Profile commit 后禁止同 session
 切换；UDP failure 使用 fresh session 重建为 WSS，不做隐式 fallback。
 
 Codec 固定 Opus 16 kHz、mono、60 ms、960 samples/frame、DTX on、FEC off。Correctness baseline 为连续 uplink
 cadence + DTX，使播放期间的 AEC 后音频持续到 Server。未来 VAD-gated uplink 必须用新可协商 profile 定义 pre-roll、
-hangover 与 gap，不得在 v2 profile 内静默改变。
+hangover 与 gap，不得在 v1 profile 内静默改变。
 
 ## 8. 关闭与验证
 

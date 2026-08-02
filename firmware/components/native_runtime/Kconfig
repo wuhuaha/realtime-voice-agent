@@ -37,10 +37,10 @@ choice RVA_DEFAULT_MEDIA_PROFILE
         the idle UI may select another profile for the following session.
 
 config RVA_DEFAULT_MEDIA_PROFILE_WSS
-    bool "WSS Opus v3"
+    bool "WSS Opus 1"
 
 config RVA_DEFAULT_MEDIA_PROFILE_UDP
-    bool "UDP Opus GCM v2"
+    bool "UDP Opus GCM 1"
 
 endchoice
 
@@ -82,13 +82,13 @@ choice RVA_UPLINK_AFFINITY
         must be chosen from target measurements, not from this menu ordering.
 
 config RVA_UPLINK_AFFINITY_UNPINNED
-    bool "V1: bounded owners, no explicit affinity"
+    bool "Bounded owners, no explicit affinity"
 
 config RVA_UPLINK_AFFINITY_OPUS_CPU1
-    bool "V2: Opus on CPU1, sender on CPU0"
+    bool "Opus on CPU1, sender on CPU0"
 
 config RVA_UPLINK_AFFINITY_AUDIO_CPU1
-    bool "V3: capture/framer/Opus on CPU1, sender on CPU0"
+    bool "Capture/framer/Opus on CPU1, sender on CPU0"
 
 endchoice
 

@@ -179,7 +179,7 @@ void TestStrictControlParserAndEncoders() {
     const std::string opened_json =
         R"({"type":"session.opened","request_id":"open-001","session_id":"session-001",)"
         R"("session_epoch":"epoch-007","media_id":"0123456789abcdef","media_epoch":7,)"
-        R"("selected_media_profile":"wss-opus-v3","audio":{"codec":"opus","sample_rate_hz":16000,)"
+        R"("selected_media_profile":"wss-opus/1","audio":{"codec":"opus","sample_rate_hz":16000,)"
         R"("channels":1,"frame_duration_ms":60},"heartbeat_interval_ms":15000,"idle_timeout_ms":45000,)"
         R"("max_control_message_bytes":32768})";
     ServerMessage message;
@@ -189,13 +189,13 @@ void TestStrictControlParserAndEncoders() {
     const auto& opened = std::get<SessionOpened>(message);
     assert(opened.session.session_epoch == "epoch-007");
     assert(opened.media_epoch == 7);
-    assert(opened.selected_media_profile == "wss-opus-v3");
+    assert(opened.selected_media_profile == "wss-opus/1");
     assert(!opened.udp_grant.has_value());
 
     const std::string opened_udp_json =
         R"({"type":"session.opened","request_id":"open-002","session_id":"session-002",)"
         R"("session_epoch":"epoch-008","media_id":"fedcba9876543210","media_epoch":8,)"
-        R"("selected_media_profile":"udp-opus-gcm-v2","audio":{"codec":"opus","sample_rate_hz":16000,)"
+        R"("selected_media_profile":"udp-opus-gcm/1","audio":{"codec":"opus","sample_rate_hz":16000,)"
         R"("channels":1,"frame_duration_ms":60},"heartbeat_interval_ms":15000,"idle_timeout_ms":45000,)"
         R"("max_control_message_bytes":32768,"udp_grant":{"host":"voice.example.test","port":8443,)"
         R"("expires_at_ms":1780000000000,"refresh_after_ms":595000,"uplink_key_b64":"AAAAAAAAAAAAAAAAAAAAAA==",)"
@@ -205,7 +205,7 @@ void TestStrictControlParserAndEncoders() {
                reinterpret_cast<const uint8_t*>(opened_udp_json.data()), opened_udp_json.size(), &message) ==
            ControlError::kOk);
     const auto& opened_udp = std::get<SessionOpened>(message);
-    assert(opened_udp.selected_media_profile == "udp-opus-gcm-v2");
+    assert(opened_udp.selected_media_profile == "udp-opus-gcm/1");
     assert(opened_udp.udp_grant.has_value());
     assert(opened_udp.udp_grant->host == "voice.example.test");
     assert(opened_udp.udp_grant->port == 8443);
@@ -216,9 +216,9 @@ void TestStrictControlParserAndEncoders() {
     assert(opened_udp.udp_grant->downlink_key[0] == 0xff && opened_udp.udp_grant->downlink_key[15] == 0xff);
 
     const std::vector<std::string> rejected_opened_messages = {
-        R"({"type":"session.opened","request_id":"open-001","session_id":"session-001","session_epoch":"epoch-007","media_id":"0123456789abcdef","media_epoch":7,"selected_media_profile":"udp-opus-gcm-v2","audio":{"codec":"opus","sample_rate_hz":16000,"channels":1,"frame_duration_ms":60},"heartbeat_interval_ms":15000,"idle_timeout_ms":45000,"max_control_message_bytes":32768})",
-        R"({"type":"session.opened","request_id":"open-001","session_id":"session-001","session_epoch":"epoch-007","media_id":"0123456789abcdef","media_epoch":7,"selected_media_profile":"wss-opus-v3","audio":{"codec":"opus","sample_rate_hz":16000,"channels":1,"frame_duration_ms":60},"heartbeat_interval_ms":15000,"idle_timeout_ms":45000,"max_control_message_bytes":32768,"udp_grant":{}})",
-        R"({"type":"session.opened","request_id":"open-002","session_id":"session-002","session_epoch":"epoch-008","media_id":"fedcba9876543210","media_epoch":8,"selected_media_profile":"udp-opus-gcm-v2","audio":{"codec":"opus","sample_rate_hz":16000,"channels":1,"frame_duration_ms":60},"heartbeat_interval_ms":15000,"idle_timeout_ms":45000,"max_control_message_bytes":32768,"udp_grant":{"host":"voice.example.test","port":8443,"expires_at_ms":1780000000000,"uplink_key_b64":"AAAAAAAAAAAAAAAAAAAAAB==","uplink_salt_b64":"AAAAAAAAAAA=","downlink_key_b64":"/////////////////////w==","downlink_salt_b64":"//////////8=","probe_timeout_ms":1500}})",
+        R"({"type":"session.opened","request_id":"open-001","session_id":"session-001","session_epoch":"epoch-007","media_id":"0123456789abcdef","media_epoch":7,"selected_media_profile":"udp-opus-gcm/1","audio":{"codec":"opus","sample_rate_hz":16000,"channels":1,"frame_duration_ms":60},"heartbeat_interval_ms":15000,"idle_timeout_ms":45000,"max_control_message_bytes":32768})",
+        R"({"type":"session.opened","request_id":"open-001","session_id":"session-001","session_epoch":"epoch-007","media_id":"0123456789abcdef","media_epoch":7,"selected_media_profile":"wss-opus/1","audio":{"codec":"opus","sample_rate_hz":16000,"channels":1,"frame_duration_ms":60},"heartbeat_interval_ms":15000,"idle_timeout_ms":45000,"max_control_message_bytes":32768,"udp_grant":{}})",
+        R"({"type":"session.opened","request_id":"open-002","session_id":"session-002","session_epoch":"epoch-008","media_id":"fedcba9876543210","media_epoch":8,"selected_media_profile":"udp-opus-gcm/1","audio":{"codec":"opus","sample_rate_hz":16000,"channels":1,"frame_duration_ms":60},"heartbeat_interval_ms":15000,"idle_timeout_ms":45000,"max_control_message_bytes":32768,"udp_grant":{"host":"voice.example.test","port":8443,"expires_at_ms":1780000000000,"uplink_key_b64":"AAAAAAAAAAAAAAAAAAAAAB==","uplink_salt_b64":"AAAAAAAAAAA=","downlink_key_b64":"/////////////////////w==","downlink_salt_b64":"//////////8=","probe_timeout_ms":1500}})",
     };
     for (const std::string& rejected : rejected_opened_messages) {
         assert(rva::protocol::ParseServerMessage(
@@ -277,14 +277,14 @@ void TestStrictControlParserAndEncoders() {
     assert(rva::protocol::ParseServerMessage(oversized.data(), oversized.size(), &message) ==
            ControlError::kOversize);
 
-    const std::vector<std::string> rejected_v2_messages = {
+    const std::vector<std::string> rejected_unregistered_messages = {
         R"({"type":"response.end","session_id":"session-001","session_epoch":"epoch-007","response_id":"resp-1","generation":3,"outcome":"completed"})",
         R"({"type":"response.end","session_id":"session-001","session_epoch":"epoch-007","response_id":"resp-1","generation":3,"outcome":"cancelled","final_media_sequence":1})",
         R"({"type":"response.end","session_id":"session-001","session_epoch":"epoch-007","response_id":"resp-1","generation":3,"outcome":"failed","error_code":"Bad-Code"})",
         R"({"type":"playback.stop","session_id":"session-001","session_epoch":"epoch-007","target":{"response_id":"resp-1","generation":3},"fence_generation":3,"cause":"recognized_interrupt"})",
         R"({"type":"response.cancelled","session_id":"session-001","session_epoch":"epoch-007","target":{"response_id":"resp-1","generation":3},"reason":"cancelled"})",
     };
-    for (const std::string& rejected : rejected_v2_messages) {
+    for (const std::string& rejected : rejected_unregistered_messages) {
         assert(rva::protocol::ParseServerMessage(
                    reinterpret_cast<const uint8_t*>(rejected.data()), rejected.size(), &message) !=
                ControlError::kOk);
@@ -293,15 +293,15 @@ void TestStrictControlParserAndEncoders() {
     rva::protocol::SessionOpen open;
     open.request_id = "open-001";
     open.device_id = "esp32s3-test";
-    open.supported_media_profiles = {"wss-opus-v3"};
-    open.preferred_media_profile = "wss-opus-v3";
+    open.supported_media_profiles = {"wss-opus/1"};
+    open.preferred_media_profile = "wss-opus/1";
     open.capabilities = {true, true, true, true, true};
     std::string encoded;
     assert(rva::protocol::EncodeSessionOpen(open, &encoded) == ControlError::kOk);
     cJSON* root = cJSON_ParseWithLength(encoded.data(), encoded.size());
     assert(root != nullptr);
     assert(std::strcmp(cJSON_GetStringValue(cJSON_GetObjectItem(root, "type")), "session.open") == 0);
-    assert(cJSON_GetNumberValue(cJSON_GetObjectItem(root, "protocol_version")) == 2);
+    assert(cJSON_GetNumberValue(cJSON_GetObjectItem(root, "protocol_version")) == 1);
     cJSON_Delete(root);
 
     assert(rva::protocol::EncodeResponseCancelRequest(

@@ -5,7 +5,7 @@
 #include <cstdint>
 #include <optional>
 
-namespace voice::contracts::udp_v2 {
+namespace voice::contracts::udp_v1 {
 
 constexpr std::size_t kHeaderBytes = 32;
 constexpr std::size_t kMediaIdBytes = 8;
@@ -14,7 +14,7 @@ constexpr std::size_t kNonceBytes = 12;
 constexpr std::size_t kTagBytes = 16;
 constexpr std::size_t kMaxDatagramBytes = 1280;
 constexpr std::size_t kMaxPayloadBytes = 1200;
-constexpr std::uint8_t kVersion = 2;
+constexpr std::uint8_t kVersion = 1;
 
 using MediaId = std::array<std::uint8_t, kMediaIdBytes>;
 using DirectionalSalt = std::array<std::uint8_t, kSaltBytes>;
@@ -59,4 +59,4 @@ bool MatchesSession(
     const Header& header, const MediaId& media_id, std::uint32_t media_epoch);
 Nonce MakeNonce(const DirectionalSalt& salt, std::uint32_t sequence);
 
-}  // namespace voice::contracts::udp_v2
+}  // namespace voice::contracts::udp_v1

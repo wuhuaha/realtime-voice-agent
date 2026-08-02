@@ -36,7 +36,7 @@ stateDiagram-v2
 
 ## 3. WebSocket close 映射
 
-`rva-control-v2` 的 `session.error` 只报告有界、分类后的 session 错误；连接 terminal 仍使用标准 close code 和有限
+`rva/1` 的 `session.error` 只报告有界、分类后的 session 错误；连接 terminal 仍使用标准 close code 和有限
 ASCII reason：
 
 | Code | Reason 类别 | 示例 |

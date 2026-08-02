@@ -6,7 +6,7 @@
 ## 决定
 
 Product 维护独立的 `rva-desktop` Python reference endpoint，用于验证 canonical control/media contract、Director
-bootstrap、`wss-opus-v3` / `udp-opus-gcm-v2`、playback facts 和 host lifecycle。它与 ESP32 共用协议和服务端边界，
+bootstrap、`wss-opus/1` / `udp-opus-gcm/1`、playback facts 和 host lifecycle。它与 ESP32 共用协议和服务端边界，
 但不成为最终用户桌面产品。
 
 ## 范围
@@ -34,4 +34,4 @@ bootstrap、`wss-opus-v3` / `udp-opus-gcm-v2`、playback facts 和 host lifecycl
 
 - [系统架构](../architecture/system.md)
 - [测试策略](../quality/test-strategy.md)
-- [RVA Control v2](../protocol/rva-control-v2.md)
+- [RVA Protocol 1.0](../protocol/rva-protocol-v1.md)

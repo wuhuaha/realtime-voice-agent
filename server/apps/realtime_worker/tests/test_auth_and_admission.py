@@ -27,8 +27,8 @@ def _grant(*, worker_id: str = "worker-a", device_id: str = "device-1") -> str:
         worker_id=worker_id,
         session_epoch="epoch-1",
         fencing_token=3,
-        profiles=("wss-opus-v3",),
-        control_protocol="rva-control-v2",
+        profiles=("wss-opus/1",),
+        control_protocol="rva/1",
         iat=now,
         exp=now + 30,
         jti="jti-1",
@@ -41,8 +41,8 @@ def test_director_grant_is_worker_device_protocol_and_profile_bound() -> None:
     accepted = WorkerAuthenticator(_settings()).verify(f"Bearer {token}", "device-1")
 
     assert accepted is not None
-    assert accepted.context.control_protocol == "rva-control-v2"
-    assert accepted.context.allowed_profiles == ("wss-opus-v3",)
+    assert accepted.context.control_protocol == "rva/1"
+    assert accepted.context.allowed_profiles == ("wss-opus/1",)
     assert accepted.director_grant == token
     assert WorkerAuthenticator(_settings(worker_id="worker-b")).verify(f"Bearer {token}", "device-1") is None
     assert WorkerAuthenticator(_settings()).verify(f"Bearer {token}", "device-2") is None
@@ -52,8 +52,8 @@ def test_lab_auth_exposes_only_current_profiles() -> None:
     wss = WorkerAuthenticator(_settings()).verify("Bearer lab-test-token", "device-1")
     udp = WorkerAuthenticator(_settings(rva_udp_enabled=True)).verify("Bearer lab-test-token", "device-1")
 
-    assert wss is not None and wss.context.allowed_profiles == ("wss-opus-v3",)
-    assert udp is not None and udp.context.allowed_profiles == ("wss-opus-v3", "udp-opus-gcm-v2")
+    assert wss is not None and wss.context.allowed_profiles == ("wss-opus/1",)
+    assert udp is not None and udp.context.allowed_profiles == ("wss-opus/1", "udp-opus-gcm/1")
 
 
 def test_auth_rejects_missing_invalid_and_disabled_lab_credentials() -> None:
@@ -73,7 +73,7 @@ def test_device_identity_is_stable_ascii_and_logs_use_keyed_reference() -> None:
     assert "device-1" not in first
 
 
-@pytest.mark.parametrize("public_url", ["wss:not-an-authority", "https://worker.test/v2/voice", "wss://worker.test/wrong"])
+@pytest.mark.parametrize("public_url", ["wss:not-an-authority", "https://worker.test/rva/v1/voice", "wss://worker.test/wrong"])
 def test_public_url_requires_canonical_secure_voice_endpoint(public_url: str) -> None:
     with pytest.raises(ValueError, match="VOICE_RVA_PUBLIC_WS_URL"):
         _settings(rva_public_ws_url=public_url).validate_runtime()

@@ -9,7 +9,7 @@
 
 namespace {
 
-namespace wire = voice::contracts::udp_v2;
+namespace wire = voice::contracts::udp_v1;
 
 int HexNibble(char value) {
     if (value >= '0' && value <= '9') return value - '0';

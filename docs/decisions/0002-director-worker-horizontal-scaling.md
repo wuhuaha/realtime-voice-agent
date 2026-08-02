@@ -22,7 +22,7 @@ codec、playback generation 与 bounded teardown。Server 运行与生产编排�
   coordination store 中单次消费。
 - Worker 故障后设备 fresh bootstrap/session，不迁移 active turn；drain 是单向状态，恢复容量使用新的 Worker
   incarnation，不对旧进程 undrain。
-- `/v2/voice` 是唯一设备语音入口；current wire 只有 `rva-control-v2`、`wss-opus-v3` 和 `udp-opus-gcm-v2`。
+- `/rva/v1/voice` 是唯一设备语音入口；current wire 只有 `rva/1`、`wss-opus/1` 和 `udp-opus-gcm/1`。
 
 ## 选择理由
 

@@ -52,7 +52,7 @@ def test_production_requires_provider_readiness_gate() -> None:
         allow_lab_auth=False,
         director_url="https://director.example.test",
         heartbeat_enabled=True,
-        rva_public_ws_url="wss://voice.example.test/v2/voice",
+        rva_public_ws_url="wss://voice.example.test/rva/v1/voice",
     )
 
     with pytest.raises(ValueError, match="VOICE_PROVIDER_READINESS_REQUIRED"):
@@ -62,7 +62,7 @@ def test_production_requires_provider_readiness_gate() -> None:
 def test_worker_exposes_only_rva_and_health_by_default() -> None:
     app = create_app(settings())
     paths = {route.path for route in app.routes}
-    assert "/v2/voice" in paths
+    assert "/rva/v1/voice" in paths
     assert "/v1/direct" not in paths
     assert "/v1/device/bootstrap" not in paths
 
@@ -442,7 +442,7 @@ async def test_registry_startup_abort_is_idempotent_for_admission_and_exact_rele
     auth = AuthContext(
         tenant_id="tenant-1",
         device_id="device-1",
-        allowed_profiles=("wss-opus-v3",),
+        allowed_profiles=("wss-opus/1",),
         session_epoch="epoch-1",
         fencing_token=7,
         expires_at=100.0,
@@ -522,7 +522,7 @@ async def test_worker_heartbeat_reports_capacity_and_applies_director_drain() ->
     worker_settings = settings(
         director_url="http://director.test",
         heartbeat_enabled=True,
-        rva_public_ws_url="ws://worker-a.test/v2/voice",
+        rva_public_ws_url="ws://worker-a.test/rva/v1/voice",
     )
     admission = SharedSessionAdmission(worker_settings.max_sessions)
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
@@ -533,12 +533,12 @@ async def test_worker_heartbeat_reports_capacity_and_applies_director_drain() ->
     assert requests[0]["max_sessions"] == 5
     assert requests[0]["active_sessions"] == 0
     assert requests[0]["healthy"] is True
-    assert requests[0]["profiles"] == ["wss-opus-v3"]
+    assert requests[0]["profiles"] == ["wss-opus/1"]
     assert requests[0]["bindings"] == [
         {
-            "control_protocol": "rva-control-v2",
-            "public_wss_url": "ws://worker-a.test/v2/voice",
-            "profiles": ["wss-opus-v3"],
+            "control_protocol": "rva/1",
+            "public_wss_url": "ws://worker-a.test/rva/v1/voice",
+            "profiles": ["wss-opus/1"],
         },
     ]
     assert requests[0]["active_leases"] == [
@@ -622,9 +622,9 @@ async def test_heartbeat_with_failed_udp_gateway_removes_udp_and_reports_unhealt
         await heartbeat.send_once()
 
     assert requests[0]["healthy"] is False
-    assert requests[0]["profiles"] == ["wss-opus-v3"]
+    assert requests[0]["profiles"] == ["wss-opus/1"]
     assert all(
-        "udp-opus-gcm-v2" not in binding["profiles"]
+        "udp-opus-gcm/1" not in binding["profiles"]
         for binding in requests[0]["bindings"]  # type: ignore[union-attr]
     )
 

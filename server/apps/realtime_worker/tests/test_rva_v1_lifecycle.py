@@ -18,11 +18,11 @@ def _session_open() -> str:
     return json.dumps(
         {
             "type": "session.open",
-            "protocol_version": 2,
+            "protocol_version": 1,
             "request_id": "open-001",
             "device_id": "device-001",
-            "supported_media_profiles": ["wss-opus-v3"],
-            "preferred_media_profile": "wss-opus-v3",
+            "supported_media_profiles": ["wss-opus/1"],
+            "preferred_media_profile": "wss-opus/1",
             "audio": {
                 "codec": "opus",
                 "sample_rate_hz": 16_000,
@@ -84,7 +84,7 @@ async def _binding() -> RvaWssBinding:
         agent_port=port,
     )
     opened = await binding.receive_control(_session_open())
-    assert json.loads(opened.outbound[0])["selected_media_profile"] == "wss-opus-v3"
+    assert json.loads(opened.outbound[0])["selected_media_profile"] == "wss-opus/1"
     return binding
 
 
@@ -129,7 +129,7 @@ def test_media_header_rejects_previous_wire_version() -> None:
         payload=b"opus",
     )
     wire = bytearray(frame.serialize())
-    wire[2] = 1
+    wire[2] = 2
 
     with pytest.raises(RvaBindingError, match="unsupported_media_header"):
         WssMediaFrame.parse(bytes(wire))

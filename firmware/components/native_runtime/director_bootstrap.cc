@@ -132,12 +132,12 @@ bool DirectorBootstrap::Request(
     Json request(cJSON_CreateObject());
     if (request == nullptr || cJSON_AddStringToObject(request.get(), "tenant_id", tenant_id.c_str()) == nullptr ||
         cJSON_AddStringToObject(request.get(), "device_id", device_id.c_str()) == nullptr ||
-        cJSON_AddStringToObject(request.get(), "control_protocol", "rva-control-v2") == nullptr) {
+        cJSON_AddStringToObject(request.get(), "control_protocol", "rva/1") == nullptr) {
         return false;
     }
     cJSON* profiles = cJSON_AddArrayToObject(request.get(), "supported_profiles");
-    if (profiles == nullptr || cJSON_AddItemToArray(profiles, cJSON_CreateString("wss-opus-v3")) == 0 ||
-        cJSON_AddItemToArray(profiles, cJSON_CreateString("udp-opus-gcm-v2")) == 0) return false;
+    if (profiles == nullptr || cJSON_AddItemToArray(profiles, cJSON_CreateString("wss-opus/1")) == 0 ||
+        cJSON_AddItemToArray(profiles, cJSON_CreateString("udp-opus-gcm/1")) == 0) return false;
     std::unique_ptr<char, decltype(&cJSON_free)> body(cJSON_PrintUnformatted(request.get()), cJSON_free);
     if (body == nullptr) return false;
 
@@ -201,13 +201,13 @@ bool DirectorBootstrap::Request(
     CommitReleaseIdentity(grant, &parsed);
     if (!GetString(root.get(), "worker_wss_url", 255, &grant->worker_wss_url) ||
         !GetString(root.get(), "connect_grant", 4096, &grant->connect_grant) || grant->connect_grant.size() < 32 ||
-        !GetString(root.get(), "control_protocol", 32, &control_protocol) || control_protocol != "rva-control-v2") {
+        !GetString(root.get(), "control_protocol", 32, &control_protocol) || control_protocol != "rva/1") {
         ESP_LOGE(kLogTag, "response invalid: media_fields");
         return false;
     }
     config::EndpointSnapshot endpoint;
     if (config::DeviceConfig::ParseEndpoint(grant->worker_wss_url, &endpoint) != config::ConfigResult::kOk ||
-        !EndsWith(grant->worker_wss_url, "/v2/voice")) {
+        !EndsWith(grant->worker_wss_url, "/rva/v1/voice")) {
         ESP_LOGE(kLogTag, "response invalid: worker_endpoint");
         return false;
     }
@@ -216,7 +216,7 @@ bool DirectorBootstrap::Request(
     if (cJSON_IsArray(allowed)) {
         const cJSON* item = nullptr;
         cJSON_ArrayForEach(item, allowed) {
-            supports_wss |= cJSON_IsString(item) && std::strcmp(item->valuestring, "wss-opus-v3") == 0;
+            supports_wss |= cJSON_IsString(item) && std::strcmp(item->valuestring, "wss-opus/1") == 0;
         }
     }
     if (!supports_wss) {

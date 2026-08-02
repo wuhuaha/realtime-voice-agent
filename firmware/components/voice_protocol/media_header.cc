@@ -7,7 +7,7 @@ namespace {
 
 constexpr uint8_t kMagic0 = 0x56;
 constexpr uint8_t kMagic1 = 0x41;
-constexpr uint8_t kWireVersion = 2;
+constexpr uint8_t kWireVersion = 1;
 constexpr uint8_t kKnownFlags = 0x01 | 0x02 | 0x04;
 
 uint32_t ReadU32(const uint8_t* value) {

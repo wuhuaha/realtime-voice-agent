@@ -1,7 +1,7 @@
 # 决策 0005：项目自有 ESP-IDF endpoint 与 RVA 协议
 
 日期：2026-08-01
-状态：accepted；协议细节由 [决策 0006](0006-server-authoritative-interruption-and-rva-v2.md) 和 canonical
+状态：accepted；协议细节由 [决策 0006](0006-server-authoritative-interruption-and-rva-v1.md) 和 canonical
 protocol/ contracts 约束。
 
 ## 决定
@@ -9,11 +9,11 @@ protocol/ contracts 约束。
 - 首个 reference endpoint 使用项目自有 ESP-IDF native application；入口为 `firmware/apps/voice_terminal/`。
 - Board、audio、session、transport、config、presentation 和可选 LVGL UI 由 Product 自有组件组成；语音 core 不依赖
   board、LVGL 或具体 provider。
-- 端云控制协议为 `rva-control-v2`，设备媒体 profile 为 `wss-opus-v3` 或 `udp-opus-gcm-v2`；同一 session 只提交一个
+- 端云控制协议为 `rva/1`，设备媒体 profile 为 `wss-opus/1` 或 `udp-opus-gcm/1`；同一 session 只提交一个
   profile，不做 transport 热切换。
 - Endpoint 实现 session epoch、connect grant、playback generation、精确 stop、freshness fence、有界队列、heartbeat、
   close reason 和 fresh reconnect；Server 是语义打断和 response lifecycle 的唯一裁决者。
-- 当前 Server 只提供 `/v2/voice`，旧 wire/path 不进入 Product runtime；未来其他 endpoint 通过 canonical contract
+- 当前 Server 只提供 `/rva/v1/voice`，旧 wire/path 不进入 Product runtime；未来其他 endpoint 通过 canonical contract
   和独立 binding 接入，不复制 ESP32 task 或 UI 实现。
 - Server、firmware 与 protocol 必须作为匹配 artifact 发布；单边回滚到不兼容 wire 不受支持。
 
@@ -32,5 +32,5 @@ release gate。
 ## 关联
 
 - [Firmware 架构](../architecture/firmware.md)
-- [RVA Control v2](../protocol/rva-control-v2.md)
-- [决策 0006：服务端独占语义打断](0006-server-authoritative-interruption-and-rva-v2.md)
+- [RVA Protocol 1.0](../protocol/rva-protocol-v1.md)
+- [决策 0006：服务端独占语义打断](0006-server-authoritative-interruption-and-rva-v1.md)

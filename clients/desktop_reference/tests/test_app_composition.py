@@ -88,7 +88,7 @@ class FakeSession:
         self,
         events: list[SessionEvent],
         *,
-        profile: MediaProfile = MediaProfile.WSS_OPUS_V3,
+        profile: MediaProfile = MediaProfile.WSS_OPUS_V1,
         keepalive_signal: asyncio.Event | None = None,
     ) -> None:
         self.events = asyncio.Queue[SessionEvent]()
@@ -317,7 +317,7 @@ def test_udp_silence_sends_keepalive_without_stopping_receive_loop() -> None:
         stop = asyncio.Event()
         session = FakeSession(
             [],
-            profile=MediaProfile.UDP_OPUS_GCM_V2,
+            profile=MediaProfile.UDP_OPUS_GCM_V1,
             keepalive_signal=stop,
         )
         source = FixturePcmSource(b"")
@@ -354,7 +354,7 @@ def test_udp_keepalive_refresh_fresh_reopens_idle_session() -> None:
                 stop.set()
                 return opened
 
-        session = RefreshingSession([], profile=MediaProfile.UDP_OPUS_GCM_V2)
+        session = RefreshingSession([], profile=MediaProfile.UDP_OPUS_GCM_V1)
         app = DesktopApp(  # type: ignore[arg-type]
             session,
             source=FixturePcmSource(b""),
@@ -492,7 +492,7 @@ def test_udp_audio_timestamp_gap_uses_bounded_plc_before_current_packet() -> Non
                 target=target,
             ),
         ]
-        session = FakeSession(events, profile=MediaProfile.UDP_OPUS_GCM_V2)
+        session = FakeSession(events, profile=MediaProfile.UDP_OPUS_GCM_V1)
         sink = FakeSink()
         codec = FakeCodec()
         app = DesktopApp(  # type: ignore[arg-type]
@@ -536,7 +536,7 @@ def test_udp_sequence_gap_from_keepalive_does_not_create_false_plc() -> None:
                 target=target,
             )
         )
-        session = FakeSession(events, profile=MediaProfile.UDP_OPUS_GCM_V2)
+        session = FakeSession(events, profile=MediaProfile.UDP_OPUS_GCM_V1)
         codec = FakeCodec()
         app = DesktopApp(  # type: ignore[arg-type]
             session,
@@ -578,7 +578,7 @@ def test_udp_large_audio_gap_stops_target_and_fresh_reopens() -> None:
                 target=target,
             )
         )
-        session = FakeSession(events, profile=MediaProfile.UDP_OPUS_GCM_V2)
+        session = FakeSession(events, profile=MediaProfile.UDP_OPUS_GCM_V1)
         codec = FakeCodec()
         app = DesktopApp(  # type: ignore[arg-type]
             session,
@@ -619,7 +619,7 @@ def test_missing_final_udp_packet_expires_then_stops_and_reopens() -> None:
                 target=target,
             ),
         ]
-        session = FakeSession(events, profile=MediaProfile.UDP_OPUS_GCM_V2)
+        session = FakeSession(events, profile=MediaProfile.UDP_OPUS_GCM_V1)
         app = DesktopApp(  # type: ignore[arg-type]
             session,
             source=FixturePcmSource(b""),
@@ -652,7 +652,7 @@ def test_missing_response_end_expires_then_stops_and_reopens() -> None:
                 SessionEvent("response.begin", target=target),
                 SessionEvent("media.audio", target=target, media=first),
             ],
-            profile=MediaProfile.UDP_OPUS_GCM_V2,
+            profile=MediaProfile.UDP_OPUS_GCM_V1,
         )
         session.config = SimpleNamespace(
             media_max_age_seconds=0.01,
@@ -710,7 +710,7 @@ def test_recovery_completion_waits_until_fresh_reopen_finishes() -> None:
                 SessionEvent("media.audio", target=target, media=first),
                 SessionEvent("media.audio", target=target, media=second),
             ],
-            profile=MediaProfile.UDP_OPUS_GCM_V2,
+            profile=MediaProfile.UDP_OPUS_GCM_V1,
         )
         app = DesktopApp(  # type: ignore[arg-type]
             session,

@@ -4,27 +4,27 @@ namespace voice::contracts {
 
 namespace {
 
-constexpr std::string_view kWssOpusV3 = "wss-opus-v3";
-constexpr std::string_view kUdpOpusGcmV2 = "udp-opus-gcm-v2";
+constexpr std::string_view kWssOpusV1 = "wss-opus/1";
+constexpr std::string_view kUdpOpusGcmV1 = "udp-opus-gcm/1";
 
 }  // namespace
 
 std::string_view ToWireName(TransportProfile profile) {
     switch (profile) {
-        case TransportProfile::kWssOpusV3:
-            return kWssOpusV3;
-        case TransportProfile::kUdpOpusGcmV2:
-            return kUdpOpusGcmV2;
+        case TransportProfile::kWssOpusV1:
+            return kWssOpusV1;
+        case TransportProfile::kUdpOpusGcmV1:
+            return kUdpOpusGcmV1;
     }
     return {};
 }
 
 std::optional<TransportProfile> ParseTransportProfile(std::string_view wire_name) {
-    if (wire_name == kWssOpusV3) {
-        return TransportProfile::kWssOpusV3;
+    if (wire_name == kWssOpusV1) {
+        return TransportProfile::kWssOpusV1;
     }
-    if (wire_name == kUdpOpusGcmV2) {
-        return TransportProfile::kUdpOpusGcmV2;
+    if (wire_name == kUdpOpusGcmV1) {
+        return TransportProfile::kUdpOpusGcmV1;
     }
     return std::nullopt;
 }

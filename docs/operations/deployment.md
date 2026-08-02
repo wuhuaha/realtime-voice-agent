@@ -118,7 +118,7 @@ Director 可多副本无会话媒体状态；Worker 是 stateful realtime unit�
 ### Worker
 
 - 唯一 `VOICE_WORKER_ID` 和可达 `VOICE_RVA_PUBLIC_WS_URL`。
-- 生产 `VOICE_RVA_PUBLIC_WS_URL` 必须为 `wss://` 且 path 为 `/v2/voice`；`ws://` 只允许受控开发环境。
+- 生产 `VOICE_RVA_PUBLIC_WS_URL` 必须为 `wss://` 且 path 为 `/rva/v1/voice`；`ws://` 只允许受控开发环境。
 - `VOICE_WORKER_MAX_SESSIONS` 默认 `5`，部署可覆盖；不是测量 SLO。
 - `VOICE_DIRECTOR_URL`、heartbeat enabled/interval 和相同 signing/internal secret version。
 - `VOICE_SHUTDOWN_DRAIN_TIMEOUT_SECONDS` 控制关停总预算，默认 10 秒；部署 orchestrator 的 termination grace period
@@ -191,8 +191,8 @@ UDP grant 同时携带绝对安全边界 `expires_at_ms` 和相对调度值 `ref
 ## 8. 回滚
 
 保留前一 Server image、protocol/profile allow-list、firmware artifact identity 和数据库/Redis key version。回滚只能
-恢复彼此匹配并通过门禁的 v2 Server/Firmware artifact；不得用 v1 wire 或仅单边回滚制造不兼容组合。必要时先 drain
-新 Worker，再恢复旧 Worker。Firmware 回滚必须验证 NVS 兼容，不得擦除用户配置作为默认回滚步骤。
+恢复彼此匹配并通过门禁的 Server/Firmware artifact；不得仅回滚单边组件制造不兼容组合。必要时先 drain 新 Worker，
+再恢复匹配的上一组 artifact。Firmware 回滚必须验证 NVS 兼容，不得擦除用户配置作为默认回滚步骤。
 
 ## 9. 当前发布状态
 
