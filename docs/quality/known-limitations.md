@@ -41,6 +41,5 @@
 - Release SBOM 是锁定组件清单，不是漏洞扫描结论。字体、Python native wheel、FFmpeg/PyAV、PortAudio 等依赖仍须由
   实际二进制发布方按目标平台复核许可证和分发义务。
 
-上述限制不影响当前 alpha 对已登记 wire、资源有界生命周期、UDP 真机闭环和 Linux 单节点部署基线的验证结论。
-WSS baseline 的历史 artifact暴露 freshness regression；修复后的最终 artifact 真机门禁完成前，不声明 WSS
-`device_verified`。
+上述限制不影响当前 alpha 对已登记 wire、资源有界生命周期、WSS 当前 artifact与 UDP 历史 artifact真机闭环、
+Linux 单节点部署基线的验证结论。UDP 尚未在当前 freshness 修复 source上重跑，因此只保留历史 device evidence。
