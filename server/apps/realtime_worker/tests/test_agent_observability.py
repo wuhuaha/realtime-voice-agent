@@ -240,6 +240,31 @@ def test_multi_vad_during_thinking_barge_reuses_new_turn_and_old_response_playba
     assert started.fields["turn_id"] == response_turn
 
 
+def test_repeated_thinking_during_generation_does_not_reassign_pending_response() -> None:
+    sink = InMemoryTraceSink()
+    tracer = Tracer(TraceContext(trace_id="trace-repeated-thinking"), sink)
+    session = FakeSession()
+    observer = _register_livekit_observers(session, tracer)
+
+    session.emit("user_state_changed", SimpleNamespace(new_state="speaking", old_state="listening", created_at=1.0))
+    response_turn = tracer.current_turn_id
+    session.emit("agent_state_changed", SimpleNamespace(new_state="thinking"))
+
+    # Echo/background speech creates a candidate turn while the original TTS
+    # response is still being generated. LiveKit may briefly think again even
+    # though the response gate will suppress that candidate.
+    session.emit("user_state_changed", SimpleNamespace(new_state="speaking", old_state="listening", created_at=1.1))
+    contaminated_turn = tracer.current_turn_id
+    session.emit("agent_state_changed", SimpleNamespace(new_state="thinking"))
+    session.emit("agent_state_changed", SimpleNamespace(new_state="speaking"))
+
+    observer.playback_started(1.2)
+    started = next(event for event in sink.events if event.name == "endpoint_playback_started")
+    assert response_turn is not None and contaminated_turn != response_turn
+    assert started.fields["turn_id"] == response_turn
+    assert [event.fields["turn_id"] for event in sink.events if event.name == "llm_requested"] == [response_turn]
+
+
 def test_assistant_item_after_playback_completion_does_not_create_pseudo_turn() -> None:
     sink = InMemoryTraceSink()
     tracer = Tracer(TraceContext(trace_id="trace-assistant-late"), sink)

@@ -870,6 +870,7 @@ def _register_livekit_observers(
     interim_seen = False
     agent_state = "initializing"
     response_turn_id: str | None = None
+    response_turn_pending = False
     playback_trace = _LiveKitPlaybackTrace(tracer)
 
     def ensure_turn() -> str:
@@ -911,14 +912,24 @@ def _register_livekit_observers(
                 tracer.event("asr_first_interim", turn_id=turn_id)
 
     def on_agent_state(event: object) -> None:
-        nonlocal agent_state, response_turn_id
+        nonlocal agent_state, response_turn_id, response_turn_pending
         state = getattr(event, "new_state", None)
         agent_state = state if isinstance(state, str) else agent_state
         if state == "thinking":
-            response_turn_id = ensure_turn()
-            tracer.event("llm_requested", turn_id=response_turn_id)
+            # A playback-contaminated VAD turn can make LiveKit briefly enter
+            # thinking again before the original response reaches speaking.
+            # Keep the first response owner until it is handed to playback.
+            if not response_turn_pending and playback_trace.turn_id is None:
+                response_turn_id = ensure_turn()
+                response_turn_pending = True
+                tracer.event("llm_requested", turn_id=response_turn_id)
         elif state == "speaking":
             playback_trace.freeze_turn(response_turn_id or ensure_turn())
+            response_turn_pending = False
+        elif state == "listening" and response_turn_pending and playback_trace.turn_id is None:
+            # Generation returned to idle without ever handing audio to the
+            # endpoint. Let the next real response claim a fresh owner.
+            response_turn_pending = False
 
     def on_conversation_item(event: object) -> None:
         item = getattr(event, "item", None)
