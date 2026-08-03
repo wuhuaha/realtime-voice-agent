@@ -1197,10 +1197,8 @@ async def test_stalled_wss_media_send_has_its_own_bounded_failure(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     websocket = FakeWebSocket()
-    connection, _ = create_connection(
+    connection, runners = create_connection(
         websocket,
-        trigger_frames=3,
-        output_frames=3,
         limits=RvaRuntimeLimits(
             queue_timeout_seconds=0.02,
             wire_send_timeout_seconds=0.03,
@@ -1218,11 +1216,19 @@ async def test_stalled_wss_media_send_has_its_own_bounded_failure(
         await asyncio.Event().wait()
 
     monkeypatch.setattr(websocket, "send_bytes", stalled_send_bytes)
-    websocket.feed_media(uplink_packets(1)[0])
-    await asyncio.wait_for(send_started.wait(), timeout=1.0)
-    await asyncio.wait_for(task, timeout=1.0)
+    try:
+        # Exercise the downlink boundary directly. Routing this assertion through
+        # uplink Opus decode and the fake runner makes unrelated executor/freshness
+        # scheduling decide whether send_bytes is reached under a loaded test host.
+        await runners[0].emit(AgentOutputSegment(1, [pcm_frame(index) for index in range(3)]))
+        await asyncio.wait_for(send_started.wait(), timeout=1.0)
+        await asyncio.wait_for(task, timeout=1.0)
+    finally:
+        await connection.close()
+        await asyncio.gather(task, return_exceptions=True)
 
     assert websocket.closed == [(1_011, "media_send_timeout")]
+    assert not any(task.get_name().endswith("-session-001") for task in asyncio.all_tasks())
 
 
 class BlockingStartRunner(FakeRunner):
