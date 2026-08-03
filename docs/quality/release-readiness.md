@@ -46,10 +46,14 @@ Director/Worker，并执行 WSS low-level、WSS DesktopApp、UDP low-level 和 U
 runtime，因此该证据只继承到 `d840036`。当前 freshness 修复改变 Server media timeline 和 Firmware WSS sender，
 1804 秒 churn 尚未在当前 source 重跑，只能作为历史对照。
 
-另执行 deterministic fault matrix：Server `50/50`、Desktop `63/63` 通过，覆盖 UDP authentication、replay、
-gap/deadline、refresh、PLC、fresh reopen、generation fence，以及 WSS teardown、playback terminal、cancel 和 cleanup。
-这些结果是历史 `host_verified` 协议/生命周期证据；当前修复新增的 focused/full regression 已通过，但未重跑完整
-fault matrix。它们也不是物理网卡上的 random loss、burst、连续 jitter、带宽限制或公网 TLS 测量；当前门禁保持
+当前 `826cd66` 重新执行 deterministic fault matrix：Server `54/54`、Desktop `59/59` 通过，覆盖 UDP
+authentication、replay、gap/deadline、refresh、PLC、fresh reopen、generation fence，以及 WSS teardown、playback
+terminal、cancel 和 cleanup。另运行 `618.982s` 当前 source短 churn，共 20 个完整轮次、80 个 case：WSS
+low-level `20/20`、UDP low-level `20/20`、UDP DesktopApp `20/20`、WSS DesktopApp `19/20`。唯一失败发生在第 2 轮
+Worker readiness 15 秒超时，未进入 session/media；随后连续 73 个 case通过，最终无残留 RVA进程或监听端口。
+同一四路径在当前 Linux CI为 `4/4`通过；该失败仅观察为 Windows host harness readiness超时，尚未复现或定因，
+且未进入 session/media，因此不作为媒体或协议的通过/失败证据。
+这些结果不是物理网卡上的 random loss、burst、连续 jitter、带宽限制、公网 TLS或长时间设备 soak；当前门禁仍保持
 `not_run/incomplete`，UDP 继续为显式 opt-in。
 
 ## Linux 公网部署
@@ -133,8 +137,8 @@ WSS 正常关闭但没有下行播放，因此历史 WSS final gate 未通过。
 | UDP admission/bootstrap | `not_run` | 历史 `ae56fac` device verified；修复版未运行 |
 | UDP voice loop | `not_run` | 历史 `ae56fac` 双向 Opus、完整 playback fact、0 invalid；修复版未运行 |
 | End-to-end latency | `not_run` | alpha known limitation；未承诺固定 p50/p95/p99 SLO |
-| Weak network | `not_run` | 历史 deterministic fault matrix通过；当前 source与真实 random/burst/jitter/netem均未测 |
-| Stability | `incomplete` | 历史 1804 秒/211轮通过；当前 source完成自动回归和短 HIL，未重跑长 soak |
+| Weak network | `not_run` | 当前 deterministic fault matrix通过；真实 random/burst/jitter/netem仍未测 |
+| Stability | `incomplete` | 当前 source完成 fault matrix、618.982秒短 churn和短 HIL；一次 Windows harness readiness超时尚未定因，且未重跑长 soak |
 | AEC/acoustic | `out_of_scope` | 当前开源定位不以 NS/ASR/AEC 主观效果为 release gate |
 | Security/repository | `host_verified / production incomplete` | 当前 secret/repository scan通过；历史 SBOM/许可证digest不替代当前 release SBOM，后者仍`not_run`；TLS/限流由部署方提供 |
 

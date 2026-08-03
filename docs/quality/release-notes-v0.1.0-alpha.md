@@ -36,7 +36,7 @@ roomless 实时语音接入，不把具体闲聊业务、模型效果或完整 R
 本版本不是 production-ready 声明。Linux/TLS/HA、UDP opt-in、弱网、长稳、延迟、声学和 provider 责任边界见
 [Known limitations](known-limitations.md)。正式 tag 前仍需从最终 Product commit fresh 构建公共无凭据 firmware、
 Server artifact、public firmware bundle和 release SBOM；UDP 当前证据仅对历史已测 artifact 有效，
-若最终改动影响其路径则同时复验 UDP。
+正式 tag 前必须在最终 current source上完成简化真机复验，不能用历史 artifact替代。
 
 ## SBOM
 
