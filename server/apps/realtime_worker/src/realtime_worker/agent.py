@@ -926,10 +926,6 @@ def _register_livekit_observers(
         elif state == "speaking":
             playback_trace.freeze_turn(response_turn_id or ensure_turn())
             response_turn_pending = False
-        elif state == "listening" and response_turn_pending and playback_trace.turn_id is None:
-            # Generation returned to idle without ever handing audio to the
-            # endpoint. Let the next real response claim a fresh owner.
-            response_turn_pending = False
 
     def on_conversation_item(event: object) -> None:
         item = getattr(event, "item", None)
