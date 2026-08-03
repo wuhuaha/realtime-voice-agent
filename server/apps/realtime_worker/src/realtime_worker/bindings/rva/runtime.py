@@ -43,6 +43,7 @@ Clock = Callable[[], float]
 _TIMELINE_PACING_TOLERANCE_SECONDS = 0.015
 _TIMELINE_MAX_CORRECTION_SECONDS = 0.005
 _TIMELINE_REBASE_SECONDS = 30.0
+_TIMELINE_MAX_WSS_CLOCK_SKEW_RATIO = 0.02
 
 
 class TextAwareRunner(Protocol):
@@ -83,7 +84,20 @@ class RvaHandshakeTimeoutError(RvaRuntimeError):
 
 
 class RvaControlTimeoutError(RvaRuntimeError):
-    pass
+    def __init__(
+        self,
+        message: str,
+        *,
+        stage: Literal["wire_send", "queue_ack"],
+        queue_size: int,
+        queue_capacity: int,
+        wire_locked: bool,
+    ) -> None:
+        super().__init__(message)
+        self.stage = stage
+        self.queue_size = queue_size
+        self.queue_capacity = queue_capacity
+        self.wire_locked = wire_locked
 
 
 class RvaMediaSendTimeoutError(RvaRuntimeError):
@@ -181,18 +195,19 @@ class _AudioQueuePort(AudioInputPort):
         self._consumer_timeline_started_at = 0.0
         self._last_timestamp: int | None = None
         self._last_received_at = 0.0
+        self._wss_future_burst_debt_seconds = 0.0
 
     async def receive_audio(self, packet: InboundAudioPacket) -> None:
-        await self._receive_audio(packet, allow_accumulated_future_reanchor=False)
+        await self._receive_audio(packet, enforce_wss_burst_budget=True)
 
     async def receive_udp_audio(self, packet: InboundAudioPacket) -> None:
-        await self._receive_audio(packet, allow_accumulated_future_reanchor=True)
+        await self._receive_audio(packet, enforce_wss_burst_budget=False)
 
     async def _receive_audio(
         self,
         packet: InboundAudioPacket,
         *,
-        allow_accumulated_future_reanchor: bool,
+        enforce_wss_burst_budget: bool,
     ) -> None:
         if self._closed:
             raise RvaRuntimeError("audio input is closed")
@@ -243,29 +258,32 @@ class _AudioQueuePort(AudioInputPort):
                     expected_lead=local_future_lead,
                 )
                 raise RvaBindingError("invalid_media_timestamp")
+            if enforce_wss_burst_budget:
+                allowed_media_delta = arrival_delta * (1.0 + _TIMELINE_MAX_WSS_CLOCK_SKEW_RATIO)
+                self._wss_future_burst_debt_seconds = max(
+                    0.0,
+                    self._wss_future_burst_debt_seconds
+                    + SAMPLES_PER_PACKET / SAMPLE_RATE
+                    - allowed_media_delta,
+                )
+                max_age = self._owner._limits.uplink_max_age_seconds  # noqa: SLF001
+                if self._wss_future_burst_debt_seconds > max_age + 1e-9:
+                    self._log_timestamp_warning(
+                        reason="wss_future_burst",
+                        action="reject",
+                        previous_timestamp=previous_timestamp,
+                        packet=packet,
+                        timestamp_delta=timestamp_delta,
+                        arrival_delta=arrival_delta,
+                        expected_lead=self._wss_future_burst_debt_seconds,
+                    )
+                    raise RvaBindingError("invalid_media_timestamp")
         self._last_timestamp = packet.timestamp
         self._last_received_at = received_at
         timestamp_delta = (packet.timestamp - self._consumer_timeline_timestamp) & 0xFFFFFFFF
         expected_at = self._consumer_timeline_started_at + timestamp_delta / SAMPLE_RATE
         max_age = self._owner._limits.uplink_max_age_seconds  # noqa: SLF001
         expected_lead = expected_at - received_at
-        if expected_lead > max_age and not (
-            allow_accumulated_future_reanchor and local_future_lead <= max_age
-        ):
-            self._log_timestamp_warning(
-                reason=("local_future_jump" if local_future_lead > max_age else "accumulated_future"),
-                action="reject",
-                previous_timestamp=previous_timestamp,
-                packet=packet,
-                timestamp_delta=(
-                    (packet.timestamp - previous_timestamp) & 0xFFFFFFFF
-                    if previous_timestamp is not None
-                    else 0
-                ),
-                arrival_delta=arrival_delta,
-                expected_lead=expected_lead,
-            )
-            raise RvaBindingError("invalid_media_timestamp")
         if expected_lead > max_age:
             self._log_timestamp_warning(
                 reason="accumulated_future",
@@ -298,8 +316,8 @@ class _AudioQueuePort(AudioInputPort):
             received_at=received_at,
             expected_at=expected_at,
             # Keep queue age and media-timeline age as independent boundaries.
-            # Bounded correction absorbs endpoint clock skew, while a TCP
-            # stall/burst cannot re-anchor old media as fresh.
+            # Bounded correction absorbs endpoint clock skew; the WSS burst
+            # debt still rejects media that outruns the receive clock budget.
             deadline_at=min(received_at, expected_at) + max_age,
         )
         try:
@@ -638,7 +656,16 @@ class RvaWssConnection:
             pass
         except RvaHandshakeTimeoutError:
             close_code, close_reason = 1_008, "handshake_timeout"
-        except RvaControlTimeoutError:
+        except RvaControlTimeoutError as exc:
+            logger.warning(
+                "rva_control_timeout session=%s stage=%s control_qsize=%d control_capacity=%d "
+                "wire_locked=%s",
+                self._binding_id,
+                exc.stage,
+                exc.queue_size,
+                exc.queue_capacity,
+                exc.wire_locked,
+            )
             close_code, close_reason = 1_011, "control_timeout"
         except RvaMediaSendTimeoutError:
             close_code, close_reason = 1_011, "media_send_timeout"
@@ -916,7 +943,13 @@ class RvaWssConnection:
                     async with asyncio.timeout(self._limits.wire_send_timeout_seconds):
                         await self._websocket.send_text(item.payload)
             except TimeoutError as exc:
-                raise RvaControlTimeoutError("control send timed out") from exc
+                raise RvaControlTimeoutError(
+                    "control send timed out",
+                    stage="wire_send",
+                    queue_size=self._output.qsize(),
+                    queue_capacity=self._output.maxsize,
+                    wire_locked=True,
+                ) from exc
             if item.ack is not None and not item.ack.done():
                 item.ack.set_result(None)
 
@@ -1291,7 +1324,13 @@ class RvaWssConnection:
                 timeout=self._limits.queue_timeout_seconds + self._limits.wire_send_timeout_seconds,
             )
         except TimeoutError as exc:
-            raise RvaControlTimeoutError("control acknowledgement timed out") from exc
+            raise RvaControlTimeoutError(
+                "control acknowledgement timed out",
+                stage="queue_ack",
+                queue_size=self._output.qsize(),
+                queue_capacity=self._output.maxsize,
+                wire_locked=self._wire_lock.locked(),
+            ) from exc
 
     async def _enqueue_segment(self, item: _Outbound) -> None:
         try:

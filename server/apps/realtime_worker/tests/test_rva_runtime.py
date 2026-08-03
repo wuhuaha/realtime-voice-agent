@@ -18,6 +18,7 @@ from realtime_worker.bindings.rva import (
     WssMediaFrame,
 )
 from realtime_worker.bindings.rva.binding import ControlEffect, InboundAudioPacket
+from realtime_worker.bindings.rva.runtime import RvaControlTimeoutError
 from realtime_worker.interruption import InterruptionPolicyConfig, LayeredInterruptionPolicy
 from realtime_worker.transport.udp_gateway import UdpGrantExpiredError
 
@@ -1120,7 +1121,9 @@ async def test_udp_input_timeline_reanchors_jittered_clock_after_accumulated_fut
 
 
 @pytest.mark.unit
-async def test_wss_input_timeline_rejects_accumulated_future_lead() -> None:
+async def test_wss_input_timeline_reanchors_bounded_clock_skew(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     clock = MutableMonotonicClock()
     connection, _ = create_connection(
         FakeWebSocket(),
@@ -1133,20 +1136,76 @@ async def test_wss_input_timeline_rejects_accumulated_future_lead() -> None:
     first = port.queue.get_nowait()
     assert first is not None
     port.mark_consumed(first)
-    rejected = False
     for sequence in range(1, 2_400):
         clock.advance(0.074 if sequence % 2 else 0.0455)
-        try:
-            await port.receive_audio(InboundAudioPacket(sequence, sequence * 960, b"jittered"))
-        except RvaBindingError as exc:
-            assert str(exc) == "invalid_media_timestamp"
-            rejected = True
-            break
+        await port.receive_audio(InboundAudioPacket(sequence, sequence * 960, b"jittered"))
+        queued = port.queue.get_nowait()
+        assert queued is not None
+        assert queued.deadline_at > clock()
+        port.mark_consumed(queued)
+
+    assert sum("reason=accumulated_future action=reanchor" in message for message in caplog.messages) == 1
+
+
+@pytest.mark.unit
+async def test_wss_input_timeline_rejects_burst_beyond_freshness_budget(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    clock = MutableMonotonicClock()
+    connection, _ = create_connection(
+        FakeWebSocket(),
+        limits=RvaRuntimeLimits(uplink_max_age_seconds=0.6),
+        clock=clock,
+    )
+    port = connection._audio_port  # noqa: SLF001
+
+    await port.receive_audio(InboundAudioPacket(0, 0, b"first"))
+    first = port.queue.get_nowait()
+    assert first is not None
+    port.mark_consumed(first)
+
+    for sequence in range(1, 11):
+        await port.receive_audio(InboundAudioPacket(sequence, sequence * 960, b"bounded-burst"))
         queued = port.queue.get_nowait()
         assert queued is not None
         port.mark_consumed(queued)
 
-    assert rejected
+    with pytest.raises(RvaBindingError, match="invalid_media_timestamp"):
+        await port.receive_audio(InboundAudioPacket(11, 11 * 960, b"excess-burst"))
+
+    assert any("reason=wss_future_burst action=reject" in message for message in caplog.messages)
+
+
+@pytest.mark.unit
+async def test_wss_input_timeline_retains_burst_budget_after_long_paced_session() -> None:
+    clock = MutableMonotonicClock()
+    connection, _ = create_connection(
+        FakeWebSocket(),
+        limits=RvaRuntimeLimits(uplink_max_age_seconds=0.6),
+        clock=clock,
+    )
+    port = connection._audio_port  # noqa: SLF001
+
+    await port.receive_audio(InboundAudioPacket(0, 0, b"first"))
+    first = port.queue.get_nowait()
+    assert first is not None
+    port.mark_consumed(first)
+
+    for sequence in range(1, 2_000):
+        clock.advance(0.06)
+        await port.receive_audio(InboundAudioPacket(sequence, sequence * 960, b"paced"))
+        queued = port.queue.get_nowait()
+        assert queued is not None
+        port.mark_consumed(queued)
+
+    for sequence in range(2_000, 2_010):
+        await port.receive_audio(InboundAudioPacket(sequence, sequence * 960, b"bounded-burst"))
+        queued = port.queue.get_nowait()
+        assert queued is not None
+        port.mark_consumed(queued)
+
+    with pytest.raises(RvaBindingError, match="invalid_media_timestamp"):
+        await port.receive_audio(InboundAudioPacket(2_010, 2_010 * 960, b"excess-burst"))
 
 
 @pytest.mark.unit
@@ -1342,6 +1401,7 @@ async def test_input_queue_overload_fails_connection_explicitly(
 @pytest.mark.integration
 async def test_runtime_control_ack_timeout_is_not_misclassified_as_handshake_timeout(
     monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     websocket = FakeWebSocket()
     connection, _ = create_connection(
@@ -1367,9 +1427,27 @@ async def test_runtime_control_ack_timeout_is_not_misclassified_as_handshake_tim
     monkeypatch.setattr(connection.binding, "receive_control", control_with_reply)
     websocket.inbound.put_nowait({"type": "websocket.receive", "text": "{}"})
     await asyncio.wait_for(send_started.wait(), timeout=1.0)
-    await asyncio.wait_for(task, timeout=1.0)
+    with caplog.at_level("WARNING"):
+        await asyncio.wait_for(task, timeout=1.0)
 
     assert websocket.closed == [(1_011, "control_timeout")]
+    assert "rva_control_timeout" in caplog.text
+    assert "stage=wire_send" in caplog.text
+
+
+@pytest.mark.unit
+async def test_control_queue_ack_timeout_reports_distinct_stage() -> None:
+    connection, _ = create_connection(
+        FakeWebSocket(),
+        limits=RvaRuntimeLimits(queue_timeout_seconds=0.01, wire_send_timeout_seconds=0.01),
+    )
+
+    with pytest.raises(RvaControlTimeoutError) as captured:
+        await connection._send_control_serialized('{"type":"runtime.test"}')  # noqa: SLF001
+
+    assert captured.value.stage == "queue_ack"
+    assert captured.value.queue_size == 1
+    assert captured.value.queue_capacity >= captured.value.queue_size
 
 
 @pytest.mark.integration
