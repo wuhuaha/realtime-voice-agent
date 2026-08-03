@@ -1,6 +1,6 @@
 # Release readiness
 
-更新日期：2026-08-02
+更新日期：2026-08-03
 状态：not ready
 
 本文只记录当前 Product 候选和可复核的发布门禁。历史 artifact、临时地址、SSID、原始串口日志和旧协议结论不构成
@@ -9,28 +9,33 @@
 ## 当前候选身份
 
 - 分支：`codex/lifecycle-convergence-hardening`
-- Product commit：`926054b0120b27f1e182f9c7a5e22fdf228dc860`
+- Product Server candidate：`8d0ecae37ee26f2cf02b4a22d93a71a77a5efd8e`
+- ESP32-S3 HIL firmware source：`7c34337c23e2c6015aaaf9f691ca0cc7952852a5`
 - Server source archive SHA-256：
-  `0dc58ef7b32adbbc8ebed99b182f318474e41c3e47114c3937cdf839f0ed5a12`
+  `e3f0d76eccaf7febfc8798da6148a967127133a9848656706de6cab7460025a1`
+- 公共无凭据 firmware bundle SHA-256：
+  `4a95f91c9c36f71f912e02b5e4d9ac003d455f48abaa47870e5dbe9aba76638c`
 - 公共无凭据 app image SHA-256：
-  `bbe1dca5738f42a412e59fe3b18dcd6af954606a3e4fdf404cf12ec3d3d70210`
+  `64f1e4b95397419270b604d610e86f3b7f43d2b8e15870385a8c96250fd5e6b1`
 - 真机 deployment app image SHA-256：
-  `308885f00ace3a81f324d9e7343048c1de5daac262814ed0d1e3313b7481f025`
+  `094be8972071e8ecc566d0afd7e6679a7de70891405bd6942045a069189bd931`
 - 真机 private sdkconfig digest：
-  `200566facaa759a65f1a1b3abe39dee3da72ed8b51bcf505568d3856840ed109`
+  `960d1a7e41bf0604a827e0e5430195b2b9962b2a20b6aef6599a0965c5be0557`
 
-公共 image 不包含 Wi-Fi、bootstrap token 或 endpoint。真机 deployment image 来自同一 Product commit，只通过
-Git ignored/private Kconfig input 注入部署配置；private input 和 image 不进入 Git 或公开 release。二者不能互相继承
-设备结论。
+公共 image 不包含 Wi-Fi、bootstrap token 或 endpoint。真机 deployment image 来自 `7c34337`，只通过 Git
+ignored/private Kconfig input 注入部署配置；private input 和 image 不进入 Git 或公开 release。`8d0ecae` 只修改
+Server 可观测性及其测试，未改变 firmware、wire 或 provider 行为，但最终 tag 前仍须从最终 Product commit fresh
+构建公共 firmware；不同 source identity 不能互相继承设备结论。
 
 ## 软件与构建门禁
 
-GitHub Actions [`ci` run 30748197701](https://github.com/wuhuaha/realtime-voice-agent/actions/runs/30748197701)
-在 commit `926054b0120b27f1e182f9c7a5e22fdf228dc860` 上完成，以下 7 个 job 全部成功：
+GitHub Actions [`ci` run 30777580513](https://github.com/wuhuaha/realtime-voice-agent/actions/runs/30777580513)
+在 commit `8d0ecae37ee26f2cf02b4a22d93a71a77a5efd8e` 上完成，以下 7 个 job 全部成功：
 `repository`、`server`、`desktop-reference`、`desktop-reference-host-e2e`、`redis-integration`、
 `native-firmware-host-contracts` 和 `native-firmware-build-size`。
 
-真机 deployment image 使用 ESP-IDF `5.5.2@30aaf64524299d3bde422ca9a2848090d1bc5d0f`、
+公共和真机 deployment image 均通过 `scripts/build-firmware.ps1` 固定入口构建，使用 ESP-IDF
+`5.5.2@30aaf64524299d3bde422ca9a2848090d1bc5d0f`、
 Xtensa compiler `esp-14.2.0_20251107`、CMake `3.30.2` 和 Ninja `1.12.1` clean build。应用大小
 `0x21a930`，4 MiB app partition 剩余 `0x1e56d0`（47%）。构建成功；仅 gdbinit 生成因非调试 shell
 未设置 `ESP_ROM_ELF_DIR` 产生非致命 warning，不影响 application、bootloader 或烧录产物。
@@ -38,10 +43,10 @@ Xtensa compiler `esp-14.2.0_20251107`、CMake `3.30.2` 和 Ninja `1.12.1` clean 
 ## Linux 公网部署
 
 Server archive 解包为只读 release：
-`/home/ubuntu/services/realtime-voice-agent/releases/rva-20260802T-926054b`，`current` 已切换到该目录；
-上一 release 保留为 `current.previous-8a293f3`，未删除。
+`/home/ubuntu/services/realtime-voice-agent/releases/rva-20260803T-8d0ecae`，`current` 已切换到该目录；
+上一 release `rva-20260802T-7c34337` 保留为 `current.previous-7c34337`，未删除。
 
-当前 Worker incarnation 为 `worker-ol-20260802T-926054b`。Director 和 Worker 均由 Linux
+当前 Worker incarnation 为 `worker-ol-rva-20260803T-8d0ecae`。Director 和 Worker 均由 Linux
 `systemd --user` 运行并为 `active`。最终 readiness 结果：
 
 - Director：`ready`，coordination=`redis`
@@ -49,13 +54,20 @@ Server archive 解包为只读 release：
 - provider network、coordination、RVA WSS 和 RVA UDP socket：ready
 - advertised profiles：`wss-opus/1`、`udp-opus-gcm/1`
 
-首次切换后 readiness 曾因同一 Worker incarnation 在部署过程中被优雅停止而继承 one-way drain，表现为
-`draining=true`。确认 `active_sessions=0` 后，停止 Worker、只清除该 incarnation 的 Redis drain key 并重新启动；
-readiness 和 heartbeat 随后稳定为 `draining=false`。该过程没有关闭 readiness gate、修改 provider 或删除回滚 release。
-后续部署必须为每次实际启动分配唯一 Worker incarnation，避免在新 identity 激活后再次预启动/停止。
+本次启动使用新的 Worker incarnation，未继承上一 release 的 one-way drain；部署完成后 heartbeat 持续报告
+`draining=false`。后续 replacement 仍必须分配唯一 `worker_id`，不得用重复 identity 原地 restart。
 
 同一部署上执行确定性 bootstrap smoke：WSS-only 与 WSS+UDP 两种请求均命中上述 Worker，返回预期 profiles，
 随后 exact route release 成功。该 smoke 证明公网 admission/bootstrap，不替代真机 UDP media。
+
+同一部署另使用 Desktop Reference Client、服务器 loopback WSS 和本机离线生成的中文 PCM 执行一次 real-provider
+canary：119 个上行 frame、137 个下行 playback frame、1 次完整 playback fact；FunASR final、DeepSeek LLM、
+MiMo TTS、normal close 和 exact release 均完成，最终 `active_sessions=0`。`turn_latency_summary` 为
+`status=complete` 且包含 LiveKit transcription/end-of-turn delay；未观察到 `metrics_collected` 弃用 warning。
+该 canary 不保存转写、回复或下行音频，也不替代 ESP32 DAC、声学或 UDP HIL。
+
+本部署使用实验室 HTTP/WS 公网入口，不构成生产 TLS 门禁。正式环境仍必须提供受信 HTTPS/WSS 域名、证书校验、
+入口限流和受控 secret；不得把本次公网可达性提升为 production security 通过。
 
 ## ESP32-S3 真机回归
 
@@ -63,14 +75,16 @@ readiness 和 heartbeat 随后稳定为 `draining=false`。该过程没有关闭
 公共 app、ESP-SR model 与字体分区，所有区域均由 esptool 报告 `Hash of data verified`；随后只补烧 private-configured
 deployment app，校验通过。全过程未执行整片擦除，NVS partition 未被烧录命令覆盖。
 
-deployment image 启动后完成已配置 Wi-Fi 与 Director endpoint 解析；AFE 初始化并持续输出健康窗口，说明启动已越过
-阻塞式 provisioning 门禁。设备通过触屏 MIC 建立真实 WSS 会话，服务端记录：
+deployment image 启动后完成已配置 Wi-Fi 与 Director endpoint 解析；显示、触摸、Qwen 字体、WakeNet、
+AEC `VOIP_LOW_COST`、WebRTC VAD 和双通道 AFE 均启动。当前实验 endpoint 为 HTTP，因此 SNTP 失败不会阻断
+bootstrap；UDP 本地轮换使用 authenticated `refresh_after_ms` 的 monotonic deadline，Server 继续执行绝对 expiry。
+设备通过 `Hi ESP` 建立真实 WSS 会话，服务端记录：
 
 - bootstrap `200`、connect grant consume `200`
 - `rva_session_opened`，selected profile=`wss-opus/1`
-- 3 个真实 turn 完成上行、FunASR final、LLM、MiMo TTS 和板端 playback fact
-- 关闭前上行 `1374` 个 WSS packet、`4122` 个 decoded PCM frame，`invalid_opus_packets=0`
-- 下行 `206` 个 packet；已记录自然完成的 `endpoint_playback_finished`
+- 4 个真实 turn 完成上行、FunASR final、DeepSeek LLM、MiMo TTS 和板端 playback fact
+- 关闭前上行 `1445` 个 WSS packet、`4332` 个 decoded PCM frame，`invalid_opus_packets=0`
+- 下行 `307` 个 packet；4 轮均记录 `endpoint_playback_finished(interrupted=false)`
 - MIC stop 后 `close_code=1000`、`close_reason=normal`、`session_closed reason=user_initiated`
 - Director exact release `200`；最终 Worker `active_sessions=0`
 
@@ -81,13 +95,13 @@ deployment image 启动后完成已配置 Wi-Fi 与 Director endpoint 解析；A
 
 | Gate | 当前状态 | 当前证据与完成条件 |
 | --- | --- | --- |
-| Product commit + CI | `passed` | commit-addressable CI 7/7 jobs 成功 |
+| Product commit + CI | `passed` | `8d0ecae` commit-addressable CI 7/7 jobs 成功 |
 | Server immutable archive | `passed` | archive digest、只读 release、rollback identity 已记录 |
 | Linux Director/Worker readiness | `passed` | Redis coordination、provider、WSS/UDP socket、capacity 与 heartbeat ready |
 | Native clean build + size | `passed` | 锁定工具链、image digest、47% app partition 余量已记录 |
 | Flash/boot/display/touch | `device_verified` | 完整分区写入校验；配置页退出、AFE 启动、MIC start/stop 生效 |
 | Wi-Fi/NVS/bootstrap | `device_verified` | private-configured image 自动联网并完成公网 bootstrap；Wi-Fi flap 未执行 |
-| WSS voice loop | `device_verified` | 3 个真实 turn、完整 playback fact、normal close 与 exact release |
+| WSS voice loop | `device_verified` | ESP32 `7c34337` 4 个真实 turn；Server `8d0ecae` Desktop real-provider canary 通过 |
 | UDP admission/bootstrap | `public_path_verified` | host bootstrap/profile/release 通过；真机 UDP media 仍为 `not_run` |
 | UDP voice loop | `not_run` | 当前 deployment image 仍需 authenticated probe、双向媒体和 normal close |
 | End-to-end latency | `not_run` | 需按固定样本量报告口径与 p50/p95/p99 |
