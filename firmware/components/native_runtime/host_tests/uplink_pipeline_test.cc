@@ -36,9 +36,19 @@ private:
 
 int main() {
     using rva::runtime::EnqueueLatest;
+    using rva::runtime::IsWssUplinkFrameFresh;
+    using rva::runtime::kWssMediaSendTimeoutMs;
     using rva::runtime::LatestEnqueueResult;
     using rva::runtime::UplinkFramer;
     using rva::runtime::UplinkPcmFrame;
+
+    assert(IsWssUplinkFrameFresh(1000, 1000));
+    assert(IsWssUplinkFrameFresh(1000, 301000));
+    assert(!IsWssUplinkFrameFresh(1000, 301001));
+    assert(!IsWssUplinkFrameFresh(-1, 1000));
+    assert(!IsWssUplinkFrameFresh(2000, 1000));
+    assert(!IsWssUplinkFrameFresh(1000, 1000, -1));
+    static_assert(kWssMediaSendTimeoutMs == 250);
 
     UplinkFramer framer;
     std::vector<int16_t> first(320, 1);

@@ -40,8 +40,9 @@ logger = logging.getLogger(__name__)
 RunnerFactory = Callable[[Callable[[AgentOutputSegment], Awaitable[None]], Callable[[int], None]], AgentRunner]
 CodecFactory = Callable[[], RvaOpusCodec]
 Clock = Callable[[], float]
-_TIMELINE_REANCHOR_SECONDS = 30.0
-_TIMELINE_MAX_SKEW_RATIO = 1_000 / 1_000_000
+_TIMELINE_PACING_TOLERANCE_SECONDS = 0.015
+_TIMELINE_MAX_CORRECTION_SECONDS = 0.005
+_TIMELINE_REBASE_SECONDS = 30.0
 
 
 class TextAwareRunner(Protocol):
@@ -188,7 +189,8 @@ class _AudioQueuePort(AudioInputPort):
         if self._consumer_timeline_timestamp is None:
             self._consumer_timeline_timestamp = packet.timestamp
             self._consumer_timeline_started_at = received_at
-        if self._last_timestamp is not None:
+        has_previous_packet = self._last_timestamp is not None
+        if has_previous_packet:
             timestamp_delta = (packet.timestamp - self._last_timestamp) & 0xFFFFFFFF
             arrival_delta = max(0.0, received_at - self._last_received_at)
             media_delta = timestamp_delta / SAMPLE_RATE
@@ -205,10 +207,23 @@ class _AudioQueuePort(AudioInputPort):
         max_age = self._owner._limits.uplink_max_age_seconds  # noqa: SLF001
         if expected_at > received_at + max_age:
             raise RvaBindingError("invalid_media_timestamp")
+        if has_previous_packet:
+            paced_arrival = abs(arrival_delta - media_delta) <= _TIMELINE_PACING_TOLERANCE_SECONDS
+            if paced_arrival:
+                cadence_error = arrival_delta - media_delta
+                correction = max(
+                    -_TIMELINE_MAX_CORRECTION_SECONDS,
+                    min(_TIMELINE_MAX_CORRECTION_SECONDS, cadence_error),
+                )
+                self._consumer_timeline_started_at += correction
+                expected_at += correction
         queued = _QueuedAudio(
             packet=packet,
             received_at=received_at,
             expected_at=expected_at,
+            # Keep queue age and media-timeline age as independent boundaries.
+            # Bounded correction absorbs endpoint clock skew, while a TCP
+            # stall/burst cannot re-anchor old media as fresh.
             deadline_at=min(received_at, expected_at) + max_age,
         )
         try:
@@ -242,13 +257,13 @@ class _AudioQueuePort(AudioInputPort):
         if self._consumer_timeline_timestamp is None:
             return
         timestamp_delta = (queued.packet.timestamp - self._consumer_timeline_timestamp) & 0xFFFFFFFF
-        media_elapsed = timestamp_delta / SAMPLE_RATE
-        if media_elapsed >= _TIMELINE_REANCHOR_SECONDS:
-            phase_error = queued.received_at - queued.expected_at
-            max_correction = media_elapsed * _TIMELINE_MAX_SKEW_RATIO
-            correction = max(-max_correction, min(max_correction, phase_error))
-            self._consumer_timeline_timestamp = queued.packet.timestamp
-            self._consumer_timeline_started_at = queued.expected_at + correction
+        if timestamp_delta / SAMPLE_RATE < _TIMELINE_REBASE_SECONDS:
+            return
+        # Move the arithmetic origin without changing the estimated phase.
+        # This keeps long sessions away from the uint32 ambiguity boundary and
+        # cannot forgive transport delay accumulated before this packet.
+        self._consumer_timeline_timestamp = queued.packet.timestamp
+        self._consumer_timeline_started_at = queued.expected_at
 
     def drop_stale_to_live_edge(self, current: _QueuedAudio, *, now: float) -> _FreshnessDrop:
         backlog_qsize = self.queue.qsize()
@@ -270,7 +285,6 @@ class _AudioQueuePort(AudioInputPort):
         stale_count = sum(item.deadline_at <= now for item in candidates)
         isolated_stale = (
             stale_count == 1
-            and live_edge is not None
             and backlog_qsize < self.queue.maxsize
         )
         source: Literal["opus_input_stale", "opus_input_backpressure"] = (

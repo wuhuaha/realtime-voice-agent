@@ -81,6 +81,10 @@ VAD callback、control callback 不得直接 reset decoder 或清队列，只能
 WSS/UDP uplink generation 固定为 `0`；downlink 只接受当前 `response_id + generation`，并在 sequence drain 后上报
 真实 `played_samples` 与最后实际播放的 sequence，禁止用 `0` 伪造不存在的 sequence。
 
+WSS uplink sender 在发送前拒绝 capture age 超过 300 ms 的 frame，单次同步 WebSocket send 最多阻塞 250 ms；超时
+关闭当前 session 并 fresh bootstrap，不扩大音频 queue。`local_send_completion_age` 只表示调用返回时的本机年龄，
+不等于 peer receive age；Server 仍须独立执行 timestamp timeline 与 received queue freshness。
+
 UDP 下行通过 reorder/jitter 与 generation fence 后，在 decode/playout 前还有 360 ms 最终 media-age gate。超过该
 年龄的 frame 清零并丢弃、递增 `media_age_dropped`，runtime 分类为 `udp_media_age` 并结束当前 session；后续按策略
 fresh bootstrap，不播放已经失去实时价值的旧 TTS。

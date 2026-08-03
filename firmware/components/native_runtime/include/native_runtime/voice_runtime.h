@@ -245,6 +245,9 @@ private:
     std::atomic<uint32_t> uplink_encoded_queue_high_water_{0};
     std::atomic<uint32_t> uplink_pcm_max_age_us_{0};
     std::atomic<uint32_t> uplink_encoded_max_age_us_{0};
+    std::atomic<uint32_t> uplink_local_send_completion_max_age_us_{0};
+    std::atomic<uint32_t> uplink_presend_stale_dropped_{0};
+    std::atomic<uint32_t> wss_uplink_send_failures_{0};
     FailClosedHook fail_closed_hook_ = nullptr;
     void* fail_closed_context_ = nullptr;
     uint32_t uplink_sequence_ = 0;

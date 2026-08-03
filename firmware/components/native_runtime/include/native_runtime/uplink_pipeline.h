@@ -9,6 +9,18 @@
 namespace rva::runtime {
 
 inline constexpr size_t kUplinkSamplesPerFrame = 960;
+inline constexpr int64_t kWssUplinkPreSendMaxAgeUs = 300000;
+inline constexpr uint32_t kWssMediaSendTimeoutMs = 250;
+
+// Leave enough of the server's 600 ms freshness budget for the bounded WSS
+// send and server-side decode/dispatch work. Invalid monotonic timestamps fail
+// closed so a corrupt frame cannot be admitted as current audio.
+[[nodiscard]] constexpr bool IsWssUplinkFrameFresh(
+    int64_t captured_at_us, int64_t now_us,
+    int64_t maximum_age_us = kWssUplinkPreSendMaxAgeUs) {
+    return captured_at_us >= 0 && now_us >= captured_at_us && maximum_age_us >= 0 &&
+           now_us - captured_at_us <= maximum_age_us;
+}
 
 struct UplinkPcmFrame final {
     std::array<int16_t, kUplinkSamplesPerFrame> samples{};

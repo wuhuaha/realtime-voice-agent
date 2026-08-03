@@ -140,9 +140,10 @@ LLM 失败时没有 TTS 下行是正常因果链，不应误诊为端侧没有�
   映射；`sendto` 成功只表示数据已交给本地网络栈，不表示公网服务端收到。
 - 失败后设备按协议 fresh bootstrap 并安全回退 WSS，可以维持可用性，但不能把 fallback 记作 UDP 通过。
 
-当前已观察到 cold default probe 决定性复测 3/3 timeout、设备 12 次 send 成功而 Worker 主机 90 秒目标端口抓包为 0；
-同时另一已建立 UDP 会话可长时间稳定传输。这证明 UDP media/runtime 可运行，但 cold ingress 尚不可靠。在定位网络
-边界前保持默认 WSS，不通过随机切换端口或放宽 GCM/probe deadline 猜测性修复。
+一个历史网络窗口（artifact identity未完整登记，不能作为当前门禁）曾出现 cold default probe 3/3 timeout、设备
+12 次 send 成功而 Worker 主机 90 秒目标端口抓包为 0；后续 `ae56fac` 在另一已登记窗口完成 authenticated probe、
+双向媒体和 normal close。前一现象只保留为“公网 ingress 在进程前丢包”的诊断样例，不表示当前 UDP cold entry
+仍失败；复现时必须绑定 source、网络和抓包证据，不通过随机切换端口或放宽 GCM/probe deadline 猜测性修复。
 
 不要在同 session 手工切回 WSS。关闭后 fresh bootstrap，必要时用 `force_wss` 建立对照。
 
@@ -157,8 +158,10 @@ LLM 失败时没有 TTS 下行是正常因果链，不应误诊为端侧没有�
 - 确认播放 queue 既不为零也不通过大预缓冲掩盖延迟。
 - UDP 设备侧 `media_age_dropped` 增长表示 frame 在最终 360 ms gate 被拒绝；先查调度阻塞、reorder 和播放 queue，
   不要简单放宽 gate 来掩盖过时 TTS。
-- Server `overload_source=opus_input_stale` 表示单个 stale 后仍找到 fresh live edge；
-  `opus_input_backpressure` 表示连续 stale、queue pressure 或没有 fresh packet。当前两者都会以
+- Server `overload_source=opus_input_stale` 表示当前只观察到一个 stale packet 且 queue 未满，不要求一定存在 fresh
+  packet；`opus_input_backpressure` 表示连续 stale 或真实 queue pressure。若同时出现 `qsize=0`、`dropped_packets=1`
+  和 `fresh_packet_available=false`，不得仅凭 `1013` 将其诊断为队列阻塞。检查端侧 pre-send drop/local send timeout、
+  packet timestamp cadence、TCP stall/burst 与 Server media-timeline age。当前两类都会以
   `1013/media_overloaded` fresh reopen，因为同 AgentSession reset 尚无 public API 证明；不要把 live-edge drop 误读为
   same-session recovery，也不要扩大队列保存旧上行。
 

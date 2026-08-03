@@ -1033,6 +1033,9 @@ bool VoiceRuntime::StartMediaRuntime() {
     uplink_encoded_queue_high_water_ = 0;
     uplink_pcm_max_age_us_ = 0;
     uplink_encoded_max_age_us_ = 0;
+    uplink_local_send_completion_max_age_us_ = 0;
+    uplink_presend_stale_dropped_ = 0;
+    wss_uplink_send_failures_ = 0;
     const auto reset_stage = [](StageCounters* counters) {
         counters->count = 0;
         counters->total_us = 0;
@@ -1362,6 +1365,10 @@ void VoiceRuntime::RunUplinkSender() {
                 running_ = false;
             }
         } else if (media_owner_ == voice::core::MediaOwner::kWss) {
+            if (!IsWssUplinkFrameFresh(encoded.captured_at_us, started_us)) {
+                ++uplink_presend_stale_dropped_;
+                continue;
+            }
             protocol::SessionOpened identity;
             {
                 std::lock_guard<std::mutex> lock(identity_mutex_);
@@ -1386,7 +1393,9 @@ void VoiceRuntime::RunUplinkSender() {
                     frame.data() + protocol::kMediaHeaderBytes,
                     encoded.bytes.data(), encoded.size);
                 if (!owner_->SendMedia(
-                        frame.data(), protocol::kMediaHeaderBytes + encoded.size, 1000) && running_) {
+                        frame.data(), protocol::kMediaHeaderBytes + encoded.size,
+                        kWssMediaSendTimeoutMs) && running_) {
+                    ++wss_uplink_send_failures_;
                     events_.OnFailure("uplink_send");
                     running_ = false;
                 }
@@ -1395,9 +1404,13 @@ void VoiceRuntime::RunUplinkSender() {
             events_.OnFailure("uplink_send");
             running_ = false;
         }
+        const int64_t completed_us = esp_timer_get_time();
+        UpdateMaximum(
+            &uplink_local_send_completion_max_age_us_,
+            static_cast<uint32_t>(std::max<int64_t>(0, completed_us - encoded.captured_at_us)));
         RecordStage(
             &send_stage_,
-            static_cast<uint32_t>(std::max<int64_t>(0, esp_timer_get_time() - started_us)),
+            static_cast<uint32_t>(std::max<int64_t>(0, completed_us - started_us)),
             kSendDeadlineUs);
     }
     ESP_LOGI(kLogTag, "uplink sender task minimum free stack: %lu bytes",
@@ -1668,7 +1681,8 @@ void VoiceRuntime::LogAndResetUplinkMetrics() {
         kLogTag,
         "uplink stages(count/avg_us/max_us/miss): capture=%lu/%lu/%lu/%lu frame=%lu/%lu/%lu/%lu "
         "encode=%lu/%lu/%lu/%lu send=%lu/%lu/%lu/%lu "
-        "queues=%lu/%lu drops=%lu/%lu age_max_us=%lu/%lu",
+        "queues=%lu/%lu drops=%lu/%lu presend_stale=%lu wss_send_fail=%lu "
+        "age_max_us=%lu/%lu local_send_completion_age_max_us=%lu",
         static_cast<unsigned long>(capture.count),
         static_cast<unsigned long>(capture.average_us),
         static_cast<unsigned long>(capture.max_us),
@@ -1687,10 +1701,13 @@ void VoiceRuntime::LogAndResetUplinkMetrics() {
         static_cast<unsigned long>(send.deadline_misses),
         static_cast<unsigned long>(uplink_pcm_queue_high_water_.exchange(0)),
         static_cast<unsigned long>(uplink_encoded_queue_high_water_.exchange(0)),
-        static_cast<unsigned long>(uplink_pcm_queue_dropped_.load()),
-        static_cast<unsigned long>(uplink_encoded_queue_dropped_.load()),
+        static_cast<unsigned long>(uplink_pcm_queue_dropped_.exchange(0)),
+        static_cast<unsigned long>(uplink_encoded_queue_dropped_.exchange(0)),
+        static_cast<unsigned long>(uplink_presend_stale_dropped_.exchange(0)),
+        static_cast<unsigned long>(wss_uplink_send_failures_.exchange(0)),
         static_cast<unsigned long>(uplink_pcm_max_age_us_.exchange(0)),
-        static_cast<unsigned long>(uplink_encoded_max_age_us_.exchange(0)));
+        static_cast<unsigned long>(uplink_encoded_max_age_us_.exchange(0)),
+        static_cast<unsigned long>(uplink_local_send_completion_max_age_us_.exchange(0)));
 }
 
 void VoiceRuntime::MarkTaskStopped(EventBits_t bit) {

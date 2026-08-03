@@ -164,8 +164,11 @@ retryable backpressure，不启动 provider 请求。MiMo SSE 入口按流式增
 每事件最多 256 条 `data:`、单个 base64 解码后音频 chunk 512 KiB、整次响应 8 MiB；越界视为不可重试的 provider
 协议错误，避免异常响应造成无界内存增长。
 
-Uplink freshness 超预算时，input owner 先丢弃 stale backlog 到 live edge，并记录 `dropped_packets`、queue size、
-media age 和是否仍有 fresh packet。该动作只阻止旧语音继续进入 ASR，不代表 `AgentSession` 已安全重置。当前 LiveKit
+Uplink 同时受 received queue age 和 packet timestamp media-timeline age 约束。Server 只按本包 arrival/media cadence
+error 做最大 5 ms 的有界校正，用于吸收 endpoint 时钟偏差；TCP stall/burst、历史 transport delay、queue delay 和
+endpoint 的 local send completion 都不能把旧媒体重锚为 fresh。超预算时，input owner 先丢弃 stale backlog 到 live
+edge，并记录 `dropped_packets`、queue size、media age 和是否仍有 fresh packet。该动作只阻止旧语音继续进入 ASR，
+不代表 `AgentSession` 已安全重置。当前 LiveKit
 public API 无法证明 same-session reset 能清除半完成 turn/provider 状态，因此 isolated stale 与 sustained
 backpressure 仅作诊断分类，二者当前都 best-effort 发送 `session.error(media_overloaded)`，锁定
 `1013/media_overloaded` 并由 endpoint fresh reopen；不得通过扩大 queue 保存旧媒体。

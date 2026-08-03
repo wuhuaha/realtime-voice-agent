@@ -955,7 +955,7 @@ async def test_input_timeline_accepts_wrap_and_reanchors_clock_skew() -> None:
 
 
 @pytest.mark.unit
-async def test_input_timeline_does_not_reanchor_growing_backlog_as_clock_skew() -> None:
+async def test_input_timeline_does_not_treat_endpoint_clock_skew_as_backlog() -> None:
     websocket = FakeWebSocket()
     clock = MutableMonotonicClock()
     connection, _ = create_connection(websocket, clock=clock)
@@ -966,19 +966,107 @@ async def test_input_timeline_does_not_reanchor_growing_backlog_as_clock_skew() 
     assert queued is not None
     port.mark_consumed(queued)
 
-    expired_at: int | None = None
     for sequence in range(1, 1_000):
-        clock.advance(0.06118)  # Adds 590 ms of real backlog per 500 packets.
+        clock.advance(0.06118)  # Endpoint and worker clocks are not phase locked.
         await port.receive_audio(InboundAudioPacket(sequence, sequence * 960, b"audio"))
         queued = await port.queue.get()
         assert queued is not None
-        if queued.deadline_at <= clock():
-            expired_at = sequence
-            break
+        assert queued.deadline_at > clock()
         port.mark_consumed(queued)
 
-    assert expired_at is not None
-    assert 500 < expired_at < 600
+
+@pytest.mark.unit
+async def test_input_timeline_does_not_reanchor_a_stalled_tcp_burst() -> None:
+    clock = MutableMonotonicClock()
+    connection, _ = create_connection(
+        FakeWebSocket(),
+        limits=RvaRuntimeLimits(input_queue_packets=8, uplink_max_age_seconds=0.6),
+        clock=clock,
+    )
+    port = connection._audio_port  # noqa: SLF001
+
+    await port.receive_audio(InboundAudioPacket(0, 0, b"first"))
+    first = port.queue.get_nowait()
+    assert first is not None
+    port.mark_consumed(first)
+    clock.advance(0.06118)
+    await port.receive_audio(InboundAudioPacket(1, 960, b"paced"))
+    paced = port.queue.get_nowait()
+    assert paced is not None
+    assert paced.deadline_at > clock()
+    port.mark_consumed(paced)
+
+    clock.advance(0.9)
+    for sequence in range(2, 7):
+        await port.receive_audio(InboundAudioPacket(sequence, sequence * 960, b"burst"))
+        queued = port.queue.get_nowait()
+        assert queued is not None
+        assert queued.deadline_at <= clock()
+
+
+@pytest.mark.unit
+async def test_input_timeline_does_not_forget_prior_transport_delay() -> None:
+    clock = MutableMonotonicClock()
+    connection, _ = create_connection(
+        FakeWebSocket(),
+        limits=RvaRuntimeLimits(uplink_max_age_seconds=0.6),
+        clock=clock,
+    )
+    port = connection._audio_port  # noqa: SLF001
+
+    await port.receive_audio(InboundAudioPacket(0, 0, b"first"))
+    first = port.queue.get_nowait()
+    assert first is not None
+    port.mark_consumed(first)
+
+    clock.advance(0.36)  # 60 ms media plus a 300 ms transport stall.
+    await port.receive_audio(InboundAudioPacket(1, 960, b"delayed"))
+    delayed = port.queue.get_nowait()
+    assert delayed is not None
+    assert delayed.deadline_at > clock()
+    port.mark_consumed(delayed)
+
+    for sequence in range(2, 20):
+        clock.advance(0.06)
+        await port.receive_audio(InboundAudioPacket(sequence, sequence * 960, b"paced"))
+        paced = port.queue.get_nowait()
+        assert paced is not None
+        assert paced.deadline_at > clock()
+        port.mark_consumed(paced)
+
+    clock.advance(0.36)  # A second 300 ms stall exceeds the cumulative budget.
+    await port.receive_audio(InboundAudioPacket(20, 20 * 960, b"too-old"))
+    too_old = port.queue.get_nowait()
+    assert too_old is not None
+    assert too_old.deadline_at <= clock()
+
+
+@pytest.mark.unit
+async def test_input_timeline_rebase_preserves_existing_phase_delay() -> None:
+    clock = MutableMonotonicClock()
+    connection, _ = create_connection(FakeWebSocket(), clock=clock)
+    port = connection._audio_port  # noqa: SLF001
+
+    await port.receive_audio(InboundAudioPacket(0, 0, b"first"))
+    first = port.queue.get_nowait()
+    assert first is not None
+    port.mark_consumed(first)
+    clock.advance(0.36)
+    await port.receive_audio(InboundAudioPacket(1, 960, b"delayed"))
+    delayed = port.queue.get_nowait()
+    assert delayed is not None
+    port.mark_consumed(delayed)
+
+    queued = delayed
+    for sequence in range(2, 502):
+        clock.advance(0.06)
+        await port.receive_audio(InboundAudioPacket(sequence, sequence * 960, b"paced"))
+        queued = port.queue.get_nowait()
+        assert queued is not None
+        port.mark_consumed(queued)
+
+    assert clock() - queued.expected_at == pytest.approx(0.3)
+    assert queued.deadline_at - clock() == pytest.approx(0.3)
 
 
 @pytest.mark.unit
@@ -1043,8 +1131,8 @@ async def test_isolated_stale_head_is_dropped_to_fresh_live_edge_before_runner()
     )
     port = connection._audio_port  # noqa: SLF001
     await port.receive_audio(InboundAudioPacket(0, 0, b"stale"))
-    clock.advance(0.5)
-    await port.receive_audio(InboundAudioPacket(1, 960, b"fresh"))
+    clock.advance(0.7)
+    await port.receive_audio(InboundAudioPacket(1, 12 * 960, b"fresh"))
     clock.advance(0.11)
     runner = FakeRunner(connection._emit_segment, connection._request_response_end, trigger_frames=1_000)  # noqa: SLF001
     connection._runner = runner  # noqa: SLF001
@@ -1060,6 +1148,29 @@ async def test_isolated_stale_head_is_dropped_to_fresh_live_edge_before_runner()
     live_edge = port.queue.get_nowait()
     assert live_edge is not None and live_edge.packet.sequence == 1
     assert port.queue.empty()
+
+
+@pytest.mark.unit
+async def test_current_only_stale_packet_is_not_misclassified_as_backpressure() -> None:
+    websocket = FakeWebSocket()
+    clock = MutableMonotonicClock()
+    connection, _ = create_connection(
+        websocket,
+        limits=RvaRuntimeLimits(input_queue_packets=3, uplink_max_age_seconds=0.6),
+        clock=clock,
+    )
+    port = connection._audio_port  # noqa: SLF001
+    await port.receive_audio(InboundAudioPacket(0, 0, b"stale"))
+    queued = port.queue.get_nowait()
+    assert queued is not None
+    clock.advance(0.7)
+
+    error = connection._stale_uplink_error(queued)  # noqa: SLF001
+
+    assert error.source == "opus_input_stale"
+    assert error.qsize == 0
+    assert error.dropped_packets == 1
+    assert error.fresh_packet_available is False
 
 
 @pytest.mark.integration
@@ -1102,7 +1213,7 @@ async def test_input_media_timeline_age_fails_closed_before_stale_audio_reaches_
     clock.advance(0.2)
     websocket.feed_media(packets[1])
     await wait_until(lambda: connection._audio_port.queue.qsize() == 1)  # noqa: SLF001
-    clock.advance(0.5)
+    clock.advance(0.7)
 
     with caplog.at_level("INFO"):
         runners[0].release.set()
@@ -1114,7 +1225,7 @@ async def test_input_media_timeline_age_fails_closed_before_stale_audio_reaches_
     assert error["retryable"] is True
     assert websocket.closed == [(1_013, "media_overloaded")]
     assert "overload_source=opus_input_backpressure" in caplog.text
-    assert "overload_media_age_ms=700" in caplog.text
+    assert "overload_media_age_ms=900" in caplog.text
     assert "overload_dropped_packets=2" in caplog.text
     assert "overload_fresh_packet_available=false" in caplog.text
 

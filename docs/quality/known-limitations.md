@@ -21,6 +21,9 @@
   全量默认或隐式自动选择。
 - UDP 不实现 ICE、TURN、RTCP、NACK/RTX、GCC、无缝 NAT rebinding 或 transport 热迁移；失败后采用 fresh session。
 - 协议只承诺 `rva/1`、`wss-opus/1` 和 `udp-opus-gcm/1`，不兼容未登记的历史 wire 或 media profile。
+- WSS Server media timeline从首个已接收 packet 建立。当前 wire 不携带可跨主机验证的 capture phase，因此无法单独
+  识别“首包在 TCP 中已滞留超过 freshness budget”的情况；端侧 pre-send gate/send timeout、后续 packet cadence、
+  Server queue age 和 fresh-session fail closed共同缩小影响，但不构成首包端到端年龄证明。
 
 ## 尚未形成发布承诺的指标
 
@@ -38,4 +41,6 @@
 - Release SBOM 是锁定组件清单，不是漏洞扫描结论。字体、Python native wheel、FFmpeg/PyAV、PortAudio 等依赖仍须由
   实际二进制发布方按目标平台复核许可证和分发义务。
 
-上述限制不影响当前 alpha 对已登记 wire、资源有界生命周期、WSS/UDP 真机闭环和 Linux 单节点部署基线的验证结论。
+上述限制不影响当前 alpha 对已登记 wire、资源有界生命周期、UDP 真机闭环和 Linux 单节点部署基线的验证结论。
+WSS baseline 的历史 artifact暴露 freshness regression；修复后的最终 artifact 真机门禁完成前，不声明 WSS
+`device_verified`。
