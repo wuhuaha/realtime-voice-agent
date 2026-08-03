@@ -122,7 +122,6 @@ def configure_trace_logging(stream: Any | None = None) -> None:
 
 _TURN_MILESTONES = (
     "user_speech_started",
-    "asr_first_interim",
     "user_speech_ended",
     "asr_final",
     "eot_committed",
@@ -132,6 +131,7 @@ _TURN_MILESTONES = (
     "agent_audio_published",
 )
 _OPTIONAL_MILESTONES = (
+    "asr_first_interim",
     "asr_request_started",
     "asr_stream_ready",
     "asr_provider_interim",
@@ -262,6 +262,21 @@ class Tracer:
         fields: Mapping[str, str | int | float | bool | None],
     ) -> None:
         metric_type = fields.get("metric_type")
+        if metric_type == "ChatMessageMetrics":
+            captured = self._turn_provider_metrics.setdefault(turn_id, {})
+            for source_name, target_name in {
+                "transcription_delay": "livekit_transcription_delay_ms",
+                "end_of_turn_delay": "livekit_end_of_turn_delay_ms",
+                "on_user_turn_completed_delay": "livekit_on_user_turn_completed_delay_ms",
+                "llm_node_ttft": "livekit_llm_node_ttft_ms",
+                "tts_node_ttfb": "livekit_tts_node_ttfb_ms",
+                "playback_latency": "livekit_playback_latency_ms",
+                "e2e_latency": "livekit_e2e_latency_ms",
+            }.items():
+                value = fields.get(source_name)
+                if isinstance(value, int | float) and not isinstance(value, bool):
+                    captured.setdefault(target_name, round(float(value) * 1000, 3))
+            return
         prefixes = {
             "EOUMetrics": "eou",
             "LLMMetrics": "llm",

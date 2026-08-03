@@ -8,7 +8,7 @@ import math
 import struct
 import uuid
 from collections import deque
-from collections.abc import Awaitable, Callable, Coroutine
+from collections.abc import Awaitable, Callable, Coroutine, Mapping
 from dataclasses import dataclass
 from enum import StrEnum
 from functools import lru_cache
@@ -868,7 +868,6 @@ def _register_livekit_observers(
     """Project public AgentSession events into PII-free phase and latency events."""
 
     interim_seen = False
-    speech_turn_ids: dict[str, str] = {}
     agent_state = "initializing"
     response_turn_id: str | None = None
     playback_trace = _LiveKitPlaybackTrace(tracer)
@@ -924,8 +923,10 @@ def _register_livekit_observers(
     def on_conversation_item(event: object) -> None:
         item = getattr(event, "item", None)
         role = getattr(item, "role", None)
+        turn_id: str | None = None
         if role == "user":
-            tracer.event("eot_committed", turn_id=ensure_turn())
+            turn_id = ensure_turn()
+            tracer.event("eot_committed", turn_id=turn_id)
         elif role == "assistant":
             turn_id = playback_trace.turn_id or response_turn_id
             if turn_id is None:
@@ -933,47 +934,38 @@ def _register_livekit_observers(
             else:
                 tracer.event("assistant_item_committed", turn_id=turn_id)
 
-    def on_speech_created(event: object) -> None:
-        speech_id = str(getattr(getattr(event, "speech_handle", None), "id", "")) or None
-        turn_id = ensure_turn()
-        if speech_id is not None:
-            if len(speech_turn_ids) >= 256:
-                speech_turn_ids.pop(next(iter(speech_turn_ids)))
-            speech_turn_ids[speech_id] = turn_id
+        metrics = getattr(item, "metrics", None)
+        if turn_id is not None and isinstance(metrics, Mapping):
+            fields: dict[str, str | int | float | bool | None] = {
+                "metric_type": "ChatMessageMetrics",
+                "source": "chat_message",
+                "role": role,
+                "turn_id": turn_id,
+            }
+            for name in (
+                "transcription_delay",
+                "end_of_turn_delay",
+                "on_user_turn_completed_delay",
+                "llm_node_ttft",
+                "tts_node_ttfb",
+                "playback_latency",
+                "e2e_latency",
+            ):
+                value = metrics.get(name)
+                if (
+                    isinstance(value, int | float)
+                    and not isinstance(value, bool)
+                    and math.isfinite(value)
+                ):
+                    fields[name] = value
+            if len(fields) > 4:
+                tracer.event("provider_metrics", **fields)
 
-    def on_metrics(event: object) -> None:
-        metrics = getattr(event, "metrics", None)
-        metric_type = type(metrics).__name__
-        if metrics is None or metric_type == "VADMetrics":
-            return
-        speech_id_value = getattr(metrics, "speech_id", None)
-        speech_id = speech_id_value if isinstance(speech_id_value, str) else None
-        fields: dict[str, str | int | float | bool | None] = {
-            "metric_type": metric_type,
-            "turn_id": speech_turn_ids.get(speech_id) if speech_id is not None else tracer.current_turn_id,
-            # Kept as a 1.6.5 compatibility source. Upgrade candidates must verify
-            # a public replacement before removing this deprecated event.
-            "source": "metrics_collected_compat",
-        }
-        for name in (
-            "label",
-            "request_id",
-            "speech_id",
-            "segment_id",
-            "duration",
-            "ttfb",
-            "ttft",
-            "audio_duration",
-            "end_of_utterance_delay",
-            "transcription_delay",
-            "on_user_turn_completed_delay",
-            "cancelled",
-            "streamed",
-        ):
-            value = getattr(metrics, name, None)
-            if isinstance(value, str | int | float | bool) or value is None:
-                fields[name] = value
-        tracer.event("provider_metrics", **fields)
+    def on_session_usage(event: object) -> None:
+        usage = getattr(event, "usage", None)
+        model_usage = getattr(usage, "model_usage", None)
+        if isinstance(model_usage, list):
+            tracer.event("session_usage_updated", model_usage_count=len(model_usage))
 
     def on_close(event: object) -> None:
         if session_close is not None:
@@ -987,7 +979,6 @@ def _register_livekit_observers(
     on("user_input_transcribed", on_user_transcript)
     on("agent_state_changed", on_agent_state)
     on("conversation_item_added", on_conversation_item)
-    on("speech_created", on_speech_created)
-    on("metrics_collected", on_metrics)
+    on("session_usage_updated", on_session_usage)
     on("close", on_close)
     return playback_trace

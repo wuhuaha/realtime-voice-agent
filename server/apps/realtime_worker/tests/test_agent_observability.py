@@ -49,13 +49,6 @@ class FakeSession:
         self.closed = True
 
 
-class LLMMetrics:
-    speech_id = "speech-1"
-    request_id = "request-1"
-    ttft = 0.125
-    duration = 0.5
-
-
 def test_public_session_observers_emit_required_pii_free_phases() -> None:
     sink = InMemoryTraceSink()
     tracer = Tracer(TraceContext(trace_id="trace-test"), sink)
@@ -72,16 +65,31 @@ def test_public_session_observers_emit_required_pii_free_phases() -> None:
         SimpleNamespace(transcript="SECRET TRANSCRIPT MUST NOT BE LOGGED", is_final=True),
     )
     session.emit("user_state_changed", SimpleNamespace(new_state="listening", old_state="speaking", created_at=1.5))
-    session.emit("conversation_item_added", SimpleNamespace(item=SimpleNamespace(role="user")))
-    session.emit("agent_state_changed", SimpleNamespace(new_state="thinking"))
     session.emit(
-        "speech_created",
-        SimpleNamespace(speech_handle=SimpleNamespace(id="speech-1"), source="llm", user_initiated=True),
+        "conversation_item_added",
+        SimpleNamespace(
+            item=SimpleNamespace(
+                role="user",
+                metrics={"transcription_delay": 0.2, "end_of_turn_delay": 0.3},
+            )
+        ),
     )
-    session.emit("metrics_collected", SimpleNamespace(metrics=LLMMetrics()))
+    session.emit("agent_state_changed", SimpleNamespace(new_state="thinking"))
     session.emit("agent_state_changed", SimpleNamespace(new_state="speaking"))
     assert "agent_audio_published" not in [event.name for event in sink.events]
-    session.emit("conversation_item_added", SimpleNamespace(item=SimpleNamespace(role="assistant")))
+    session.emit(
+        "conversation_item_added",
+        SimpleNamespace(
+            item=SimpleNamespace(
+                role="assistant",
+                metrics={"llm_node_ttft": 0.125, "tts_node_ttfb": 0.25, "e2e_latency": 0.75},
+            )
+        ),
+    )
+    session.emit(
+        "session_usage_updated",
+        SimpleNamespace(usage=SimpleNamespace(model_usage=[object(), object(), object()])),
+    )
     observer.playback_started(2.0)
     observer.playback_finished(0.5, False)
     session.emit("close", SimpleNamespace(reason=SimpleNamespace(value="shutdown"), error=None))
@@ -99,12 +107,24 @@ def test_public_session_observers_emit_required_pii_free_phases() -> None:
         "endpoint_playback_started",
         "endpoint_playback_finished",
         "provider_metrics",
+        "session_usage_updated",
         "turn_latency_summary",
         "session_closed",
     ):
         assert required in names
     serialized = json.dumps([event.to_dict() for event in sink.events])
     assert "SECRET TRANSCRIPT" not in serialized
+    provider_events = [event for event in sink.events if event.name == "provider_metrics"]
+    assert {event.fields["role"] for event in provider_events} == {"user", "assistant"}
+    assert all(event.fields["source"] == "chat_message" for event in provider_events)
+    usage = next(event for event in sink.events if event.name == "session_usage_updated")
+    assert usage.fields["model_usage_count"] == 3
+    completed = [event for event in sink.events if event.name == "turn_latency_summary"][-1]
+    assert completed.fields["livekit_transcription_delay_ms"] == 200.0
+    assert completed.fields["livekit_end_of_turn_delay_ms"] == 300.0
+    assert completed.fields["livekit_llm_node_ttft_ms"] == 125.0
+    assert completed.fields["livekit_tts_node_ttfb_ms"] == 250.0
+    assert completed.fields["livekit_e2e_latency_ms"] == 750.0
 
 
 def test_public_session_observers_forward_real_user_transcript_only() -> None:
@@ -260,6 +280,31 @@ def test_turn_summary_omits_negative_latency_and_marks_invalid_pair() -> None:
     assert "speech_duration_ms" not in summary.fields
 
 
+def test_turn_summary_can_complete_without_public_interim_event() -> None:
+    sink = InMemoryTraceSink()
+    tracer = Tracer(TraceContext(trace_id="trace-no-public-interim"), sink)
+    turn_id = tracer.begin_turn()
+    for event_name in (
+        "user_speech_started",
+        "user_speech_ended",
+        "asr_final",
+        "eot_committed",
+        "llm_requested",
+        "tts_requested",
+        "tts_first_pcm",
+        "agent_audio_published",
+    ):
+        tracer.event(event_name, turn_id=turn_id)
+    tracer.event("asr_provider_interim", turn_id=turn_id)
+
+    tracer.emit_turn_summary(turn_id)
+
+    summary = sink.events[-1]
+    assert summary.fields["status"] == "complete"
+    assert summary.fields["missing_stages"] == ""
+    assert "speech_to_first_interim_ms" not in summary.fields
+
+
 def test_json_trace_sink_is_bounded_per_session() -> None:
     memory = InMemoryTraceSink()
     tracer = Tracer(
@@ -324,10 +369,10 @@ async def test_livekit_runner_passes_one_session_tracer_to_stt_tts_and_observers
         "user_input_transcribed",
         "agent_state_changed",
         "conversation_item_added",
-        "speech_created",
-        "metrics_collected",
+        "session_usage_updated",
         "close",
     }
+    assert "metrics_collected" not in fake_session.handlers
     assert fake_session.started
     text_output = fake_session.output.transcription
     assert isinstance(text_output, RoomlessTextOutput)
