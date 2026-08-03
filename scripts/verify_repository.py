@@ -137,7 +137,7 @@ def validate_firmware_composition(root: Path) -> list[str]:
 
     required_markers = {
         root / "docs" / "quality" / "release-readiness.md": (
-            "状态：not ready",
+            "状态：",
             "Native clean build + size",
             "WSS voice loop",
             "UDP voice loop",

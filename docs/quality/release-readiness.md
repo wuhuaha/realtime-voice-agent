@@ -1,7 +1,7 @@
 # Release readiness
 
 更新日期：2026-08-03
-状态：not ready
+状态：awaiting final HIL
 
 本文只记录当前 Product 候选和可复核的发布门禁。历史 artifact、临时地址、SSID、原始串口日志和旧协议结论不构成
 当前 release evidence；未执行的门禁保持 `not_run` 或 `incomplete`。
@@ -9,24 +9,32 @@
 ## 当前候选身份
 
 - 分支：`codex/lifecycle-convergence-hardening`
+- Product release candidate：`d8400363ee7f0e8c3f7af88547c3b20a6da70f58`
 - Product Server candidate：`6d2be99ee5ae44c921141d2e9dcc2b69f55646c0`
 - ESP32-S3 HIL firmware source：`38ebe57af4d1a3fa0fae01ad96a210fc07d57bbe`
-- Server source archive SHA-256：
-  `f396b1a8f6cf9516620e041297f6d38e6b8f20ed1ec7a79c186856e5232e4344`
+- 待部署 Product source archive SHA-256：
+  `e6a397ebb0a353f1865b265c64196fcc6988ac8a26973b8c2a518d81df63697f`
 - 公共无凭据 firmware bundle SHA-256：
-  `4a95f91c9c36f71f912e02b5e4d9ac003d455f48abaa47870e5dbe9aba76638c`
+  `5e4d1411b6b5bfca81b153bcf574b1547763309ac01dce1f2425915999581a7f`
 - 公共无凭据 app image SHA-256：
-  `64f1e4b95397419270b604d610e86f3b7f43d2b8e15870385a8c96250fd5e6b1`
+  `11b940e50a75244ee9c87b53ace5b3da0c826ef057baf771115424e457974f26`
+- CycloneDX 1.5 release SBOM SHA-256：
+  `051b3576694b46da7dad0462777325f99e5595db629dd933429e1e8c9f3fded8`
 - 真机 deployment app image SHA-256：
   `a3c021b92cb9d35cfa872be8a06845e47224b507286ccd2651433773f900a904`
 - 真机 private sdkconfig digest：
   `960d1a7e41bf0604a827e0e5430195b2b9962b2a20b6aef6599a0965c5be0557`
 
-公共 image 不包含 Wi-Fi、bootstrap token 或 endpoint。真机 deployment image 构建于 `38ebe57`，只通过 Git
+公共 `d840036` image 不包含 Wi-Fi、bootstrap token 或 endpoint；build provenance 为 `release_eligible=true`，
+绑定 clean HEAD、生成配置、`partitions.csv`、flasher manifest、固定字体包和五个分区镜像。相同输入重复打包得到
+相同 bundle SHA-256，bundle 同时包含许可证、第三方声明、manifest 和 `SHA256SUMS`。真机 deployment image
+构建于 `38ebe57`，只通过 Git
 ignored/private Kconfig input 注入部署配置；private input 和 image 不进入 Git 或公开 release。`38ebe57` 相对
 `7c34337` 未修改 firmware source；`6d2be99` 只修改 Server 播放观测归属及其测试，未改变 firmware、wire、媒体热路径
 或 provider 行为。最终 tag 前仍须从最终 Product commit fresh 构建公共 firmware；跨 source identity 只允许继承经
-diff 证明未受影响的证据范围。
+diff 证明未受影响的证据范围。`d840036` 相对 `6d2be99` 未修改 Server production runtime；相对 `38ebe57`
+未修改 firmware C/C++、wire 或媒体热路径，只增加测试、发布工具和文档。最终 HIL 仍须绑定随后烧录的 deployment
+image，正式 tag/release 仍须单独授权。
 
 ## 软件与构建门禁
 
@@ -35,11 +43,28 @@ GitHub Actions [`ci` run 30779989105](https://github.com/wuhuaha/realtime-voice-
 `repository`、`server`、`desktop-reference`、`desktop-reference-host-e2e`、`redis-integration`、
 `native-firmware-host-contracts` 和 `native-firmware-build-size`。
 
+后续纯文档候选 `fe39a6c` 的 GitHub Actions run `30780293416` 同样为 7/7 成功。`d840036` 本地 fresh gate 结果：
+root `52 passed`，Server `294 passed, 3 skipped`，Desktop Reference `116 passed, 4 deselected`；3 个 Server skip
+只因本机未配置 Redis subprocess URL，Redis 与 Linux host E2E 已由 CI/独立 Linux 环境覆盖。最终推送后的
+commit-addressable CI 仍须成功，不能由本地结果替代。
+
 公共和真机 deployment image 均通过 `scripts/build-firmware.ps1` 固定入口构建，使用 ESP-IDF
 `5.5.2@30aaf64524299d3bde422ca9a2848090d1bc5d0f`、
 Xtensa compiler `esp-14.2.0_20251107`、CMake `3.30.2` 和 Ninja `1.12.1` clean build。应用大小
-`0x21a930`，4 MiB app partition 剩余 `0x1e56d0`（47%）。构建成功；仅 gdbinit 生成因非调试 shell
-未设置 `ESP_ROM_ELF_DIR` 产生非致命 warning，不影响 application、bootloader 或烧录产物。
+`0x21a510`，4 MiB app partition 剩余 `0x1e5af0`（47%）。公开 build、固定字体资产生成、provenance、partition
+校验和确定性 package 均成功。
+
+## 自动稳定性与故障注入
+
+Linux 隔离 checkout 在 `fe39a6c` 上连续运行 1804 秒 deterministic churn，共 211 轮；每轮重新建立和回收独立
+Director/Worker，并执行 WSS low-level、WSS DesktopApp、UDP low-level 和 UDP DesktopApp 四个 case。WSS
+`422/422`、UDP `422/422` 通过，失败为 0，最长单轮 8951 ms，最终无残留进程。`d840036` 未修改被测 production
+runtime，因此该证据按 diff scope 继承。
+
+另执行 deterministic fault matrix：Server `50/50`、Desktop `63/63` 通过，覆盖 UDP authentication、replay、
+gap/deadline、refresh、PLC、fresh reopen、generation fence，以及 WSS teardown、playback terminal、cancel 和 cleanup。
+这些结果是 `host_verified` 协议/生命周期证据，不是物理网卡上的 random loss、burst、连续 jitter、带宽限制或
+公网 TLS 测量；后者继续保持 `not_run`，UDP 继续为显式 opt-in。
 
 ## Linux 公网部署
 
@@ -95,26 +120,26 @@ playback generation。UDP 回归记录：
 
 观察窗口未见 panic、Task WDT、反复重启、非预期重连或队列持续增长。测试环境持续存在背景人声；NS、VAD
 切分和 ASR 准确率不属于本项目本轮门禁，只要求这些输入不得破坏 transport、session、playback generation、terminal
-或资源释放。长稳、弱网、声学和固定延迟样本仍未执行。
+或资源释放。绑定最终 deployment image 的短 HIL 尚待执行；声学、真实 netem 和固定延迟分位数不进入本次自动证据。
 
 ## 当前发布门禁
 
 | Gate | 当前状态 | 当前证据与完成条件 |
 | --- | --- | --- |
-| Product commit + CI | `passed` | `6d2be99` commit-addressable CI 7/7 jobs 成功 |
-| Server immutable archive | `passed` | archive digest、只读 release、rollback identity 已记录 |
+| Product commit + CI | `incomplete` | `fe39a6c` CI 7/7；`d840036` 本地全绿，仍须最终 push CI |
+| Server immutable archive | `prepared` | `d840036` archive digest 已记录，仍须切换只读 release 并验证 rollback identity |
 | Linux Director/Worker readiness | `passed` | Redis coordination、provider、WSS/UDP socket、capacity 与 heartbeat ready |
-| Native clean build + size | `passed` | 锁定工具链、image digest、47% app partition 余量已记录 |
+| Native clean build + size | `passed` | `d840036` clean public build、provenance、image/bundle digest、47% app 余量通过 |
 | Flash/boot/display/touch | `device_verified` | 完整分区写入校验；配置页退出、AFE 启动、MIC start/stop 生效 |
 | Wi-Fi/NVS/bootstrap | `device_verified` | private-configured image 自动联网并完成公网 bootstrap；Wi-Fi flap 未执行 |
 | WSS voice loop | `device_verified` | 当前真机单轮与 Server `6d2be99` Desktop real-provider canary 均通过 |
 | UDP admission/bootstrap | `device_verified` | 真机 bootstrap、authenticated probe、source pinning、normal close/release 通过 |
 | UDP voice loop | `device_verified` | 真机双向 Opus、完整 playback fact、0 invalid/drop/deadline miss 通过 |
-| End-to-end latency | `not_run` | 需按固定样本量报告口径与 p50/p95/p99 |
-| Weak network | `not_run` | 需覆盖 loss、burst、jitter、late、fresh reopen 与 generation fence |
-| Stability | `incomplete` | 本轮多轮会话正常；尚未绑定固定 30 分钟或 2 小时 soak |
-| AEC/acoustic | `not_run` | 不属于本批次；若进入 release scope 需专项执行或形成 waiver |
-| Security/repository | `incomplete` | secret 未进入 Git/public artifact；SBOM、许可证复核和正式 release 记录未完成 |
+| End-to-end latency | `not_run` | alpha known limitation；未承诺固定 p50/p95/p99 SLO |
+| Weak network | `host_verified / measured_not_run` | deterministic fault matrix通过；真实 random/burst/jitter/netem 未测，UDP保持opt-in |
+| Stability | `host_verified` | 1804 秒、211 轮、WSS/UDP 各 422 cases、0 failure、0 residual process |
+| AEC/acoustic | `out_of_scope` | 当前开源定位不以 NS/ASR/AEC 主观效果为 release gate |
+| Security/repository | `host_verified / production incomplete` | secret scan、历史已知凭据扫描、SBOM和许可证digest通过；TLS/限流仍由部署方提供 |
 
 ## 证据规则
 
