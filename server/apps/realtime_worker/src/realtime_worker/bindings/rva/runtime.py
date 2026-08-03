@@ -183,6 +183,17 @@ class _AudioQueuePort(AudioInputPort):
         self._last_received_at = 0.0
 
     async def receive_audio(self, packet: InboundAudioPacket) -> None:
+        await self._receive_audio(packet, allow_accumulated_future_reanchor=False)
+
+    async def receive_udp_audio(self, packet: InboundAudioPacket) -> None:
+        await self._receive_audio(packet, allow_accumulated_future_reanchor=True)
+
+    async def _receive_audio(
+        self,
+        packet: InboundAudioPacket,
+        *,
+        allow_accumulated_future_reanchor: bool,
+    ) -> None:
         if self._closed:
             raise RvaRuntimeError("audio input is closed")
         received_at = self._owner._clock()  # noqa: SLF001
@@ -190,23 +201,88 @@ class _AudioQueuePort(AudioInputPort):
             self._consumer_timeline_timestamp = packet.timestamp
             self._consumer_timeline_started_at = received_at
         has_previous_packet = self._last_timestamp is not None
+        previous_timestamp = self._last_timestamp
+        arrival_delta = 0.0
+        local_future_lead = 0.0
         if has_previous_packet:
-            timestamp_delta = (packet.timestamp - self._last_timestamp) & 0xFFFFFFFF
+            assert previous_timestamp is not None
+            timestamp_delta = (packet.timestamp - previous_timestamp) & 0xFFFFFFFF
             arrival_delta = max(0.0, received_at - self._last_received_at)
             media_delta = timestamp_delta / SAMPLE_RATE
-            if (
-                timestamp_delta == 0
-                or timestamp_delta % SAMPLES_PER_PACKET != 0
-                or media_delta > arrival_delta + self._owner._limits.uplink_max_age_seconds  # noqa: SLF001
-            ):
+            if timestamp_delta == 0:
+                self._log_timestamp_warning(
+                    reason="duplicate",
+                    action="reject",
+                    previous_timestamp=previous_timestamp,
+                    packet=packet,
+                    timestamp_delta=timestamp_delta,
+                    arrival_delta=arrival_delta,
+                    expected_lead=0.0,
+                )
+                raise RvaBindingError("invalid_media_timestamp")
+            if timestamp_delta % SAMPLES_PER_PACKET != 0:
+                self._log_timestamp_warning(
+                    reason="non_cadenced",
+                    action="reject",
+                    previous_timestamp=previous_timestamp,
+                    packet=packet,
+                    timestamp_delta=timestamp_delta,
+                    arrival_delta=arrival_delta,
+                    expected_lead=0.0,
+                )
+                raise RvaBindingError("invalid_media_timestamp")
+            local_future_lead = max(0.0, media_delta - arrival_delta)
+            if local_future_lead > self._owner._limits.uplink_max_age_seconds:  # noqa: SLF001
+                self._log_timestamp_warning(
+                    reason="oversized_future_jump",
+                    action="reject",
+                    previous_timestamp=previous_timestamp,
+                    packet=packet,
+                    timestamp_delta=timestamp_delta,
+                    arrival_delta=arrival_delta,
+                    expected_lead=local_future_lead,
+                )
                 raise RvaBindingError("invalid_media_timestamp")
         self._last_timestamp = packet.timestamp
         self._last_received_at = received_at
         timestamp_delta = (packet.timestamp - self._consumer_timeline_timestamp) & 0xFFFFFFFF
         expected_at = self._consumer_timeline_started_at + timestamp_delta / SAMPLE_RATE
         max_age = self._owner._limits.uplink_max_age_seconds  # noqa: SLF001
-        if expected_at > received_at + max_age:
+        expected_lead = expected_at - received_at
+        if expected_lead > max_age and not (
+            allow_accumulated_future_reanchor and local_future_lead <= max_age
+        ):
+            self._log_timestamp_warning(
+                reason=("local_future_jump" if local_future_lead > max_age else "accumulated_future"),
+                action="reject",
+                previous_timestamp=previous_timestamp,
+                packet=packet,
+                timestamp_delta=(
+                    (packet.timestamp - previous_timestamp) & 0xFFFFFFFF
+                    if previous_timestamp is not None
+                    else 0
+                ),
+                arrival_delta=arrival_delta,
+                expected_lead=expected_lead,
+            )
             raise RvaBindingError("invalid_media_timestamp")
+        if expected_lead > max_age:
+            self._log_timestamp_warning(
+                reason="accumulated_future",
+                action="reanchor",
+                previous_timestamp=previous_timestamp,
+                packet=packet,
+                timestamp_delta=(
+                    (packet.timestamp - previous_timestamp) & 0xFFFFFFFF
+                    if previous_timestamp is not None
+                    else 0
+                ),
+                arrival_delta=arrival_delta,
+                expected_lead=expected_lead,
+            )
+            self._consumer_timeline_timestamp = packet.timestamp
+            self._consumer_timeline_started_at = received_at
+            expected_at = received_at
         if has_previous_packet:
             paced_arrival = abs(arrival_delta - media_delta) <= _TIMELINE_PACING_TOLERANCE_SECONDS
             if paced_arrival:
@@ -252,6 +328,31 @@ class _AudioQueuePort(AudioInputPort):
                     if not task.done():
                         task.cancel()
                 await asyncio.gather(put_task, close_task, return_exceptions=True)
+
+    def _log_timestamp_warning(
+        self,
+        *,
+        reason: str,
+        action: str,
+        previous_timestamp: int | None,
+        packet: InboundAudioPacket,
+        timestamp_delta: int,
+        arrival_delta: float,
+        expected_lead: float,
+    ) -> None:
+        logger.warning(
+            "rva_media_timestamp reason=%s action=%s session=%s profile=%s previous_timestamp=%s "
+            "current_timestamp=%d timestamp_delta=%d arrival_delta_ms=%d expected_lead_ms=%d",
+            reason,
+            action,
+            self._owner._binding_id,  # noqa: SLF001
+            self._owner._binding.selected_media_profile or "unselected",  # noqa: SLF001
+            previous_timestamp if previous_timestamp is not None else "none",
+            packet.timestamp,
+            timestamp_delta,
+            round(arrival_delta * 1_000),
+            round(expected_lead * 1_000),
+        )
 
     def mark_consumed(self, queued: _QueuedAudio) -> None:
         if self._consumer_timeline_timestamp is None:
@@ -1226,7 +1327,7 @@ class RvaWssConnection:
         self._udp_uplink_sequence += 1
         self._udp_input_packets += 1
         self._log_input_progress_if_due(source="udp", packets=self._udp_input_packets)
-        await self._audio_port.receive_audio(packet)
+        await self._audio_port.receive_udp_audio(packet)
 
     def _log_input_progress_if_due(self, *, source: str, packets: int) -> None:
         if packets == 1 or packets % 50 == 0:

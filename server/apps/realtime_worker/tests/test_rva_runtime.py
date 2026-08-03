@@ -1028,7 +1028,7 @@ async def test_input_timeline_does_not_forget_prior_transport_delay() -> None:
 
     for sequence in range(2, 20):
         clock.advance(0.06)
-        await port.receive_audio(InboundAudioPacket(sequence, sequence * 960, b"paced"))
+        await port.receive_udp_audio(InboundAudioPacket(sequence, sequence * 960, b"paced"))
         paced = port.queue.get_nowait()
         assert paced is not None
         assert paced.deadline_at > clock()
@@ -1070,7 +1070,7 @@ async def test_input_timeline_rebase_preserves_existing_phase_delay() -> None:
 
 
 @pytest.mark.unit
-async def test_input_timeline_rejects_non_cadenced_or_future_timestamp() -> None:
+async def test_input_timeline_rejects_duplicate_or_non_cadenced_timestamp() -> None:
     websocket = FakeWebSocket()
     clock = MutableMonotonicClock()
     connection, _ = create_connection(websocket, clock=clock)
@@ -1086,18 +1086,87 @@ async def test_input_timeline_rejects_non_cadenced_or_future_timestamp() -> None
         await port.receive_audio(InboundAudioPacket(1, 961, b"invalid-cadence"))
 
     with pytest.raises(RvaBindingError, match="invalid_media_timestamp"):
-        await port.receive_audio(InboundAudioPacket(1, 960 * 20, b"future-jump"))
+        await port.receive_audio(InboundAudioPacket(1, 0, b"duplicate"))
 
-    accumulated, _ = create_connection(FakeWebSocket(), clock=MutableMonotonicClock())
-    accumulated_port = accumulated._audio_port  # noqa: SLF001
-    await accumulated_port.receive_audio(InboundAudioPacket(0, 0, b"first"))
-    queued = await accumulated_port.queue.get()
-    assert queued is not None
-    accumulated_port.mark_consumed(queued)
-    await accumulated_port.receive_audio(InboundAudioPacket(1, 960 * 10, b"boundary-jump"))
+
+@pytest.mark.unit
+async def test_udp_input_timeline_reanchors_jittered_clock_after_accumulated_future_lead(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    clock = MutableMonotonicClock()
+    connection, _ = create_connection(
+        FakeWebSocket(),
+        limits=RvaRuntimeLimits(uplink_max_age_seconds=0.6),
+        clock=clock,
+    )
+    port = connection._audio_port  # noqa: SLF001
+
+    await port.receive_audio(InboundAudioPacket(0, 0, b"first"))
+    first = port.queue.get_nowait()
+    assert first is not None
+    port.mark_consumed(first)
+
+    for sequence in range(1, 2_400):
+        # Both intervals remain inside the pacing tolerance. Their corrections
+        # cancel after clamping, while the small average clock lead accumulates.
+        clock.advance(0.074 if sequence % 2 else 0.0455)
+        await port.receive_udp_audio(InboundAudioPacket(sequence, sequence * 960, b"jittered"))
+        queued = port.queue.get_nowait()
+        assert queued is not None
+        assert queued.deadline_at > clock()
+        port.mark_consumed(queued)
+
+    assert sum("reason=accumulated_future action=reanchor" in message for message in caplog.messages) == 1
+
+
+@pytest.mark.unit
+async def test_wss_input_timeline_rejects_accumulated_future_lead() -> None:
+    clock = MutableMonotonicClock()
+    connection, _ = create_connection(
+        FakeWebSocket(),
+        limits=RvaRuntimeLimits(uplink_max_age_seconds=0.6),
+        clock=clock,
+    )
+    port = connection._audio_port  # noqa: SLF001
+
+    await port.receive_audio(InboundAudioPacket(0, 0, b"first"))
+    first = port.queue.get_nowait()
+    assert first is not None
+    port.mark_consumed(first)
+    rejected = False
+    for sequence in range(1, 2_400):
+        clock.advance(0.074 if sequence % 2 else 0.0455)
+        try:
+            await port.receive_audio(InboundAudioPacket(sequence, sequence * 960, b"jittered"))
+        except RvaBindingError as exc:
+            assert str(exc) == "invalid_media_timestamp"
+            rejected = True
+            break
+        queued = port.queue.get_nowait()
+        assert queued is not None
+        port.mark_consumed(queued)
+
+    assert rejected
+
+
+@pytest.mark.unit
+async def test_input_timeline_rejects_oversized_cadenced_future_jump() -> None:
+    clock = MutableMonotonicClock()
+    connection, _ = create_connection(
+        FakeWebSocket(),
+        limits=RvaRuntimeLimits(uplink_max_age_seconds=0.6),
+        clock=clock,
+    )
+    port = connection._audio_port  # noqa: SLF001
+
+    await port.receive_audio(InboundAudioPacket(0, 0, b"first"))
+    first = port.queue.get_nowait()
+    assert first is not None
+    port.mark_consumed(first)
+    clock.advance(0.06)
 
     with pytest.raises(RvaBindingError, match="invalid_media_timestamp"):
-        await accumulated_port.receive_audio(InboundAudioPacket(2, 960 * 20, b"accumulated-jump"))
+        await port.receive_udp_audio(InboundAudioPacket(1, 960 * 20, b"oversized-jump"))
 
 
 @pytest.mark.unit
