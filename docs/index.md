@@ -29,6 +29,8 @@
 
 - [测试策略](quality/test-strategy.md)
 - [Release readiness](quality/release-readiness.md)
+- [v0.1.0-alpha Release notes](quality/release-notes-v0.1.0-alpha.md)
+- [Known limitations](quality/known-limitations.md)
 - [需求追踪](quality/requirements-traceability.md)
 - [安全模型](security/security-model.md)
 - [凭据](security/credentials.md)

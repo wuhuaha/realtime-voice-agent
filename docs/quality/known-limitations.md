@@ -1,0 +1,41 @@
+# Known limitations
+
+适用版本：`v0.1.0-alpha`
+
+本版本用于验证低资源 endpoint 通过 RVA wire 接入 roomless LiveKit Agents 的工程边界，不是 production-ready、
+通用 RTC 或完整语音产品声明。精确门禁状态以 [Release readiness](release-readiness.md) 为准。
+
+## 部署与安全边界
+
+- Server 运行入口只支持 Linux/container；Windows 只作为开发、固件构建和 host test 环境。
+- `deployment/single-node/` 不提供 TLS、证书、入口限流、WAF、Redis HA 或多主机故障转移。公网部署必须在仓库外配置
+  受信 HTTPS/WSS gateway；UDP 需单独配置防火墙、NAT 和暴露端口。
+- 单机 Compose 是可复现部署基线，不是高可用拓扑。Redis、主机或唯一 Worker 故障会影响新 session 建立。
+- 示例配置只含占位符。设备 provisioning、secret rotation、撤销、审计和生产证书生命周期由部署方负责。
+
+## Endpoint 与协议边界
+
+- 当前 reference endpoints 只有立创实战派 ESP32-S3 和 Python Desktop Reference Client；浏览器、手机及其他 MCU
+  尚无本仓实现和发布门禁。
+- WSS `wss-opus/1` 是 baseline。UDP `udp-opus-gcm/1` 是显式启用的 challenger，在完成固定弱网门禁前不应作为
+  全量默认或隐式自动选择。
+- UDP 不实现 ICE、TURN、RTCP、NACK/RTX、GCC、无缝 NAT rebinding 或 transport 热迁移；失败后采用 fresh session。
+- 协议只承诺 `rva/1`、`wss-opus/1` 和 `udp-opus-gcm/1`，不兼容未登记的历史 wire 或 media profile。
+
+## 尚未形成发布承诺的指标
+
+- 尚未完成固定 loss/burst/jitter/reorder 模型下的弱网矩阵。
+- 尚未形成绑定最终 release artifact 的长时间 soak、延迟 p50/p95/p99、CPU/RSS/heap 和容量 SLO。
+- AEC、NS、VAD、远场拾音、double-talk 和 ASR 中文准确率没有形成跨环境声学指标；当前真机证据只证明端云链路，
+  不代表特定噪声环境中的识别或主观音质。
+- `VOICE_WORKER_MAX_SESSIONS=5` 是可配置启动值，不是测量容量。
+
+## Provider 与分发边界
+
+- FunASR、DeepSeek-compatible LLM 和 CosyVoice/MiMo adapters 是 reference integrations。第三方服务可用性、模型质量、
+  计费、数据处理和服务条款不由本项目保证。
+- Desktop Reference Client 是协议和 E2E 工具，不提供签名安装器、自动更新或面向终端用户的桌面发行版。
+- Release SBOM 是锁定组件清单，不是漏洞扫描结论。字体、Python native wheel、FFmpeg/PyAV、PortAudio 等依赖仍须由
+  实际二进制发布方按目标平台复核许可证和分发义务。
+
+上述限制不影响当前 alpha 对已登记 wire、资源有界生命周期、WSS/UDP 真机闭环和 Linux 单节点部署基线的验证结论。

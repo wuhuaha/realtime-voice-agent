@@ -49,6 +49,24 @@ Xtensa 工具，并自动设置 ESP-SR 模型打包所需的 UTF-8 模式：
 pwsh -File .\scripts\build-firmware.ps1 -Clean
 ```
 
+公开 release bundle 必须在 clean Product worktree 中使用 `-ReleaseArtifacts` 构建。在线下载不可用时可显式传入
+已固定且会再次校验 size/SHA-256 的组件包；路径只作为本机构建输入，不写入 provenance：
+
+```powershell
+pwsh -File .\scripts\build-firmware.ps1 `
+  -Clean -ReleaseArtifacts `
+  -BuildDir firmware/apps/voice_terminal/build-release `
+  -FontPackage external/78__xiaozhi-fonts-v1.6.0.zip
+
+pwsh -File .\firmware\tools\package-release.ps1 `
+  -BuildDir firmware/apps/voice_terminal/build-release `
+  -Output artifacts/rva-firmware-public.zip
+```
+
+构建会写入 ignored 的 `build-provenance.json`，绑定 HEAD、构建前后仓库状态、生成配置、分区表和五个烧录镜像。
+打包器只接受 `release_eligible=true` 且仍与 clean HEAD 完全匹配的产物，并把许可证、第三方声明、manifest 与
+`SHA256SUMS` 一并放入 bundle；普通 dirty-tree 开发构建不会被误标为公开产物。
+
 默认生成公共构建，配置和缓存位于 ignored 的
 `firmware/apps/voice_terminal/build-local`。如需使用本地 ignored 的部署配置，必须显式传入同一工程下的
 `sdkconfig` 文件和独立 build 目录：

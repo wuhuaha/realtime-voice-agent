@@ -13,6 +13,7 @@ sources:
     version: Sans2.004
     license: OFL-1.1
     license_file: third_party/licenses/Noto-Sans-CJK-OFL-1.1.txt
+    license_file_sha256: 6a73f9541c2de74158c0e7cf6b0a58ef774f5a780bf191f2d7ec9cc53efe2bf2
     license_url: https://raw.githubusercontent.com/notofonts/noto-cjk/Sans2.004/LICENSE
     artifact_url: https://raw.githubusercontent.com/notofonts/noto-cjk/Sans2.004/Sans/OTF/SimplifiedChinese/NotoSansCJKsc-Regular.otf
     artifact_sha256: 2c76254f6fc379fddfce0a7e84fb5385bb135d3e399294f6eeb6680d0365b74b

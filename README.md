@@ -1,8 +1,9 @@
 # realtime-voice-agent
 
-面向嵌入式设备、浏览器和移动端的实时语音 Agent 端云工程。首个 endpoint 是立创实战派 ESP32-S3；
-设备通过项目定义的 `rva/1` 与 `wss-opus/1` / `udp-opus-gcm/1` 接入 roomless LiveKit
-`AgentSession`。服务端由 Session Director、可水平扩展的 Realtime Worker 和 provider adapters 组成。
+面向低资源设备的实时语音 Agent 端云接入工程。当前 reference endpoints 是立创实战派 ESP32-S3 和 Python
+Desktop Reference Client；协议边界不绑定特定设备类型，浏览器、移动端和其他 MCU 可按同一 wire 适配。Endpoint
+通过项目定义的 `rva/1` 与 `wss-opus/1` / `udp-opus-gcm/1` 接入 roomless LiveKit `AgentSession`。服务端由
+Session Director、可水平扩展的 Realtime Worker 和 provider adapters 组成。
 
 默认产品路径是 native ESP-IDF endpoint、`/rva/v1/voice` 和 RVA wire。
 
@@ -17,6 +18,10 @@
 
 发布状态和未运行项以 [Release readiness](docs/quality/release-readiness.md) 为准。任何 build、host test 或
 历史 artifact 都不能单独替代当前源版本的真机、声学、弱网和长稳门禁。
+
+`v0.1.0-alpha` 是技术预览，不是 production-ready 声明。发布边界见
+[Known limitations](docs/quality/known-limitations.md)，候选内容见
+[Release notes](docs/quality/release-notes-v0.1.0-alpha.md)。
 
 ## 目录
 
@@ -58,3 +63,13 @@ Native firmware 入口为 `firmware/apps/voice_terminal/`。真实 provider、�
 `.env` / local configuration；tracked 模板只保存字段和安全占位符。
 
 文档从 [docs/index.md](docs/index.md) 开始阅读。Machine-readable `protocol/` 是 wire 的唯一权威。
+
+发布时可从锁文件生成不带时间戳的 CycloneDX 1.5 SBOM：
+
+```bash
+uv run python scripts/generate_release_sbom.py --output artifacts/release-sbom.cdx.json
+uv run python scripts/generate_release_sbom.py --output artifacts/release-sbom.cdx.json --check
+```
+
+公开 ESP32-S3 bundle 的 clean build、provenance 和打包命令见
+[`firmware/apps/voice_terminal/README.md`](firmware/apps/voice_terminal/README.md#构建)。

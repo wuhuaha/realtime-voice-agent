@@ -137,13 +137,13 @@
   <a class="skip" href="#content">跳到正文</a>
   <header class="masthead">
     <div class="masthead-inner">
-      <div class="document-line"><span class="document-mark">RVA / ENGINEERING MANUAL</span><span>2026-07-24 · offline edition</span></div>
+      <div class="document-line"><span class="document-mark">RVA / ENGINEERING MANUAL</span><span>2026-08-03 · v0.1 alpha candidate</span></div>
       <div class="hero">
         <div class="hero-copy">
           <span class="eyebrow">端侧、协议、服务端的一份共同地图</span>
           <h1>Realtime Voice Agent<br>端云开发手册</h1>
           <p class="lede">面向 ESP32、Server 和平台开发人员，说明 native ESP-IDF endpoint、RVA 控制协议、WSS/UDP 媒体和 LiveKit Agent runtime 的职责与调试路径。</p>
-          <div class="status-row"><span class="status accepted">SERVER VERIFIED</span><span class="status accepted">FIRMWARE BUILD PASSED</span><span class="status not-run">FINAL HIL NOT RUN</span></div>
+          <div class="status-row"><span class="status accepted">SERVER VERIFIED</span><span class="status accepted">FIRMWARE BUILD PASSED</span><span class="status accepted">WSS / UDP HIL VERIFIED</span><span class="status not-run">ALPHA · NOT PRODUCTION READY</span></div>
         </div>
         <div class="signal-board" aria-label="端云四条责任通道">
           <div class="signal-title">SIGNAL OWNERSHIP / 从设备动作到语音输出</div>
@@ -210,9 +210,9 @@ idf.py -p "$RVA_ESPPORT" flash monitor</code></pre>
         <div class="notice notice-danger">候选构建成功不等于最终镜像或设备通过。生命周期修复后必须 fresh rebuild；没有当前 artifact 的串口、hash、端云 trace 或声学证据时，对应状态必须是 <code>not_run</code>。</div>
       </section>
       <section id="quality"><div class="section-head"><span class="section-no">07 / QUALITY</span><h2>把快循环和发布证据分开</h2></div>
-        <table><thead><tr><th>证据层</th><th>必须证明</th><th>不能替代</th></tr></thead><tbody><tr><td>contract_verified</td><td>schema、fixtures 与双端 parser 一致</td><td>真实网络和设备行为</td></tr><tr><td>build_passed</td><td>fresh 配置完成编译链接</td><td>外设、音频与网络可用</td></tr><tr><td>device_verified</td><td>当前固件完成 WSS/UDP、字幕、播放与打断闭环</td><td>声学和弱网指标</td></tr><tr><td>acoustic_verified</td><td>近讲、远讲、double-talk 与自回授受控</td><td>长时间稳定性</td></tr><tr><td>measured</td><td>20 轮、30 分钟、延迟、queue 与弱网 A/B 有原始证据</td><td>其他硬件和部署环境</td></tr></tbody></table>
-         <div class="notice">Server 候选 <code>8d0ecae</code> 已推送并通过 GitHub Actions run <code>30777580513</code> 的 7 个 job；Redis 多实例、WSS/UDP host E2E、native host contracts 与 ESP-IDF build/size 均通过。该 Server archive 已按 SHA-256 校验并部署为只读 release。ESP32 HIL firmware 仍来自 <code>7c34337</code>，其 app binary 为 <code>0x21a930</code>，4 MiB app 分区剩余 <code>0x1e56d0</code>（47%）。</div>
-         <div class="split"><div class="panel"><h3>当前已验证</h3><p><code>7c34337</code> ESP32 完成 4 轮真实 WSS FunASR、DeepSeek、MiMo TTS 与物理播放闭环。<code>8d0ecae</code> Server 又完成 Desktop loopback real-provider canary：119 个上行 frame、137 个下行 frame、完整 playback、normal close 与 exact release；latency summary 为 <code>complete</code>，没有旧 LiveKit metrics 弃用 warning。</p></div><div class="panel"><h3>当前仍未完成</h3><p>当前组合的真机 UDP media、grant refresh、固定延迟样本、弱网和长稳仍为 <code>not_run/incomplete</code>；声学若不进入首版范围必须形成 waiver。正式发布前还需从最终 commit fresh 构建 firmware、完成 SBOM 与许可证复核、确定 TLS 发布边界、主线合并和 GitHub Release。</p></div></div>
+        <table><thead><tr><th>证据层</th><th>必须证明</th><th>不能替代</th></tr></thead><tbody><tr><td>contract_verified</td><td>schema、fixtures 与双端 parser 一致</td><td>真实网络和设备行为</td></tr><tr><td>build_passed</td><td>fresh 配置完成编译链接</td><td>外设、音频与网络可用</td></tr><tr><td>device_verified</td><td>当前固件完成 WSS/UDP、字幕、播放与关闭闭环</td><td>声学和弱网指标</td></tr><tr><td>acoustic_verified</td><td>近讲、远讲、double-talk 与自回授受控</td><td>长时间稳定性</td></tr><tr><td>measured</td><td>固定环境的 soak、延迟、queue 与弱网样本可复核</td><td>其他硬件和部署环境</td></tr></tbody></table>
+          <div class="notice">当前候选已覆盖 repository、Server、Desktop Reference、Redis integration、WSS/UDP host E2E、native host contracts 与 ESP-IDF build/size 门禁，并已有公网 Linux 和 ESP32-S3 HIL 证据。精确 commit、CI run、artifact digest 和仍待执行的门禁统一由 <a href="../quality/release-readiness.md">Release readiness</a> 维护；本文不复制易过期的候选身份。</div>
+         <div class="split"><div class="panel"><h3>当前已验证</h3><p>ESP32-S3 已分别完成真实 WSS 与 <code>udp-opus-gcm/1</code> 双向 Opus 闭环；UDP authenticated probe、source pinning、完整 playback fact、normal close 与 exact release 均有当前候选证据。Desktop real-provider canary 同时覆盖 ASR、LLM、TTS、完整 playback 和资源释放。</p></div><div class="panel"><h3>当前仍未完成</h3><p>固定弱网矩阵、绑定最终 artifact 的长时间 soak、延迟分位数和跨环境声学指标仍为 <code>not_run/incomplete</code>。<code>v0.1.0-alpha</code> 保持 WSS baseline、UDP opt-in；正式 tag 前还需主线合并、fresh artifact、release SBOM、许可证复核和最小真机 smoke。</p></div></div>
       </section>
       <section id="compatibility"><div class="section-head"><span class="section-no">08 / COMPATIBILITY</span><h2>已退役兼容面不进入当前产品</h2></div>
         <p class="section-intro">Current production 设备先经 Director bootstrap 获取 worker-bound grant，再连接选定 Worker 的 <code>/rva/v1/voice</code>；设备 wire 仅为 <code>rva/1</code> 与 <code>wss-opus/1</code> / <code>udp-opus-gcm/1</code>。</p>
@@ -220,7 +220,7 @@ idf.py -p "$RVA_ESPPORT" flash monitor</code></pre>
         <div class="notice">Lab token 鉴权仍仅用于 <code>development</code> 的单进程/隔离调试，并继续使用 <code>rva/1</code>；<code>production</code> 必须禁用。单进程调试不再需要或设备 enrollment/rotation 替代 shared credential 后，复查并删除该配置、测试和运维面。</div>
       </section>
       <section id="sources"><div class="section-head"><span class="section-no">09 / SOURCES</span><h2>从权威入口继续阅读</h2></div>
-        <div class="source-map"><a href="../product/prd.md"><b>产品需求</b><span>范围、需求与发布条件</span></a><a href="../quality/release-readiness.md"><b>发布状态</b><span>当前证据与剩余门禁</span></a><a href="../architecture/system.md"><b>系统架构</b><span>Director、Worker、Runtime</span></a><a href="../architecture/firmware.md"><b>Firmware 架构</b><span>组件与资源 ownership</span></a><a href="../protocol/overview.md"><b>协议总览</b><span>当前 control 与 media wire</span></a><a href="../operations/troubleshooting.md"><b>故障排查</b><span>端云分层诊断入口</span></a></div>
+        <div class="source-map"><a href="../product/prd.md"><b>产品需求</b><span>范围、需求与发布条件</span></a><a href="../quality/release-readiness.md"><b>发布状态</b><span>当前证据与剩余门禁</span></a><a href="../quality/known-limitations.md"><b>Alpha 边界</b><span>未承诺能力与部署限制</span></a><a href="../architecture/system.md"><b>系统架构</b><span>Director、Worker、Runtime</span></a><a href="../architecture/firmware.md"><b>Firmware 架构</b><span>组件与资源 ownership</span></a><a href="../protocol/overview.md"><b>协议总览</b><span>当前 control 与 media wire</span></a><a href="../operations/troubleshooting.md"><b>故障排查</b><span>端云分层诊断入口</span></a></div>
       </section>
       <footer>realtime-voice-agent · Product documentation · non-normative illustrated guide</footer>
     </main>

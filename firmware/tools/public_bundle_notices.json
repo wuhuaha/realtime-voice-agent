@@ -1,0 +1,26 @@
+{
+  "schema_version": 1,
+  "notices": [
+    {
+      "bundle_file": "LICENSE",
+      "source_path": "LICENSE"
+    },
+    {
+      "bundle_file": "NOTICE",
+      "source_path": "NOTICE"
+    },
+    {
+      "bundle_file": "THIRD_PARTY-Noto-Sans-CJK-OFL-1.1.txt",
+      "source_path": "third_party/licenses/Noto-Sans-CJK-OFL-1.1.txt",
+      "sha256": "6a73f9541c2de74158c0e7cf6b0a58ef774f5a780bf191f2d7ec9cc53efe2bf2"
+    },
+    {
+      "bundle_file": "THIRD_PARTY-font-assets.md",
+      "source_path": "firmware/components/ui_font_assets/THIRD_PARTY_NOTICES.md"
+    },
+    {
+      "bundle_file": "THIRD_PARTY-xiaozhi-fonts-metadata.txt",
+      "source_path": "third_party/licenses/xiaozhi-fonts-MIT.txt"
+    }
+  ]
+}

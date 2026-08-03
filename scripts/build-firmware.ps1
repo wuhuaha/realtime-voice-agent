@@ -3,7 +3,9 @@ param(
     [switch]$Clean,
     [string]$BuildDir = "firmware/apps/voice_terminal/build-local",
     [string]$Sdkconfig,
-    [switch]$SkipSize
+    [switch]$SkipSize,
+    [switch]$ReleaseArtifacts,
+    [string]$FontPackage
 )
 
 $ErrorActionPreference = "Stop"
@@ -36,9 +38,36 @@ function Assert-Under([string]$Path, [string]$Root, [string]$Description) {
     }
 }
 
+function Get-Sha256([string]$Path) {
+    return (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant()
+}
+
+function Get-GitBuildState([string]$Root) {
+    $revision = (& git -C $Root rev-parse HEAD).Trim()
+    if ($LASTEXITCODE -ne 0 -or $revision -notmatch '^[0-9a-fA-F]{40}$') {
+        throw "Unable to resolve Product source revision."
+    }
+    $trackedStatus = @(& git -C $Root status --porcelain=v1 --untracked-files=no)
+    if ($LASTEXITCODE -ne 0) { throw "Unable to inspect Product tracked tree state." }
+    $worktreeStatus = @(& git -C $Root status --porcelain=v1 --untracked-files=normal)
+    if ($LASTEXITCODE -ne 0) { throw "Unable to inspect Product worktree state." }
+    return [ordered]@{
+        source_revision = $revision.ToLowerInvariant()
+        tracked_tree_clean = ($trackedStatus.Count -eq 0)
+        worktree_clean = ($worktreeStatus.Count -eq 0)
+    }
+}
+
+function Write-Utf8Lf([string]$Path, [string]$Content) {
+    $normalized = ($Content -replace "`r`n", "`n").TrimEnd("`r", "`n") + "`n"
+    [IO.File]::WriteAllText($Path, $normalized, [Text.UTF8Encoding]::new($false))
+}
+
 $repoRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot ".."))
 $projectRoot = Require-Directory (Join-Path $repoRoot "firmware/apps/voice_terminal") "voice_terminal project"
 $sourceVerifier = Require-File (Join-Path $repoRoot "firmware/tools/verify-source.py") "ESP-IDF source verifier"
+$fontBuilder = Require-File (Join-Path $projectRoot "tools/build_font_assets.py") "font asset builder"
+$buildStateStart = Get-GitBuildState $repoRoot
 
 # The source checkout is kept outside the Product Git tree. RVA_IDF_PATH is the
 # portable override; the sibling workspace path is the known local checkout.
@@ -134,6 +163,10 @@ $env:IDF_TOOLS_PATH = $toolsRoot
 $env:IDF_PYTHON_ENV_PATH = Split-Path $pythonPath -Parent | Split-Path -Parent
 $env:ESP_IDF_VERSION = "5.5.2"
 $env:PYTHONUTF8 = "1"
+$certifiPath = (& $pythonPath -c "import certifi; print(certifi.where())").Trim()
+if ($LASTEXITCODE -eq 0 -and (Test-Path -LiteralPath $certifiPath -PathType Leaf)) {
+    $env:SSL_CERT_FILE = $certifiPath
+}
 $romElfs = Get-ChildItem -LiteralPath (Join-Path $toolStore "esp-rom-elfs") -Directory -ErrorAction SilentlyContinue |
     Sort-Object Name -Descending | Select-Object -First 1
 if ($romElfs) { $env:ESP_ROM_ELF_DIR = $romElfs.FullName }
@@ -179,6 +212,23 @@ try {
     & $pythonPath @buildArgs
     if ($LASTEXITCODE -ne 0) { throw "idf.py build failed." }
 
+    if ($ReleaseArtifacts) {
+        if ($FontPackage) {
+            $fontPackagePath = Require-File (Resolve-RepoPath $FontPackage) "explicit pinned font package"
+            & $pythonPath $fontBuilder `
+                --output (Join-Path $buildPath "font_assets.bin") `
+                --cache-dir (Join-Path $buildPath "font-assets-cache") `
+                --font-package $fontPackagePath
+            if ($LASTEXITCODE -ne 0) { throw "Pinned font package verification/build failed." }
+        } else {
+            $fontArgs = @($idfPy, "-B", $buildPath, "-DSDKCONFIG=$sdkconfigPath")
+            if ($sdkconfigDefaults) { $fontArgs += "-DSDKCONFIG_DEFAULTS=$sdkconfigDefaults" }
+            $fontArgs += "font-assets"
+            & $pythonPath @fontArgs
+            if ($LASTEXITCODE -ne 0) { throw "idf.py font-assets failed." }
+        }
+    }
+
     if (-not $SkipSize) {
         $sizeArgs = @($idfPy, "-B", $buildPath, "-DSDKCONFIG=$sdkconfigPath", "size")
         & $pythonPath @sizeArgs
@@ -190,5 +240,65 @@ try {
 
 $artifact = Require-File (Join-Path $buildPath "rva_voice_terminal.bin") "firmware application artifact"
 $digest = (Get-FileHash -Algorithm SHA256 -LiteralPath $artifact).Hash.ToLowerInvariant()
+$buildStateEnd = Get-GitBuildState $repoRoot
+$flasherPath = Join-Path $buildPath "flasher_args.json"
+$partitionCsv = Join-Path $projectRoot "partitions.csv"
+$artifactDefinitions = @(
+    [ordered]@{ role = "bootloader"; offset = "0x0"; path = "bootloader/bootloader.bin" },
+    [ordered]@{ role = "partition_table"; offset = "0x8000"; path = "partition_table/partition-table.bin" },
+    [ordered]@{ role = "application"; offset = "0x10000"; path = "rva_voice_terminal.bin" },
+    [ordered]@{ role = "speech_models"; offset = "0x410000"; path = "srmodels/srmodels.bin" },
+    [ordered]@{ role = "font_assets"; offset = "0x800000"; path = "font_assets.bin" }
+)
+$provenanceArtifacts = @()
+$allArtifactsPresent = $true
+foreach ($definition in $artifactDefinitions) {
+    $path = Join-Path $buildPath $definition.path
+    $present = Test-Path -LiteralPath $path -PathType Leaf
+    if (-not $present) { $allArtifactsPresent = $false }
+    $record = [ordered]@{
+        role = $definition.role
+        offset = $definition.offset
+        path = $definition.path
+        included = $present
+    }
+    if ($present) {
+        $file = Get-Item -LiteralPath $path
+        $record["bytes"] = [int64]$file.Length
+        $record["sha256"] = Get-Sha256 $path
+    }
+    $provenanceArtifacts += $record
+}
+$flasherPresent = Test-Path -LiteralPath $flasherPath -PathType Leaf
+$sameRevision = $buildStateStart.source_revision -eq $buildStateEnd.source_revision
+$fontPackagePath = if ($FontPackage) { Require-File (Resolve-RepoPath $FontPackage) "explicit pinned font package" } else {
+    Join-Path $buildPath "font-assets-cache/78__xiaozhi-fonts-v1.6.0.zip"
+}
+$fontAssetSource = [ordered]@{
+    kind = if ($FontPackage) { "explicit_pinned_package" } else { "pinned_registry_download" }
+    package_sha256 = if (Test-Path -LiteralPath $fontPackagePath -PathType Leaf) { Get-Sha256 $fontPackagePath } else { $null }
+}
+$releaseEligible = (
+    $ReleaseArtifacts -and
+    $buildStateStart.tracked_tree_clean -and $buildStateStart.worktree_clean -and
+    $buildStateEnd.tracked_tree_clean -and $buildStateEnd.worktree_clean -and
+    $sameRevision -and $allArtifactsPresent -and $flasherPresent
+)
+$provenance = [ordered]@{
+    schema_version = 1
+    source_revision = $buildStateStart.source_revision
+    target = "esp32s3"
+    release_artifacts_requested = [bool]$ReleaseArtifacts
+    release_eligible = [bool]$releaseEligible
+    build_start = $buildStateStart
+    build_end = $buildStateEnd
+    sdkconfig_sha256 = Get-Sha256 $sdkconfigPath
+    partitions_csv_sha256 = Get-Sha256 $partitionCsv
+    flasher_args_sha256 = if ($flasherPresent) { Get-Sha256 $flasherPath } else { $null }
+    font_asset_source = $fontAssetSource
+    artifacts = $provenanceArtifacts
+}
+Write-Utf8Lf (Join-Path $buildPath "build-provenance.json") ($provenance | ConvertTo-Json -Depth 8)
 Write-Host "Build succeeded: $artifact"
 Write-Host "SHA-256: $digest"
+Write-Host "Release eligible: $releaseEligible"
