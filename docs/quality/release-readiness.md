@@ -1,40 +1,37 @@
 # Release readiness
 
-更新日期：2026-08-03
-状态：WSS baseline device verified / alpha release work remains
+更新日期：2026-08-04
+状态：WSS/UDP device verified / alpha release work remains
 
 本文只记录当前 Product 候选和可复核的发布门禁。历史 artifact、临时地址、SSID、原始串口日志和旧协议结论不构成
 当前 release evidence；未执行的门禁保持 `not_run` 或 `incomplete`。
 
 ## 当前候选身份
 
-- 分支：`codex/lifecycle-convergence-hardening`
-- 历史真机/公网 artifact source：`ae56facccf11b99c536e5c5bc93c3e4d41602028`
-- 历史真机 app SHA-256：`75c5d4f8a16cdb679ad4c5bb902acdd8bb42395d81cc0f4d76455d784a4a2dd4`
-- 当前 freshness 修复 source：`c1dc5bbdcbb7c35f65418a2d3b39cb4cc29c3125`
+- 分支：`main`
+- 当前 Server source：`3f207a51f42c2a7d53982a5ab9b3117795549f62`
+- 当前 Firmware source：`c1dc5bbdcbb7c35f65418a2d3b39cb4cc29c3125`
 - 当前 private deployment app SHA-256：`afa03afefb247b728b2477388834f9470a7002727465df47f7caab928f03441d`
 - 当前 private sdkconfig SHA-256：`960d1a7e41bf0604a827e0e5430195b2b9962b2a20b6aef6599a0965c5be0557`
-- 当前 Server release：`rva-20260803T065329Z-c1dc5bb`
-- 当前 Server archive SHA-256：`162fb7a6b1558686733f2cd5b804e97383edcc6a4d6417f2283cd52632c87965`
+- 当前 Server release：`rva-20260804T034936Z-3f207a5`
+- 当前 Server archive SHA-256：`24341a1a94e4a993900a3accfc899b6039e9d4b6f63f96568acd0deb46b07642`
 - 当前 WSS HIL：`device_verified`
+- 当前 UDP HIL：`device_verified`
 - 当前 public release bundle：`not_run`
 
-`ae56fac` 是最后一个具有完整真机和公网日志的历史 identity。它的 UDP gate 完整通过；WSS 虽多次完成 ASR、LLM、
-TTS 和物理播放，承载播放的两次 session 随后均以 `1013/media_overloaded` 关闭，因此 WSS final gate 未通过。当前
-修复同时修改 Server media timeline 与 Firmware WSS sender，历史 device evidence 不得外推到修复版。当前修复已从
-clean `c1dc5bb` 和 ignored/private Kconfig input 构建 deployment image；private input、凭据和 image
-不进入 Git 或公开 release。正式 tag 前仍须从最终 source fresh 构建无凭据 public bundle；本文之后的 docs-only
-evidence commit不改变 Server/Firmware source identity。
+当前 HIL 使用 `c1dc5bb` Firmware 与 `3f207a5` Server。Server 的 bounded WSS catch-up 只处理尚未 decode 的孤立
+stale packet；catch-up 不收敛、partial runner push、UDP stale 和真实 backpressure 仍 fail closed。Firmware 由 clean
+source 和 ignored/private Kconfig input 构建；private input、凭据和 image 不进入 Git 或公开 release。正式 tag 前仍须
+从最终 source fresh 构建无凭据 public bundle；本文之后的 evidence-only commit 不改变 Server/Firmware source identity。
 
 ## 软件与构建门禁
 
 历史 GitHub Actions 已覆盖 `repository`、`server`、`desktop-reference`、Linux host E2E、Redis integration、native
-host contracts 和 ESP-IDF build/size。当前修复的 focused Server tests 为 `41 passed`，完整 Server tests 为
-`298 passed, 3 skipped`；Server Ruff、root Ruff、root `52 passed`、Desktop Reference `116 passed, 4 deselected`、
-repository verifier、native runtime host tests 与 `git diff --check` 均通过。3 个 Server skip 是未配置 Redis subprocess
-URL，4 个 Desktop deselect 是 Linux-only deterministic host E2E；二者已有历史 Linux/CI 证据，但当前
-commit `c1dc5bb` 的 GitHub Actions [`ci` run 30791336769](https://github.com/wuhuaha/realtime-voice-agent/actions/runs/30791336769)
-7 个 job 全部成功。Private deployment app 从 clean source/config构建，大小 `0x21aa80`，4 MiB app partition余量
+host contracts 和 ESP-IDF build/size。当前 `3f207a5` 本地完整门禁为 root `52 passed`、Server
+`310 passed, 3 skipped`、Desktop Reference `116 passed, 4 deselected`；Ruff、repository contracts、tracked/untracked
+secret scan 与 `git diff --check` 均通过。3 个 Server skip 是未配置 Redis subprocess URL，4 个 Desktop deselect 是
+Linux-only deterministic host E2E；当前 commit 的远端 CI 状态未在本轮登记。Private deployment app 从 clean
+source/config构建，大小 `0x21aa80`，4 MiB app partition余量
 `0x1e5580`（47%）；其 provenance、source revision、config digest与 artifact digest 已记录。该 private app不等于
 公开 release bundle。
 
@@ -58,15 +55,15 @@ Worker readiness 15 秒超时，未进入 session/media；随后连续 73 个 ca
 
 ## Linux 公网部署
 
-当前只读 release 为 `rva-20260803T065329Z-c1dc5bb`，Worker incarnation 为
-`worker-ol-rva-20260803T065329Z-c1dc5bb`。Director 和 Worker 均由 Linux `systemd --user` 运行；最终观测结果：
+当前只读 release 为 `rva-20260804T034936Z-3f207a5`，Worker incarnation 为
+`worker-ol-rva-20260804T034936Z-3f207a5`。Director 和 Worker 均由 Linux `systemd --user` 运行；最终观测结果：
 
 - Director：`ready`，coordination=`redis`
 - Worker：`ready`，`draining=false`，`healthy=true`，`active_sessions=0/5`
 - provider network、coordination、RVA WSS 和 RVA UDP socket：ready
 - advertised profiles：`wss-opus/1`、`udp-opus-gcm/1`
 
-Release archive strict check通过，mode `555`；旧 `ae56fac` release保留。后续 replacement必须分配唯一
+Release archive strict check通过，release tree只读，上一 release保留。后续 replacement必须分配唯一
 `worker_id`，不得用重复 identity原地 restart。
 
 同一部署上执行确定性 bootstrap smoke：WSS-only 与 WSS+UDP 两种请求均命中上述 Worker，返回预期 profiles，
@@ -91,35 +88,32 @@ AEC `VOIP_LOW_COST`、WebRTC VAD、双通道 AFE 和 codec均正常，无 panic�
 当前修复版 WSS 真机门禁：
 
 - selected profile=`wss-opus/1`，bootstrap `200`
-- 上行 `442` 个 packet、解码/runner `1326` 个 PCM frame，`invalid_opus_packets=0`
-- FunASR final、DeepSeek-compatible LLM 与 MiMo TTS完整运行；下行 `73` 个 packet
-- Endpoint上报 `playback_position_ms=6570`、`interrupted=false`，用户确认完整符合预期
+- 最终回归 session 上行 `1888` 个 packet、解码/runner `5664` 个 PCM frame，`invalid_opus_packets=0`
+- FunASR final、DeepSeek-compatible LLM 与 MiMo TTS 多轮完整运行；下行 `263` 个 packet
 - `close_code=1000`、`close_reason=normal`、`overload_source=none`、`overload_dropped_packets=0`
 - `session_closed reason=user_initiated`；Director exact release `200`，最终 `active_sessions=0/5`
-- Director/Worker `NRestarts=0`，无 media overload、traceback、terminal timeout或残留 route
+- Director/Worker `NRestarts=0`，无 media overload、freshness/catch-up异常、traceback或残留 route
 
-作为回归来源，历史 artifact `ae56fac` 的 app SHA-256 为
-`75c5d4f8a16cdb679ad4c5bb902acdd8bb42395d81cc0f4d76455d784a4a2dd4`；在 `COM11` 只烧 app partition，
-esptool 报告 hash verified，未擦 NVS。
+回归开始时移动设备导致 CH340K `COM14` 物理断连：测试前端口存在，断连后 Windows 只剩原生 USB `COM11`；设备
+没有整机重启，WSS 上行仍继续。受干扰的首个 session 缺失 `playback.ended` 并由 Server watchdog 以
+`1011/playback_terminal_timeout` 关闭，作为污染样本排除，不计为通过或产品根因。设备随后自动 fresh reconnect；上述
+最终 session 在 COM14 已断开的条件下完成正常多轮和 exact close。该观察不证明 USB 断连与 terminal fact 丢失存在
+因果关系，后续若无物理干扰仍复现，须单独进入 endpoint terminal-fact 诊断。
 
 deployment image 启动后完成已配置 Wi-Fi 与 Director endpoint 解析；显示、触摸、Qwen 字体、WakeNet、
 AEC `VOIP_LOW_COST`、WebRTC VAD 和双通道 AFE 均启动。当前实验 endpoint 为 HTTP，因此 SNTP 失败不会阻断
 bootstrap；UDP 本地轮换使用 authenticated `refresh_after_ms` 的 monotonic deadline，Server 继续执行绝对 expiry。
-设备通过 `Hi ESP` 分别建立真实 WSS 和 UDP 会话。`ae56fac` 的 WSS 多次完成 ASR、LLM、MiMo TTS 与
-`3690/5850/7740 ms` 等完整播放事实，但承载播放的两次 session 随后分别以 media age `825/1153 ms` 的
-`1013/media_overloaded` 关闭；两次均为 `qsize=0`、`dropped_packets=1`、`fresh_packet_available=false`。第三次
-WSS 正常关闭但没有下行播放，因此历史 WSS final gate 未通过。UDP 回归记录：
+设备通过 `Hi ESP` 分别建立真实 WSS 和 UDP 会话。当前 UDP 回归记录：
 
 - bootstrap `200`、selected profile=`udp-opus-gcm/1`
-- UDP socket 建立后 authenticated probe 单次成功，`elapsed_ms=26`，Server 完成 source pinning
-- 用户确认真实问答完整流畅；Server 收到 `3870/10620 ms` 等自然完成的 playback fact
-- 关闭前上行 `1649` 个 UDP packet、`4947` 个 decoded PCM frame，`invalid_opus_packets=0`
-- 下行 `492` 个 packet；authenticated/source pinned/probe ack 均为 `1`，invalid=`0`
+- UDP socket 建立后 authenticated probe 单次成功，`elapsed_ms=28`，Server 完成 source pinning
+- 用户确认真实问答完整流畅；Endpoint 上报 `playback_position_ms=24300`、`interrupted=false`
+- 关闭前上行 `573` 个 UDP packet、`1719` 个 decoded/runner PCM frame，`invalid_opus_packets=0`
+- 下行 `270` 个 packet；authenticated/source pinned/probe ack 均为 `1`，invalid=`0`
 - MIC stop 后 `close_code=1000`、`close_reason=normal`、`session_closed reason=user_initiated`
 - Director exact release `200`；最终 Worker `active_sessions=0`
 
-`ae56fac` UDP session 最终 `1000/normal`、`session_closed reason=user_initiated`、exact release `200`，Worker 回到
-`active_sessions=0`。测试环境持续存在背景人声；NS、VAD
+测试环境持续存在背景人声；NS、VAD
 切分和 ASR 准确率不属于本项目本轮门禁，只要求这些输入不得破坏 transport、session、playback generation、terminal
 或资源释放。声学、真实 netem 和固定延迟分位数不进入本次门禁。
 
@@ -127,15 +121,15 @@ WSS 正常关闭但没有下行播放，因此历史 WSS final gate 未通过。
 
 | Gate | 当前状态 | 当前证据与完成条件 |
 | --- | --- | --- |
-| Product commit + CI | `host_verified` | `c1dc5bb` 已 push，CI 7/7通过 |
-| Server immutable archive | `public_path_verified` | `c1dc5bb` 只读 archive strict check、部署和 rollback保留通过 |
+| Product commit + CI | `host_verified` | `3f207a5` 已 push；本地完整门禁通过，当前远端 CI状态未登记 |
+| Server immutable archive | `public_path_verified` | `3f207a5` 只读 archive strict check、部署和 rollback保留通过 |
 | Linux Director/Worker readiness | `public_path_verified` | 当前 release ready，profiles、capacity、provider、coordination和 UDP socket正常 |
 | Native clean build + size | `build_passed / image_sized` | `c1dc5bb` private app provenance/digest，47% app余量；public bundle仍未构建 |
 | Flash/boot/display/touch | `device_verified` | 当前 app hash verified；启动、显示、触摸、字体、AFE无异常 |
 | Wi-Fi/NVS/bootstrap | `device_verified` | 保留 NVS，自动联网并完成当前公网 bootstrap |
-| WSS voice loop | `device_verified` | 当前 source完成6570 ms播放、normal close/release、0 overload |
-| UDP admission/bootstrap | `not_run` | 历史 `ae56fac` device verified；修复版未运行 |
-| UDP voice loop | `not_run` | 历史 `ae56fac` 双向 Opus、完整 playback fact、0 invalid；修复版未运行 |
+| WSS voice loop | `device_verified` | 当前 Server/Firmware 完成多轮、1888/263包、normal close/release、0 overload |
+| UDP admission/bootstrap | `device_verified` | 当前 Server/Firmware 完成 AEAD probe、source pinning，elapsed 28 ms、invalid 0 |
+| UDP voice loop | `device_verified` | 双向 Opus、24300 ms完整 playback fact、573/270包、normal close、0 invalid |
 | End-to-end latency | `not_run` | alpha known limitation；未承诺固定 p50/p95/p99 SLO |
 | Weak network | `not_run` | 当前 deterministic fault matrix通过；真实 random/burst/jitter/netem仍未测 |
 | Stability | `incomplete` | 当前 source完成 fault matrix、618.982秒短 churn和短 HIL；一次 Windows harness readiness超时尚未定因，且未重跑长 soak |
