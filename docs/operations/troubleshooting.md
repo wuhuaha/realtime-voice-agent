@@ -161,9 +161,11 @@ LLM 失败时没有 TTS 下行是正常因果链，不应误诊为端侧没有�
 - Server `overload_source=opus_input_stale` 表示当前只观察到一个 stale packet 且 queue 未满，不要求一定存在 fresh
   packet；`opus_input_backpressure` 表示连续 stale 或真实 queue pressure。若同时出现 `qsize=0`、`dropped_packets=1`
   和 `fresh_packet_available=false`，不得仅凭 `1013` 将其诊断为队列阻塞。检查端侧 pre-send drop/local send timeout、
-  packet timestamp cadence、TCP stall/burst 与 Server media-timeline age。当前两类都会以
-  `1013/media_overloaded` fresh reopen，因为同 AgentSession reset 尚无 public API 证明；不要把 live-edge drop 误读为
-  same-session recovery，也不要扩大队列保存旧上行。
+  packet timestamp cadence、TCP stall/burst 与 Server media-timeline age。
+- WSS 日志 `rva_uplink_stale_recovered` 表示旧包在 Opus decode 和 runner push 前被丢弃，同一 session 继续；10 秒内
+  最多恢复 2 次。`rva_uplink_stale_recovery_exhausted`、partial runner push、UDP stale 和真实 backpressure 仍以
+  `1013/media_overloaded` fresh reopen。该恢复只重建 consumer timeline origin，不是 `AgentSession` reset；出现恢复后
+  应确认同一 session 继续收到 ASR/TTS，而不是只看 WebSocket 未断开。不要扩大队列保存旧上行。
 
 每次只调整一个 frame/buffer 参数并保留 A/B 音频与 timeline。
 

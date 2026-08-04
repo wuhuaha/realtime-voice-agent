@@ -1258,6 +1258,7 @@ async def test_isolated_stale_head_is_dropped_to_fresh_live_edge_before_runner()
         clock=clock,
     )
     port = connection._audio_port  # noqa: SLF001
+    await connection.binding.receive_control(session_open())
     await port.receive_audio(InboundAudioPacket(0, 0, b"stale"))
     clock.advance(0.7)
     await port.receive_audio(InboundAudioPacket(1, 12 * 960, b"fresh"))
@@ -1266,15 +1267,13 @@ async def test_isolated_stale_head_is_dropped_to_fresh_live_edge_before_runner()
     connection._runner = runner  # noqa: SLF001
     connection._codec = ScriptedDecodeCodec([True])  # type: ignore[assignment]  # noqa: SLF001
 
-    with pytest.raises(RvaOverloadedError) as captured:
-        await connection._input_loop()  # noqa: SLF001
+    task = asyncio.create_task(connection._input_loop())  # noqa: SLF001
+    await wait_until(lambda: runner.pushes == 3)
+    await port.close()
+    await asyncio.wait_for(task, timeout=1.0)
 
-    assert captured.value.source == "opus_input_stale"
-    assert captured.value.dropped_packets == 1
-    assert captured.value.fresh_packet_available is True
-    assert runner.pushes == 0
-    live_edge = port.queue.get_nowait()
-    assert live_edge is not None and live_edge.packet.sequence == 1
+    assert connection._recovered_stale_packets == 1  # noqa: SLF001
+    assert runner.pushes == 3
     assert port.queue.empty()
 
 
@@ -1288,6 +1287,7 @@ async def test_current_only_stale_packet_is_not_misclassified_as_backpressure() 
         clock=clock,
     )
     port = connection._audio_port  # noqa: SLF001
+    await connection.binding.receive_control(session_open())
     await port.receive_audio(InboundAudioPacket(0, 0, b"stale"))
     queued = port.queue.get_nowait()
     assert queued is not None
@@ -1299,6 +1299,65 @@ async def test_current_only_stale_packet_is_not_misclassified_as_backpressure() 
     assert error.qsize == 0
     assert error.dropped_packets == 1
     assert error.fresh_packet_available is False
+    assert port._consumer_timeline_timestamp is None  # noqa: SLF001
+
+    assert connection._recover_isolated_stale(error) is True  # noqa: SLF001
+    await port.receive_audio(InboundAudioPacket(1, 960, b"fresh"))
+    fresh = port.queue.get_nowait()
+    assert fresh is not None
+    assert fresh.deadline_at > clock()
+
+
+@pytest.mark.unit
+async def test_repeated_isolated_stale_packets_fail_closed_within_recovery_window() -> None:
+    clock = MutableMonotonicClock()
+    connection, _ = create_connection(
+        FakeWebSocket(),
+        limits=RvaRuntimeLimits(uplink_max_age_seconds=0.6),
+        clock=clock,
+    )
+    port = connection._audio_port  # noqa: SLF001
+    await connection.binding.receive_control(session_open())
+
+    recoveries: list[bool] = []
+    for sequence in range(3):
+        await port.receive_audio(InboundAudioPacket(sequence, sequence * 960, b"stale"))
+        queued = port.queue.get_nowait()
+        assert queued is not None
+        clock.advance(0.7)
+        recoveries.append(connection._recover_isolated_stale(connection._stale_uplink_error(queued)))  # noqa: SLF001
+
+    assert recoveries == [True, True, False]
+    assert connection._recovered_stale_packets == 2  # noqa: SLF001
+
+
+@pytest.mark.unit
+async def test_stale_after_partial_runner_push_still_fails_closed() -> None:
+    clock = MutableMonotonicClock()
+    connection, _ = create_connection(
+        FakeWebSocket(),
+        limits=RvaRuntimeLimits(uplink_max_age_seconds=0.6),
+        clock=clock,
+    )
+    port = connection._audio_port  # noqa: SLF001
+    await connection.binding.receive_control(session_open())
+    runner = FakeRunner(connection._emit_segment, connection._request_response_end, trigger_frames=1_000)  # noqa: SLF001
+
+    async def delayed_push(_frame: PcmFrame) -> None:
+        runner.pushes += 1
+        clock.advance(0.7)
+
+    runner.push_audio = delayed_push  # type: ignore[method-assign]
+    connection._runner = runner  # noqa: SLF001
+    connection._codec = ScriptedDecodeCodec([True])  # type: ignore[assignment]  # noqa: SLF001
+    await port.receive_audio(InboundAudioPacket(0, 0, b"audio"))
+
+    with pytest.raises(RvaOverloadedError) as captured:
+        await connection._input_loop()  # noqa: SLF001
+
+    assert captured.value.source == "opus_input_stale"
+    assert runner.pushes == 1
+    assert connection._recovered_stale_packets == 0  # noqa: SLF001
 
 
 @pytest.mark.integration

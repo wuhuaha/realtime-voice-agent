@@ -44,6 +44,8 @@ _TIMELINE_PACING_TOLERANCE_SECONDS = 0.015
 _TIMELINE_MAX_CORRECTION_SECONDS = 0.005
 _TIMELINE_REBASE_SECONDS = 30.0
 _TIMELINE_MAX_WSS_CLOCK_SKEW_RATIO = 0.02
+_UPLINK_STALE_RECOVERY_WINDOW_SECONDS = 10.0
+_UPLINK_MAX_RECOVERABLE_STALE_DROPS = 2
 
 
 class TextAwareRunner(Protocol):
@@ -419,6 +421,12 @@ class _AudioQueuePort(AudioInputPort):
             self._consumer_timeline_timestamp = live_edge.packet.timestamp
             self._consumer_timeline_started_at = live_edge.received_at
             self.queue.put_nowait(live_edge)
+        elif not closed_sentinel:
+            # The next packet establishes a fresh playout origin after an
+            # isolated transport stall. Timestamp cadence validation remains
+            # anchored by _last_timestamp.
+            self._consumer_timeline_timestamp = None
+            self._consumer_timeline_started_at = 0.0
         if closed_sentinel:
             self.queue.put_nowait(None)
         return _FreshnessDrop(
@@ -534,6 +542,7 @@ class RvaWssConnection:
         self._segments: asyncio.Queue[_Outbound] = asyncio.Queue(self._limits.output_queue_items)
         self._tasks: set[asyncio.Task[None]] = set()
         self._aux_tasks: set[asyncio.Task[None]] = set()
+        self._writer_task: asyncio.Task[None] | None = None
         self._close_task: asyncio.Task[None] | None = None
         self._playback_watchdog_task: asyncio.Task[None] | None = None
         self._playback_watchdog_target: tuple[str, int] | None = None
@@ -572,6 +581,9 @@ class RvaWssConnection:
         self._overload_media_age_ms = -1
         self._overload_dropped_packets = 0
         self._overload_fresh_packet_available: bool | None = None
+        self._recovered_stale_packets = 0
+        self._stale_recovery_window_started_at: float | None = None
+        self._stale_recovery_count = 0
         self._primary_close_cause: tuple[int, str] | None = None
 
     @property
@@ -603,6 +615,7 @@ class RvaWssConnection:
             handshake_ack = asyncio.get_running_loop().create_future()
             self._output.put_nowait(_Outbound("control", opened, handshake_ack))
             writer = asyncio.create_task(self._writer_loop(), name=f"rva-writer-{self._binding_id}")
+            self._writer_task = writer
             self._tasks.add(writer)
             done, _ = await asyncio.wait(
                 {writer, handshake_ack},
@@ -726,7 +739,7 @@ class RvaWssConnection:
                 "selected_media_profile=%s wss_input_packets=%d udp_input_packets=%d "
                 "decoded_pcm_frames=%d invalid_opus_packets=%d runner_push_frames=%d downlink_packets=%d "
                 "overload_source=%s overload_qsize=%d overload_capacity=%d overload_media_age_ms=%d "
-                "overload_dropped_packets=%d overload_fresh_packet_available=%s",
+                "overload_dropped_packets=%d overload_fresh_packet_available=%s recovered_stale_packets=%d",
                 self._binding_id,
                 self._binding.session_epoch,
                 code,
@@ -748,6 +761,7 @@ class RvaWssConnection:
                     if self._overload_fresh_packet_available is None
                     else str(self._overload_fresh_packet_available).lower()
                 ),
+                self._recovered_stale_packets,
             )
             self._close_task = asyncio.create_task(self._close_impl(code, reason), name=f"rva-close-{self._binding_id}")
         try:
@@ -846,7 +860,12 @@ class RvaWssConnection:
             queued = await self._audio_port.queue.get()
             if queued is None:
                 return
-            self._remaining_uplink_budget(queued)
+            try:
+                self._remaining_uplink_budget(queued)
+            except RvaOverloadedError as exc:
+                if self._recover_isolated_stale(exc):
+                    continue
+                raise
             packet = queued.packet
             codec = self._codec
             runner = self._runner
@@ -932,6 +951,42 @@ class RvaWssConnection:
             dropped_packets=dropped.dropped_packets,
             fresh_packet_available=dropped.live_edge is not None,
         )
+
+    def _recover_isolated_stale(self, error: RvaOverloadedError) -> bool:
+        if error.source != "opus_input_stale" or self._binding.selected_media_profile != WSS_PROFILE:
+            return False
+        now = self._clock()
+        if (
+            self._stale_recovery_window_started_at is None
+            or now - self._stale_recovery_window_started_at > _UPLINK_STALE_RECOVERY_WINDOW_SECONDS
+        ):
+            self._stale_recovery_window_started_at = now
+            self._stale_recovery_count = 0
+        self._stale_recovery_count += 1
+        if self._stale_recovery_count > _UPLINK_MAX_RECOVERABLE_STALE_DROPS:
+            logger.warning(
+                "rva_uplink_stale_recovery_exhausted session=%s recovery_count=%d recovery_limit=%d "
+                "media_age_ms=%d dropped_packets=%d fresh_packet_available=%s",
+                self._binding_id,
+                self._stale_recovery_count,
+                _UPLINK_MAX_RECOVERABLE_STALE_DROPS,
+                error.media_age_ms,
+                error.dropped_packets,
+                str(error.fresh_packet_available).lower(),
+            )
+            return False
+        self._recovered_stale_packets += error.dropped_packets
+        logger.warning(
+            "rva_uplink_stale_recovered session=%s recovery_count=%d recovery_limit=%d "
+            "media_age_ms=%d dropped_packets=%d fresh_packet_available=%s",
+            self._binding_id,
+            self._stale_recovery_count,
+            _UPLINK_MAX_RECOVERABLE_STALE_DROPS,
+            error.media_age_ms,
+            error.dropped_packets,
+            str(error.fresh_packet_available).lower(),
+        )
+        return True
 
     async def _writer_loop(self) -> None:
         while True:
@@ -1324,6 +1379,11 @@ class RvaWssConnection:
                 timeout=self._limits.queue_timeout_seconds + self._limits.wire_send_timeout_seconds,
             )
         except TimeoutError as exc:
+            writer = self._writer_task
+            if writer is not None and writer.done() and not writer.cancelled():
+                writer_error = writer.exception()
+                if isinstance(writer_error, RvaControlTimeoutError):
+                    raise writer_error from exc
             raise RvaControlTimeoutError(
                 "control acknowledgement timed out",
                 stage="queue_ack",

@@ -87,10 +87,14 @@ Server 只有在 `response.end` 已被 WSS send owner 确认交付后才启动 e
 Uplink 同时受 received queue age 与 packet timestamp media-timeline age 约束。Server 只按 paced packet 的本包
 arrival/media cadence error 做小幅有界校正；TCP stall/burst 和已经累积的 transport delay 不允许被重锚为 fresh。
 超过 freshness budget 时，Server 丢弃 stale ingress 到当时 live edge，只用于阻止旧语音继续送入 ASR 和形成可诊断的
-isolated-stale/backpressure 指标。当前没有经过 public API 证明的同
-`AgentSession` reset；因此 Server 发送 `session.error(media_overloaded)` 后以 `1013/media_overloaded` 关闭，Endpoint
-重新 bootstrap。这里的 retryable 表示 fresh session，而不是旧 session 内恢复。Close 通知超时不得把 primary cause
-改写成 notification timeout。
+isolated-stale/backpressure 指标。
+
+WSS packet 若在 Opus decode 和 runner push 之前已 stale，可在 10 秒窗口内最多恢复 2 次：丢弃旧包并让下一包重建
+consumer timeline origin。该路径不重置 timestamp cadence、arrival state 或 WSS burst debt，也不宣称重置
+`AgentSession`。超过恢复预算、partial runner push、UDP stale、持续 backlog 或真实 backpressure 均发送
+`session.error(media_overloaded)` 后以 `1013/media_overloaded` 关闭，Endpoint 重新 bootstrap。这里的 retryable
+表示 fresh session，而不是旧 session 内恢复。当前没有经过 public API 证明的同 `AgentSession` reset；Close 通知
+超时不得把 primary cause 改写成 notification timeout。
 
 ## 6. Reconnect policy
 

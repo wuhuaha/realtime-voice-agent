@@ -168,10 +168,14 @@ Uplink 同时受 received queue age 和 packet timestamp media-timeline age 约�
 error 做最大 5 ms 的有界校正，用于吸收 endpoint 时钟偏差；TCP stall/burst、历史 transport delay、queue delay 和
 endpoint 的 local send completion 都不能把旧媒体重锚为 fresh。超预算时，input owner 先丢弃 stale backlog 到 live
 edge，并记录 `dropped_packets`、queue size、media age 和是否仍有 fresh packet。该动作只阻止旧语音继续进入 ASR，
-不代表 `AgentSession` 已安全重置。当前 LiveKit
-public API 无法证明 same-session reset 能清除半完成 turn/provider 状态，因此 isolated stale 与 sustained
-backpressure 仅作诊断分类，二者当前都 best-effort 发送 `session.error(media_overloaded)`，锁定
-`1013/media_overloaded` 并由 endpoint fresh reopen；不得通过扩大 queue 保存旧媒体。
+不代表 `AgentSession` 已安全重置。
+
+WSS 对尚未 Opus decode、也未写入 `AgentSession` 的孤立 stale packet 提供有界恢复：10 秒窗口内最多丢弃并恢复
+2 次；没有 fresh packet 时由下一包建立新的 consumer timeline origin，但 timestamp cadence、arrival state 和 WSS
+burst debt 不重置。第 3 次异常、partial runner push、UDP stale、持续 backlog 或真实 backpressure 仍 best-effort
+发送 `session.error(media_overloaded)`，锁定 `1013/media_overloaded` 并由 endpoint fresh reopen。当前 LiveKit public
+API 无法证明 same-session reset 能清除半完成 turn/provider 状态，因此不得把上述 pre-decode 恢复扩展到已经进入
+`AgentSession` 的媒体，也不得通过扩大 queue 保存旧媒体。
 
 ## 6. Health、drain 与关闭
 
