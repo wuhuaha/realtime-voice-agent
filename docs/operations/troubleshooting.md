@@ -163,9 +163,13 @@ LLM 失败时没有 TTS 下行是正常因果链，不应误诊为端侧没有�
   和 `fresh_packet_available=false`，不得仅凭 `1013` 将其诊断为队列阻塞。检查端侧 pre-send drop/local send timeout、
   packet timestamp cadence、TCP stall/burst 与 Server media-timeline age。
 - WSS 日志 `rva_uplink_stale_recovered` 表示旧包在 Opus decode 和 runner push 前被丢弃，同一 session 继续；10 秒内
-  最多恢复 2 次。`rva_uplink_stale_recovery_exhausted`、partial runner push、UDP stale 和真实 backpressure 仍以
-  `1013/media_overloaded` fresh reopen。该恢复只重建 consumer timeline origin，不是 `AgentSession` reset；出现恢复后
-  应确认同一 session 继续收到 ASR/TTS，而不是只看 WebSocket 未断开。不要扩大队列保存旧上行。
+  最多恢复 2 次。若没有 fresh packet，随后应看到 `rva_uplink_catchup_completed`：Server 丢弃 TCP 缓存追赶包，
+  连续观察到 2 个接近 60 ms 的到达间隔后才恢复 decoder 输入。关闭统计的 `recovered_catchup_packets` 只累计已经
+  完成的 catch-up 丢包；`rva_uplink_catchup_exhausted` 表示两倍 freshness budget 内未抵达 live edge。
+- `rva_uplink_stale_recovery_exhausted`、`rva_uplink_catchup_exhausted`、partial runner push、UDP stale 和真实
+  backpressure 均以 `1013/media_overloaded` fresh reopen，而不是 `1002/protocol_error`。该恢复不是
+  `AgentSession` reset；出现恢复后应确认同一 session 继续收到 ASR/TTS，而不是只看 WebSocket 未断开。不要扩大
+  队列保存旧上行。
 
 每次只调整一个 frame/buffer 参数并保留 A/B 音频与 timeline。
 

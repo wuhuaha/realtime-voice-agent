@@ -89,9 +89,12 @@ arrival/media cadence error 做小幅有界校正；TCP stall/burst 和已经累
 超过 freshness budget 时，Server 丢弃 stale ingress 到当时 live edge，只用于阻止旧语音继续送入 ASR 和形成可诊断的
 isolated-stale/backpressure 指标。
 
-WSS packet 若在 Opus decode 和 runner push 之前已 stale，可在 10 秒窗口内最多恢复 2 次：丢弃旧包并让下一包重建
-consumer timeline origin。该路径不重置 timestamp cadence、arrival state 或 WSS burst debt，也不宣称重置
-`AgentSession`。超过恢复预算、partial runner push、UDP stale、持续 backlog 或真实 backpressure 均发送
+WSS packet 若在 Opus decode 和 runner push 之前已 stale，可在 10 秒窗口内最多恢复 2 次。drain 后已有 fresh packet
+时直接回到 live edge；否则进入有界 catch-up：重置 consumer phase 与 WSS burst debt，丢弃 TCP 缓存追赶包，直到
+连续 2 个接近 60 ms 的到达间隔证明恢复实时节奏。catch-up 最多丢弃两倍 freshness budget 对应的包数，并始终保留
+timestamp sequence、cadence 和 oversized jump 校验。该路径不宣称重置 `AgentSession`。
+
+超过 stale 恢复预算、catch-up 丢弃预算、partial runner push、UDP stale、持续 backlog 或真实 backpressure 均发送
 `session.error(media_overloaded)` 后以 `1013/media_overloaded` 关闭，Endpoint 重新 bootstrap。这里的 retryable
 表示 fresh session，而不是旧 session 内恢复。当前没有经过 public API 证明的同 `AgentSession` reset；Close 通知
 超时不得把 primary cause 改写成 notification timeout。

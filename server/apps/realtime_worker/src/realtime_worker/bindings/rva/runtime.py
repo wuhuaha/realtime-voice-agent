@@ -46,6 +46,8 @@ _TIMELINE_REBASE_SECONDS = 30.0
 _TIMELINE_MAX_WSS_CLOCK_SKEW_RATIO = 0.02
 _UPLINK_STALE_RECOVERY_WINDOW_SECONDS = 10.0
 _UPLINK_MAX_RECOVERABLE_STALE_DROPS = 2
+_WSS_CATCHUP_MAX_FRESHNESS_WINDOWS = 2
+_WSS_CATCHUP_REQUIRED_PACED_INTERVALS = 2
 
 
 class TextAwareRunner(Protocol):
@@ -198,6 +200,10 @@ class _AudioQueuePort(AudioInputPort):
         self._last_timestamp: int | None = None
         self._last_received_at = 0.0
         self._wss_future_burst_debt_seconds = 0.0
+        self._wss_catchup_active = False
+        self._wss_catchup_dropped_packets = 0
+        self._wss_catchup_paced_intervals = 0
+        self._pending_audio_puts = 0
 
     async def receive_audio(self, packet: InboundAudioPacket) -> None:
         await self._receive_audio(packet, enforce_wss_burst_budget=True)
@@ -260,6 +266,58 @@ class _AudioQueuePort(AudioInputPort):
                     expected_lead=local_future_lead,
                 )
                 raise RvaBindingError("invalid_media_timestamp")
+            if enforce_wss_burst_budget and self._wss_catchup_active:
+                first_catchup_packet = self._wss_catchup_dropped_packets == 0
+                paced_arrival = (
+                    not first_catchup_packet
+                    and abs(arrival_delta - FRAME_DURATION_MS / 1_000)
+                    <= _TIMELINE_PACING_TOLERANCE_SECONDS
+                )
+                self._wss_catchup_paced_intervals = (
+                    self._wss_catchup_paced_intervals + 1 if paced_arrival else 0
+                )
+                if self._wss_catchup_paced_intervals < _WSS_CATCHUP_REQUIRED_PACED_INTERVALS:
+                    self._last_timestamp = packet.timestamp
+                    self._last_received_at = received_at
+                    self._consumer_timeline_timestamp = None
+                    self._consumer_timeline_started_at = 0.0
+                    self._wss_catchup_dropped_packets += 1
+                    max_catchup_packets = max(
+                        1,
+                        int(
+                            self._owner._limits.uplink_max_age_seconds  # noqa: SLF001
+                            * _WSS_CATCHUP_MAX_FRESHNESS_WINDOWS
+                            * 1_000
+                            / FRAME_DURATION_MS
+                            + 1e-9
+                        ),
+                    )
+                    if self._wss_catchup_dropped_packets > max_catchup_packets:
+                        logger.warning(
+                            "rva_uplink_catchup_exhausted session=%s dropped_packets=%d packet_limit=%d",
+                            self._owner._binding_id,  # noqa: SLF001
+                            self._wss_catchup_dropped_packets,
+                            max_catchup_packets,
+                        )
+                        raise RvaOverloadedError(
+                            "WSS catch-up did not reach the live edge",
+                            source="opus_input_backpressure",
+                            qsize=self.queue.qsize(),
+                            capacity=self.queue.maxsize,
+                            dropped_packets=self._wss_catchup_dropped_packets,
+                            fresh_packet_available=False,
+                        )
+                    return
+                logger.info(
+                    "rva_uplink_catchup_completed session=%s dropped_packets=%d arrival_delta_ms=%d",
+                    self._owner._binding_id,  # noqa: SLF001
+                    self._wss_catchup_dropped_packets,
+                    round(arrival_delta * 1_000),
+                )
+                self._owner._recovered_catchup_packets += self._wss_catchup_dropped_packets  # noqa: SLF001
+                self._wss_catchup_active = False
+                self._wss_catchup_dropped_packets = 0
+                self._wss_catchup_paced_intervals = 0
             if enforce_wss_burst_budget:
                 allowed_media_delta = arrival_delta * (1.0 + _TIMELINE_MAX_WSS_CLOCK_SKEW_RATIO)
                 self._wss_future_burst_debt_seconds = max(
@@ -325,6 +383,7 @@ class _AudioQueuePort(AudioInputPort):
         try:
             self.queue.put_nowait(queued)
         except asyncio.QueueFull:
+            self._pending_audio_puts += 1
             put_task = asyncio.create_task(self.queue.put(queued), name="rva-opus-input-put")
             close_task = asyncio.create_task(self._closed_event.wait(), name="rva-opus-input-close-wait")
             try:
@@ -348,6 +407,7 @@ class _AudioQueuePort(AudioInputPort):
                     if not task.done():
                         task.cancel()
                 await asyncio.gather(put_task, close_task, return_exceptions=True)
+                self._pending_audio_puts -= 1
 
     def _log_timestamp_warning(
         self,
@@ -407,6 +467,7 @@ class _AudioQueuePort(AudioInputPort):
         isolated_stale = (
             stale_count == 1
             and backlog_qsize < self.queue.maxsize
+            and self._pending_audio_puts == 0
         )
         source: Literal["opus_input_stale", "opus_input_backpressure"] = (
             "opus_input_stale" if isolated_stale else "opus_input_backpressure"
@@ -435,6 +496,12 @@ class _AudioQueuePort(AudioInputPort):
             live_edge=live_edge,
             backlog_qsize=backlog_qsize,
         )
+
+    def begin_wss_catchup(self) -> None:
+        self._wss_catchup_active = True
+        self._wss_catchup_dropped_packets = 0
+        self._wss_catchup_paced_intervals = 0
+        self._wss_future_burst_debt_seconds = 0.0
 
     async def close(self) -> None:
         if self._closed:
@@ -582,6 +649,7 @@ class RvaWssConnection:
         self._overload_dropped_packets = 0
         self._overload_fresh_packet_available: bool | None = None
         self._recovered_stale_packets = 0
+        self._recovered_catchup_packets = 0
         self._stale_recovery_window_started_at: float | None = None
         self._stale_recovery_count = 0
         self._primary_close_cause: tuple[int, str] | None = None
@@ -739,7 +807,8 @@ class RvaWssConnection:
                 "selected_media_profile=%s wss_input_packets=%d udp_input_packets=%d "
                 "decoded_pcm_frames=%d invalid_opus_packets=%d runner_push_frames=%d downlink_packets=%d "
                 "overload_source=%s overload_qsize=%d overload_capacity=%d overload_media_age_ms=%d "
-                "overload_dropped_packets=%d overload_fresh_packet_available=%s recovered_stale_packets=%d",
+                "overload_dropped_packets=%d overload_fresh_packet_available=%s recovered_stale_packets=%d "
+                "recovered_catchup_packets=%d",
                 self._binding_id,
                 self._binding.session_epoch,
                 code,
@@ -762,6 +831,7 @@ class RvaWssConnection:
                     else str(self._overload_fresh_packet_available).lower()
                 ),
                 self._recovered_stale_packets,
+                self._recovered_catchup_packets,
             )
             self._close_task = asyncio.create_task(self._close_impl(code, reason), name=f"rva-close-{self._binding_id}")
         try:
@@ -976,6 +1046,8 @@ class RvaWssConnection:
             )
             return False
         self._recovered_stale_packets += error.dropped_packets
+        if error.fresh_packet_available is False:
+            self._audio_port.begin_wss_catchup()
         logger.warning(
             "rva_uplink_stale_recovered session=%s recovery_count=%d recovery_limit=%d "
             "media_age_ms=%d dropped_packets=%d fresh_packet_available=%s",

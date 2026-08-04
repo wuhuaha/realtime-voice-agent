@@ -1302,10 +1302,137 @@ async def test_current_only_stale_packet_is_not_misclassified_as_backpressure() 
     assert port._consumer_timeline_timestamp is None  # noqa: SLF001
 
     assert connection._recover_isolated_stale(error) is True  # noqa: SLF001
-    await port.receive_audio(InboundAudioPacket(1, 960, b"fresh"))
+    await port.receive_audio(InboundAudioPacket(1, 960, b"buffered"))
+    assert port.queue.empty()
+
+    clock.advance(0.06)
+    await port.receive_audio(InboundAudioPacket(2, 2 * 960, b"paced-candidate"))
+    assert port.queue.empty()
+
+    clock.advance(0.06)
+    await port.receive_audio(InboundAudioPacket(3, 3 * 960, b"fresh"))
     fresh = port.queue.get_nowait()
     assert fresh is not None
+    assert fresh.packet.sequence == 3
     assert fresh.deadline_at > clock()
+
+
+@pytest.mark.unit
+async def test_isolated_stale_recovery_discards_wss_catchup_burst_until_live_edge() -> None:
+    clock = MutableMonotonicClock()
+    connection, _ = create_connection(
+        FakeWebSocket(),
+        limits=RvaRuntimeLimits(input_queue_packets=16, uplink_max_age_seconds=0.6),
+        clock=clock,
+    )
+    port = connection._audio_port  # noqa: SLF001
+    await connection.binding.receive_control(session_open())
+    await port.receive_audio(InboundAudioPacket(0, 0, b"stale"))
+    queued = port.queue.get_nowait()
+    assert queued is not None
+    clock.advance(0.7)
+
+    assert connection._recover_isolated_stale(connection._stale_uplink_error(queued)) is True  # noqa: SLF001
+    for sequence in range(1, 13):
+        await port.receive_audio(InboundAudioPacket(sequence, sequence * 960, b"catchup"))
+    assert port.queue.empty()
+
+    clock.advance(0.06)
+    await port.receive_audio(InboundAudioPacket(13, 13 * 960, b"paced-candidate"))
+    assert port.queue.empty()
+    clock.advance(0.06)
+    await port.receive_audio(InboundAudioPacket(14, 14 * 960, b"live"))
+    live = port.queue.get_nowait()
+    assert live is not None
+    assert live.packet.sequence == 14
+    assert live.deadline_at > clock()
+    assert connection._recovered_catchup_packets == 13  # noqa: SLF001
+
+
+@pytest.mark.unit
+async def test_wss_catchup_does_not_treat_a_long_burst_pause_as_live_edge() -> None:
+    clock = MutableMonotonicClock()
+    connection, _ = create_connection(
+        FakeWebSocket(),
+        limits=RvaRuntimeLimits(input_queue_packets=16, uplink_max_age_seconds=0.6),
+        clock=clock,
+    )
+    port = connection._audio_port  # noqa: SLF001
+    await connection.binding.receive_control(session_open())
+    await port.receive_audio(InboundAudioPacket(0, 0, b"stale"))
+    queued = port.queue.get_nowait()
+    assert queued is not None
+    clock.advance(0.7)
+    assert connection._recover_isolated_stale(connection._stale_uplink_error(queued)) is True  # noqa: SLF001
+
+    await port.receive_audio(InboundAudioPacket(1, 960, b"catchup"))
+    clock.advance(0.3)
+    await port.receive_audio(InboundAudioPacket(2, 2 * 960, b"paused-catchup"))
+    await port.receive_audio(InboundAudioPacket(3, 3 * 960, b"catchup"))
+    assert port.queue.empty()
+    assert connection._recovered_catchup_packets == 0  # noqa: SLF001
+
+    clock.advance(0.06)
+    await port.receive_audio(InboundAudioPacket(4, 4 * 960, b"paced-candidate"))
+    assert port.queue.empty()
+    clock.advance(0.06)
+    await port.receive_audio(InboundAudioPacket(5, 5 * 960, b"live"))
+    live = port.queue.get_nowait()
+    assert live is not None
+    assert live.packet.sequence == 5
+    assert connection._recovered_catchup_packets == 4  # noqa: SLF001
+
+
+@pytest.mark.unit
+async def test_isolated_stale_recovery_fails_closed_when_wss_catchup_does_not_converge() -> None:
+    clock = MutableMonotonicClock()
+    connection, _ = create_connection(
+        FakeWebSocket(),
+        limits=RvaRuntimeLimits(input_queue_packets=16, uplink_max_age_seconds=0.6),
+        clock=clock,
+    )
+    port = connection._audio_port  # noqa: SLF001
+    await connection.binding.receive_control(session_open())
+    await port.receive_audio(InboundAudioPacket(0, 0, b"stale"))
+    queued = port.queue.get_nowait()
+    assert queued is not None
+    clock.advance(0.7)
+    assert connection._recover_isolated_stale(connection._stale_uplink_error(queued)) is True  # noqa: SLF001
+
+    with pytest.raises(RvaOverloadedError) as captured:
+        for sequence in range(1, 22):
+            await port.receive_audio(InboundAudioPacket(sequence, sequence * 960, b"catchup"))
+
+    assert captured.value.source == "opus_input_backpressure"
+    assert captured.value.dropped_packets == 21
+    assert port.queue.empty()
+    assert connection._recovered_catchup_packets == 0  # noqa: SLF001
+
+
+@pytest.mark.unit
+async def test_pending_queue_producer_prevents_isolated_stale_recovery() -> None:
+    clock = MutableMonotonicClock()
+    connection, _ = create_connection(
+        FakeWebSocket(),
+        limits=RvaRuntimeLimits(input_queue_packets=1, uplink_max_age_seconds=0.6),
+        clock=clock,
+    )
+    port = connection._audio_port  # noqa: SLF001
+    await connection.binding.receive_control(session_open())
+    await port.receive_audio(InboundAudioPacket(0, 0, b"stale"))
+    pending = asyncio.create_task(port.receive_audio(InboundAudioPacket(1, 960, b"pending")))
+    await wait_until(lambda: port._pending_audio_puts == 1)  # noqa: SLF001
+
+    current = port.queue.get_nowait()
+    assert current is not None
+    clock.advance(0.7)
+    error = connection._stale_uplink_error(current)  # noqa: SLF001
+
+    assert error.source == "opus_input_backpressure"
+    assert connection._recover_isolated_stale(error) is False  # noqa: SLF001
+    pending.cancel()
+    await asyncio.gather(pending, return_exceptions=True)
+    assert port._pending_audio_puts == 0  # noqa: SLF001
 
 
 @pytest.mark.unit
@@ -1320,12 +1447,32 @@ async def test_repeated_isolated_stale_packets_fail_closed_within_recovery_windo
     await connection.binding.receive_control(session_open())
 
     recoveries: list[bool] = []
-    for sequence in range(3):
-        await port.receive_audio(InboundAudioPacket(sequence, sequence * 960, b"stale"))
-        queued = port.queue.get_nowait()
-        assert queued is not None
+    await port.receive_audio(InboundAudioPacket(0, 0, b"stale"))
+    queued = port.queue.get_nowait()
+    assert queued is not None
+    next_sequence = 1
+    for recovery_index in range(3):
         clock.advance(0.7)
         recoveries.append(connection._recover_isolated_stale(connection._stale_uplink_error(queued)))  # noqa: SLF001
+        if recovery_index < 2:
+            await port.receive_audio(
+                InboundAudioPacket(next_sequence, next_sequence * 960, b"catchup"),
+            )
+            assert port.queue.empty()
+            next_sequence += 1
+            clock.advance(0.06)
+            await port.receive_audio(
+                InboundAudioPacket(next_sequence, next_sequence * 960, b"paced-candidate"),
+            )
+            assert port.queue.empty()
+            next_sequence += 1
+            clock.advance(0.06)
+            await port.receive_audio(
+                InboundAudioPacket(next_sequence, next_sequence * 960, b"live"),
+            )
+            queued = port.queue.get_nowait()
+            assert queued is not None
+            next_sequence += 1
 
     assert recoveries == [True, True, False]
     assert connection._recovered_stale_packets == 2  # noqa: SLF001
@@ -1466,7 +1613,7 @@ async def test_runtime_control_ack_timeout_is_not_misclassified_as_handshake_tim
     connection, _ = create_connection(
         websocket,
         trigger_frames=1_000,
-        limits=RvaRuntimeLimits(queue_timeout_seconds=0.03, wire_send_timeout_seconds=0.03),
+        limits=RvaRuntimeLimits(queue_timeout_seconds=0.2, wire_send_timeout_seconds=0.03),
     )
     websocket.feed_open()
     task = asyncio.create_task(connection.run())

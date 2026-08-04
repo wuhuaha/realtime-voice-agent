@@ -170,9 +170,13 @@ endpoint 的 local send completion 都不能把旧媒体重锚为 fresh。超预
 edge，并记录 `dropped_packets`、queue size、media age 和是否仍有 fresh packet。该动作只阻止旧语音继续进入 ASR，
 不代表 `AgentSession` 已安全重置。
 
-WSS 对尚未 Opus decode、也未写入 `AgentSession` 的孤立 stale packet 提供有界恢复：10 秒窗口内最多丢弃并恢复
-2 次；没有 fresh packet 时由下一包建立新的 consumer timeline origin，但 timestamp cadence、arrival state 和 WSS
-burst debt 不重置。第 3 次异常、partial runner push、UDP stale、持续 backlog 或真实 backpressure 仍 best-effort
+WSS 对尚未 Opus decode、也未写入 `AgentSession` 的孤立 stale packet 提供有界恢复：10 秒窗口内最多恢复 2 次。
+若 drain 时已有 fresh packet，则直接以 live edge 重建 consumer timeline；若没有，进入 pre-decode catch-up，重置
+consumer phase 和 WSS burst debt，并丢弃 TCP 缓存追赶包。连续观察到 2 个接近 60 ms 的到达间隔后才认定抵达
+live edge；catch-up 最多丢弃两倍 freshness budget 对应的包数。全过程保留 timestamp sequence、cadence、oversized
+jump 校验，不把不可信媒体送入 decoder 或 `AgentSession`。
+
+第 3 次 stale、catch-up 不收敛、partial runner push、UDP stale、持续 backlog 或真实 backpressure 仍 best-effort
 发送 `session.error(media_overloaded)`，锁定 `1013/media_overloaded` 并由 endpoint fresh reopen。当前 LiveKit public
 API 无法证明 same-session reset 能清除半完成 turn/provider 状态，因此不得把上述 pre-decode 恢复扩展到已经进入
 `AgentSession` 的媒体，也不得通过扩大 queue 保存旧媒体。
