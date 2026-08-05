@@ -67,6 +67,16 @@ pwsh -File .\firmware\tools\package-release.ps1 `
 打包器只接受 `release_eligible=true` 且仍与 clean HEAD 完全匹配的产物，并把许可证、第三方声明、manifest 与
 `SHA256SUMS` 一并放入 bundle；普通 dirty-tree 开发构建不会被误标为公开产物。
 
+bundle 内附带 `rva-device-provision.py` 和操作说明。分发或烧录前先执行 `validate`；`flash` 只写五个公共镜像并
+保留 NVS，`provision` 只写 `0x9000/0x6000` 的 NVS 并 readback 比较 SHA-256，`erase-config` 只擦该 NVS 分区。
+密码和 token 不接受命令行参数，可从仓库外 private JSON 或隐藏提示输入。详细命令见
+[Flashing and provisioning](../../release/FLASHING.md)。当前 NVS 未加密，工具只能降低 argv、日志、Git 和临时文件
+泄漏风险，不能抵御物理 flash 读取。
+
+当前CLI host contracts为`34 passed`；当前工作快照的fresh public bundle与真机
+flash/provision/readback/preserve/erase/WSS/UDP HIL仍为`not_run`，精确状态见
+[Release readiness](../../../docs/quality/release-readiness.md)。
+
 默认生成公共构建，配置和缓存位于 ignored 的
 `firmware/apps/voice_terminal/build-local`。如需使用本地 ignored 的部署配置，必须显式传入同一工程下的
 `sdkconfig` 文件和独立 build 目录：

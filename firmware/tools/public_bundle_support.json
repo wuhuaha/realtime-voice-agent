@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "files": [
+    {
+      "role": "flashing_guide",
+      "bundle_file": "FLASHING.md",
+      "source_path": "firmware/release/FLASHING.md"
+    },
+    {
+      "role": "device_provisioning_cli",
+      "bundle_file": "rva-device-provision.py",
+      "source_path": "firmware/tools/device_provision.py"
+    }
+  ]
+}

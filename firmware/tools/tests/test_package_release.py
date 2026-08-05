@@ -155,6 +155,10 @@ def _fixture(tmp_path: Path) -> tuple[Path, Path, Path]:
     script.parent.mkdir(parents=True)
     shutil.copyfile(SCRIPT, script)
     shutil.copyfile(NOTICE_MANIFEST, script.with_name("public_bundle_notices.json"))
+    shutil.copyfile(
+        PRODUCT_ROOT / "firmware/tools/public_bundle_support.json",
+        script.with_name("public_bundle_support.json"),
+    )
     tracked_files = {
         "LICENSE": "Apache License fixture\n",
         "NOTICE": "Product notice fixture\n",
@@ -166,6 +170,8 @@ def _fixture(tmp_path: Path) -> tuple[Path, Path, Path]:
             "model,data,spiffs,0x410000,0x80000\n"
             "font_assets,data,0x40,0x800000,8M\n"
         ),
+        "firmware/release/FLASHING.md": "Release flashing guide fixture\n",
+        "firmware/tools/device_provision.py": "print('fixture')\n",
         "firmware/components/ui_font_assets/THIRD_PARTY_NOTICES.md": "font notices\n",
         "third_party/licenses/xiaozhi-fonts-MIT.txt": "metadata-only evidence fixture\n",
         ".gitignore": "build/\n*.zip\n",
@@ -218,6 +224,7 @@ def test_packages_provenance_bound_public_artifacts_and_notices(tmp_path: Path) 
     with zipfile.ZipFile(output) as archive:
         assert set(archive.namelist()) == {
             "LICENSE",
+            "FLASHING.md",
             "NOTICE",
             "SHA256SUMS",
             "THIRD_PARTY-Noto-Sans-CJK-OFL-1.1.txt",
@@ -229,11 +236,22 @@ def test_packages_provenance_bound_public_artifacts_and_notices(tmp_path: Path) 
             "partition-table.bin",
             "rva_voice_terminal.bin",
             "srmodels.bin",
+            "rva-device-provision.py",
         }
         manifest = json.loads(archive.read("manifest.json"))
         assert manifest["public_config"] is True
         assert all(Path(item["file"]).name == item["file"] for item in manifest["artifacts"])
         assert len(manifest["notices"]) == 5
+        assert manifest["provisioning"] == {
+            "schema_version": 1,
+            "partition": {"label": "nvs", "offset": "0x9000", "size": "0x6000"},
+        }
+        assert {item["role"] for item in manifest["support_files"]} == {
+            "flashing_guide",
+            "device_provisioning_cli",
+        }
+        for item in manifest["support_files"]:
+            assert hashlib.sha256(archive.read(item["file"])).hexdigest() == item["sha256"]
         font = next(item for item in manifest["artifacts"] if item["role"] == "font_assets")
         assert font["source_id"] == "qwen20-4-v1.6.0"
 
@@ -297,6 +315,19 @@ def test_rejects_missing_required_partition_image(tmp_path: Path, missing: str) 
 
     assert result.returncode != 0
     assert "Flash artifact not found" in result.stderr
+
+
+def test_rejects_missing_release_support_file(tmp_path: Path) -> None:
+    repository, build, script = _fixture(tmp_path)
+    (repository / "firmware/tools/device_provision.py").unlink()
+    _git(repository, "add", "-u")
+    _git(repository, "commit", "-m", "remove support fixture")
+    _write_provenance(repository, build, _git(repository, "rev-parse", "HEAD"))
+
+    result = _run(script, build, build.parent / "public.zip")
+
+    assert result.returncode != 0
+    assert "Release support file not found" in result.stderr
 
 
 def test_rejects_flasher_manifest_tampering(tmp_path: Path) -> None:

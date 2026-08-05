@@ -300,6 +300,35 @@ try {
     }
 
     $dependencyLock = Require-File (Join-Path $repoRoot 'firmware/apps/voice_terminal/dependencies.lock') 'Firmware dependency lock'
+    $supportManifestPath = Require-File (Join-Path $PSScriptRoot 'public_bundle_support.json') 'Bundle support manifest'
+    $supportManifest = Get-Content -LiteralPath $supportManifestPath -Raw | ConvertFrom-Json
+    if ($supportManifest.schema_version -ne 1 -or @($supportManifest.files).Count -eq 0) {
+        throw 'Bundle support manifest is invalid.'
+    }
+    $manifestSupportFiles = @()
+    foreach ($support in @($supportManifest.files)) {
+        $bundleName = [string]$support.bundle_file
+        $repositoryPath = [string]$support.source_path
+        $role = [string]$support.role
+        if ([string]::IsNullOrWhiteSpace($role) -or [string]::IsNullOrWhiteSpace($bundleName) -or
+            [IO.Path]::GetFileName($bundleName) -ne $bundleName -or $seenBundleNames.ContainsKey($bundleName)) {
+            throw 'Bundle support manifest has an invalid or duplicate entry.'
+        }
+        $seenBundleNames[$bundleName] = $true
+        $sourcePath = Require-File (Join-Path $repoRoot $repositoryPath) 'Release support file'
+        $repoPrefix = $repoRoot.TrimEnd([IO.Path]::DirectorySeparatorChar) + [IO.Path]::DirectorySeparatorChar
+        if (-not $sourcePath.StartsWith($repoPrefix, [StringComparison]::OrdinalIgnoreCase)) {
+            throw "Release support file escapes Product repository: $repositoryPath"
+        }
+        $destination = Join-Path $stage $bundleName
+        Copy-Item -LiteralPath $sourcePath -Destination $destination
+        $manifestSupportFiles += [ordered]@{
+            role = $role
+            file = $bundleName
+            source = $repositoryPath
+            sha256 = Get-Sha256 $destination
+        }
+    }
     $manifest = [ordered]@{
         schema_version = 1
         product = 'realtime-voice-agent'
@@ -319,8 +348,17 @@ try {
             size = [string]$flasher.flash_settings.flash_size
             frequency = [string]$flasher.flash_settings.flash_freq
         }
+        provisioning = [ordered]@{
+            schema_version = 1
+            partition = [ordered]@{
+                label = 'nvs'
+                offset = '0x9000'
+                size = '0x6000'
+            }
+        }
         artifacts = $manifestArtifacts
         notices = $manifestDocuments
+        support_files = $manifestSupportFiles
     }
     $manifestPath = Join-Path $stage 'manifest.json'
     Write-Utf8Lf $manifestPath ($manifest | ConvertTo-Json -Depth 8)
