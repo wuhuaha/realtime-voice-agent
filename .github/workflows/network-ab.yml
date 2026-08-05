@@ -1,0 +1,66 @@
+name: isolated-network-completion-matrix
+
+on:
+  workflow_dispatch:
+    inputs:
+      scenarios:
+        description: Comma-separated netem scenarios
+        required: true
+        default: clean,delay,random-loss-1,random-loss-3,random-loss-5,burst-loss,jitter,reorder,udp-blocked
+      profiles:
+        description: Comma-separated RVA media profiles
+        required: true
+        default: wss-opus/1,udp-opus-gcm/1
+      repeats:
+        description: Attempts per scenario/profile (1..50)
+        required: true
+        default: "5"
+      seed:
+        description: Deterministic netem seed base
+        required: true
+        default: "20260805"
+
+permissions:
+  contents: read
+
+jobs:
+  isolated-netem:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - run: uv sync --directory server --locked --all-packages --dev
+      - run: uv sync --directory clients/desktop_reference --locked --extra test
+      - name: Check root-free harness logic
+        run: >-
+          uv run --directory clients/desktop_reference pytest
+          tests/e2e/netem_unit.py
+      - name: Run isolated netem completion matrix
+        env:
+          NETEM_SCENARIOS: ${{ inputs.scenarios }}
+          NETEM_PROFILES: ${{ inputs.profiles }}
+          NETEM_REPEATS: ${{ inputs.repeats }}
+          NETEM_SEED: ${{ inputs.seed }}
+          NETEM_OUTPUT: ${{ github.workspace }}/artifacts/netem
+        run: |
+          sudo env "PATH=$PATH" bash clients/desktop_reference/tools/run-netem.sh \
+            --scenarios "$NETEM_SCENARIOS" \
+            --profiles "$NETEM_PROFILES" \
+            --repeats "$NETEM_REPEATS" \
+            --seed "$NETEM_SEED" \
+            --output "$NETEM_OUTPUT"
+      - name: Upload raw and aggregate observations
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: isolated-netem-${{ github.run_id }}
+          path: artifacts/netem/
+          if-no-files-found: error
+      - name: Expose tc capability metadata
+        if: always()
+        run: |
+          if [ -f artifacts/netem/aggregate.json ]; then
+            cat artifacts/netem/aggregate.json
+          fi

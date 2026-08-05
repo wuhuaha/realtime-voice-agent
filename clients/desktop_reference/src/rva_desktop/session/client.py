@@ -187,37 +187,42 @@ class DesktopSession:
                 return SessionEvent("transport.reopen_required", {"reason": "udp_grant_refresh"})
             control = asyncio.create_task(self._wss_required().receive(), name="desktop-control-recv")
             media = asyncio.create_task(self._udp.receive_audio(), name="desktop-udp-recv")
-            done, pending = await asyncio.wait({control, media}, return_when=asyncio.FIRST_COMPLETED)
-            for task in pending:
-                task.cancel()
-            await asyncio.gather(*pending, return_exceptions=True)
-            events: list[SessionEvent] = []
-            # Control is projected first when both sources become ready together.
-            if control in done:
-                try:
-                    value = await control
-                except FreshReopenRequired:
-                    events.append(SessionEvent("transport.reopen_required", {"reason": "udp_grant_refresh"}))
-                else:
-                    event = self._from_wss(value)
-                    if event is not None and event.kind == "session.close":
-                        if media in done:
-                            await asyncio.gather(media, return_exceptions=True)
-                        return event
-                    if event is not None:
-                        events.append(event)
-            if media in done:
-                try:
-                    value = await media
-                except FreshReopenRequired:
-                    events.append(SessionEvent("transport.reopen_required", {"reason": "udp_grant_refresh"}))
-                else:
-                    event = state.accept_media(value)
-                    if event is not None:
-                        events.append(event)
-            if events:
-                self._event_backlog.extend(events[1:])
-                return events[0]
+            children = (control, media)
+            try:
+                done, pending = await asyncio.wait(children, return_when=asyncio.FIRST_COMPLETED)
+                for task in pending:
+                    task.cancel()
+                await asyncio.gather(*pending, return_exceptions=True)
+                events: list[SessionEvent] = []
+                # Control is projected first when both sources become ready together.
+                if control in done:
+                    try:
+                        value = await control
+                    except FreshReopenRequired:
+                        events.append(SessionEvent("transport.reopen_required", {"reason": "udp_grant_refresh"}))
+                    else:
+                        event = self._from_wss(value)
+                        if event is not None and event.kind == "session.close":
+                            return event
+                        if event is not None:
+                            events.append(event)
+                if media in done:
+                    try:
+                        value = await media
+                    except FreshReopenRequired:
+                        events.append(SessionEvent("transport.reopen_required", {"reason": "udp_grant_refresh"}))
+                    else:
+                        event = state.accept_media(value)
+                        if event is not None:
+                            events.append(event)
+                if events:
+                    self._event_backlog.extend(events[1:])
+                    return events[0]
+            finally:
+                for task in children:
+                    if not task.done():
+                        task.cancel()
+                await asyncio.gather(*children, return_exceptions=True)
 
     async def playback_started(self, target: PlaybackTarget, first_media_sequence: int) -> None:
         await self._send_control(self.state.playback_started(target, first_media_sequence))

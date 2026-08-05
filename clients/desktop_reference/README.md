@@ -113,6 +113,36 @@ deterministic provider、临时凭据和独立进程拓扑的 host evidence；�
 设备、声学、ESP32、弱网、长稳或 release artifact。临时环境文件、token、端口和原始日志不得成为发布凭据或正式
 证据。
 
+Linux root 环境可用 network namespace 和 `tc/netem` 对动态 Worker media 端口运行固定矩阵：
+
+```bash
+sudo clients/desktop_reference/tools/run-netem.sh \
+  --profiles wss-opus/1,udp-opus-gcm/1 \
+  --scenarios clean,delay,random-loss-1,random-loss-3,random-loss-5,burst-loss,jitter,reorder,udp-blocked \
+  --repeats 5 --seed 20260805 --output artifacts/netem
+```
+
+同一scenario/repeat的WSS与UDP共享逻辑`pair_id`和请求seed，但逻辑配对不等于内核随机序列已配对。harness先探测
+当前`tc netem`是否支持`seed`：支持时记录`tc_seed_control=applied`、`paired_randomness=true`；不支持时自动去掉
+seed重建qdisc，并记录`tc_seed_control=unavailable`、`paired_randomness=false`和
+`comparison_limit=completion_only_unpaired_random_impairment`。后一种结果只能作为isolated loopback netns completion
+matrix，不能进行随机loss/jitter/reorder的WSS/UDP配对比较。
+
+TCP和UDP分别绑定`30:`与`40:` netem handle，raw JSONL保存当前profile对应handle的结构化counter及完整
+qdisc/filter统计；clean或`udp-blocked`下不适用的WSS不要求impairment counter。受扰profile必须有非零admitted
+counter才算规则命中；loss/reorder在有限样本中可能记录`no_impairment_observed`，这只表示规则已穿过但本次未
+观察到drop/reorder，不能伪报实际扰动。
+
+raw还记录profile、scenario、pair identity、session completion latency、结果和Worker active/release cleanup；
+aggregate明确标记`evidence_scope=completion_only`。正常场景必须媒体闭环且最终`active_sessions=0`，`udp-blocked`
+只在明确得到`udp_probe_timeout`且资源归零时符合预期。route cleanup中，第一条lease由随后epoch/fencing前进的
+reacquire证明已释放；最终lease只验证release request被接受。该harness尚未采集media age、late/loss/PLC或物理
+speech-to-playout，因此不能据此宣称性能SLO、主观质量或WSS/UDP优劣。
+
+当前真实Linux尝试确认目标`tc`不支持seed，并暴露了TCP端口回收探针受`TIME_WAIT`影响的问题。代码已加入无seed
+fallback、capability字段和符合服务重启语义的端口探针，但完整矩阵尚未重新通过；当前状态仍是failed prerequisite /
+`not_run`，不得把harness存在或单元测试通过写成真实netem通过。
+
 ## 原生依赖与发布边界
 
 `av`（PyAV）会把运行路径带到 FFmpeg/Opus native components，`sounddevice` 会把 interactive 路径带到

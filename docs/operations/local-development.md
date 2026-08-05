@@ -43,6 +43,10 @@ uv run --directory clients/desktop_reference pytest -m "not e2e_host"
 真实进程 E2E 会启动独立的 deterministic Director/Worker，不访问 provider；具体命令和环境变量见
 [`clients/desktop_reference/README.md`](../../clients/desktop_reference/README.md)。
 
+容量/churn 与 Linux netns/netem 专项不属于默认 `pytest`。命令、输出字段和证据限制分别见
+[`server/README.md`](../../server/README.md) 与
+[`clients/desktop_reference/README.md`](../../clients/desktop_reference/README.md)；未显式执行不得写为通过。
+
 ## 3. 启动 Server
 
 ```bash
@@ -99,6 +103,10 @@ pwsh -File .\scripts\build-firmware.ps1 -Clean
 Wi-Fi、Director URL 和 bootstrap token 使用 local Kconfig/build input，不进入 tracked defaults。配置改变后重新
 configure/build，不能复用不匹配的 `sdkconfig`。烧录需要明确目标端口；记录 source identity、artifact digest、
 board、IDF、命令和观察范围。
+
+公开 bundle 的部署使用 bundle 内 `rva-device-provision.py`：依次 `validate`、五镜像 `flash`、仅 NVS 的
+`provision`；需要恢复配置页时运行 `erase-config`。完整参数和 NVS 未加密边界见
+[`firmware/release/FLASHING.md`](../../firmware/release/FLASHING.md)。
 
 ## 6. 最小开发顺序
 

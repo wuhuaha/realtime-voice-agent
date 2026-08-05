@@ -4,6 +4,7 @@ import asyncio
 import json
 import sys
 import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -41,6 +42,12 @@ class _RecordingWssTransport(WssTransport):
     async def send_control(self, wire: str) -> None:
         self.sent_control.append(json.loads(wire))
         await super().send_control(wire)
+
+
+@dataclass(frozen=True, slots=True)
+class _DesktopAppExerciseEvidence:
+    outcome: str
+    detail: str
 
 
 async def _exercise_profile(director_url: str, profile: MediaProfile) -> None:
@@ -153,6 +160,22 @@ async def _exercise_profile(director_url: str, profile: MediaProfile) -> None:
 
 
 async def _exercise_desktop_app_profile(director_url: str, profile: MediaProfile) -> None:
+    evidence = await _run_desktop_app_profile(director_url, profile)
+    assert evidence.outcome == "completed", evidence.detail
+
+
+async def _exercise_netem_desktop_app_profile(
+    director_url: str,
+    profile: MediaProfile,
+) -> _DesktopAppExerciseEvidence:
+    """Run the real composition root while preserving its bounded recovery result."""
+    return await _run_desktop_app_profile(director_url, profile)
+
+
+async def _run_desktop_app_profile(
+    director_url: str,
+    profile: MediaProfile,
+) -> _DesktopAppExerciseEvidence:
     transport = _RecordingWssTransport()
     session = DesktopSession(
         ClientConfig(
@@ -185,33 +208,25 @@ async def _exercise_desktop_app_profile(director_url: str, profile: MediaProfile
     )
     result = await asyncio.wait_for(app.run(stop_after_playbacks=1), timeout=20)
 
-    assert result.uplink_frames >= 1
-    assert result.playback_frames == 4
-    assert result.completed_playbacks == 1
-    assert len(sink.frames) == 4
-    assert len(sink.pcm) == WIRE_BYTES_PER_FRAME * 4
-
-    expected_first_sequence = 1 if profile is MediaProfile.UDP_OPUS_GCM_V1 else 0
-    assert [frame.sequence for frame in sink.frames] == list(
-        range(expected_first_sequence, expected_first_sequence + 4)
+    frame_sequences = [frame.sequence for frame in sink.frames]
+    frame_timestamps = [frame.timestamp_samples for frame in sink.frames]
+    playback_facts = [
+        message for message in transport.sent_control if message["type"] in {"playback.started", "playback.ended"}
+    ]
+    diagnostic = (
+        f"result={result!r}, frame_sequences={frame_sequences!r}, "
+        f"frame_timestamps={frame_timestamps!r}, playback_facts={playback_facts!r}, "
+        f"events={[event.kind for event in events]!r}"
     )
-    assert [frame.timestamp_samples for frame in sink.frames] == [0, 960, 1_920, 2_880]
+
+    assert result.uplink_frames >= 1, diagnostic
+    assert result.completed_playbacks == 1, diagnostic
 
     messages = [event.message for event in events if event.kind != "media.audio"]
     by_kind = {message["type"]: message for message in messages}
     assert by_kind["transcript.final"]["text"] == "deterministic turn"
     assert by_kind["response.text"]["text"] == "deterministic turn"
     assert by_kind["response.end"]["outcome"] == "completed"
-    assert by_kind["response.end"]["final_media_sequence"] == expected_first_sequence + 3
-
-    playback_facts = [
-        message for message in transport.sent_control if message["type"] in {"playback.started", "playback.ended"}
-    ]
-    assert [message["type"] for message in playback_facts] == ["playback.started", "playback.ended"]
-    assert playback_facts[0]["first_media_sequence"] == expected_first_sequence
-    assert playback_facts[1]["outcome"] == "completed"
-    assert playback_facts[1]["played_samples"] == 4 * WIRE_SAMPLES_PER_FRAME
-    assert playback_facts[1]["last_media_sequence"] == expected_first_sequence + 3
     assert transport.sent_control[-1]["type"] == "session.close"
 
     # A successful return includes deterministic ownership cleanup, not merely
@@ -223,6 +238,49 @@ async def _exercise_desktop_app_profile(director_url: str, profile: MediaProfile
         await sink.start()
     with pytest.raises(RuntimeError, match="Opus codec is closed"):
         codec.encode_60ms(b"\x00" * WIRE_BYTES_PER_FRAME)
+
+    expected_first_sequence = 1 if profile is MediaProfile.UDP_OPUS_GCM_V1 else 0
+    completed = (
+        result.playback_frames == 4
+        and len(sink.frames) == 4
+        and len(sink.pcm) == WIRE_BYTES_PER_FRAME * 4
+        and frame_sequences == list(range(expected_first_sequence, expected_first_sequence + 4))
+        and frame_timestamps == [0, 960, 1_920, 2_880]
+        and by_kind["response.end"]["final_media_sequence"] == expected_first_sequence + 3
+        and [message["type"] for message in playback_facts] == ["playback.started", "playback.ended"]
+        and playback_facts[0]["first_media_sequence"] == expected_first_sequence
+        and playback_facts[1]["outcome"] == "completed"
+        and playback_facts[1]["played_samples"] == 4 * WIRE_SAMPLES_PER_FRAME
+        and playback_facts[1]["last_media_sequence"] == expected_first_sequence + 3
+    )
+    if completed:
+        return _DesktopAppExerciseEvidence("completed", diagnostic)
+
+    opened_indexes = [index for index, event in enumerate(events) if event.kind == "session.opened"]
+    stopped = [
+        message
+        for message in playback_facts
+        if message["type"] == "playback.ended" and message["outcome"] == "stopped"
+    ]
+    identity_fields = ("session_epoch", "fencing_token", "media_epoch")
+    fresh_identity = len(opened_indexes) == 2 and any(
+        events[opened_indexes[0]].message.get(field) != events[opened_indexes[1]].message.get(field)
+        for field in identity_fields
+    )
+    no_old_media_after_reopen = len(opened_indexes) == 2 and not any(
+        event.kind == "media.audio" for event in events[opened_indexes[1] + 1 :]
+    )
+    bounded_recovery = (
+        profile is MediaProfile.UDP_OPUS_GCM_V1
+        and len(stopped) == 1
+        and fresh_identity
+        and no_old_media_after_reopen
+        and playback_facts[-1] == stopped[0]
+        and 0 <= result.playback_frames < 4
+    )
+    if bounded_recovery:
+        return _DesktopAppExerciseEvidence("bounded_recovery_verified", diagnostic)
+    raise AssertionError(diagnostic)
 
 
 @pytest.mark.e2e_host

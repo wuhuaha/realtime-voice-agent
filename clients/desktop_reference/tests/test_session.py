@@ -382,6 +382,194 @@ def test_terminal_control_wins_over_same_tick_udp_media() -> None:
     asyncio.run(scenario())
 
 
+def test_cancelled_udp_event_race_reaps_control_and_media_children() -> None:
+    async def scenario() -> None:
+        udp_grant = UdpGrant(
+            host="voice.test",
+            port=8443,
+            expires_at_ms=2_000_000,
+            refresh_after_ms=1_000,
+            uplink_key=b"0" * 16,
+            uplink_salt=b"1" * 8,
+            downlink_key=b"2" * 16,
+            downlink_salt=b"3" * 8,
+            probe_timeout_ms=500,
+        )
+        opened = SessionOpened(
+            request_id="open-1",
+            session_id="session-1",
+            session_epoch="epoch-1",
+            media_id=opened_session().media_id,
+            media_epoch=7,
+            selected_profile=MediaProfile.UDP_OPUS_GCM_V1,
+            heartbeat_interval_ms=15_000,
+            idle_timeout_ms=45_000,
+            udp_grant=udp_grant,
+        )
+
+        class BlockingControl:
+            def __init__(self) -> None:
+                self.started = asyncio.Event()
+                self.cancelled = False
+
+            async def receive(self) -> str:
+                self.started.set()
+                try:
+                    await asyncio.Event().wait()
+                except asyncio.CancelledError:
+                    self.cancelled = True
+                    raise
+                raise AssertionError("unreachable")
+
+        class BlockingMedia:
+            refresh_due = False
+
+            def __init__(self) -> None:
+                self.started = asyncio.Event()
+                self.cancelled = False
+
+            async def receive_audio(self) -> MediaFrame:
+                self.started.set()
+                try:
+                    await asyncio.Event().wait()
+                except asyncio.CancelledError:
+                    self.cancelled = True
+                    raise
+                raise AssertionError("unreachable")
+
+        control = BlockingControl()
+        media = BlockingMedia()
+        session = DesktopSession(
+            ClientConfig(
+                director_url="https://director.test",
+                bootstrap_token="secret",
+                device_id="desktop-1",
+            )
+        )
+        session._state = SessionState(opened)
+        session._wss = control  # type: ignore[assignment]
+        session._udp = media  # type: ignore[assignment]
+
+        loop = asyncio.get_running_loop()
+        unhandled: list[dict[str, object]] = []
+        previous_handler = loop.get_exception_handler()
+        loop.set_exception_handler(lambda _loop, context: unhandled.append(context))
+        try:
+            receiving = asyncio.create_task(session.next_event())
+            await asyncio.wait_for(
+                asyncio.gather(control.started.wait(), media.started.wait()),
+                timeout=1,
+            )
+            receiving.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await receiving
+            await asyncio.sleep(0)
+        finally:
+            loop.set_exception_handler(previous_handler)
+
+        assert control.cancelled is True
+        assert media.cancelled is True
+        assert unhandled == []
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("failing_child", ["control", "media"])
+def test_udp_event_race_propagates_child_transport_error_and_reaps_sibling(failing_child: str) -> None:
+    async def scenario() -> None:
+        udp_grant = UdpGrant(
+            host="voice.test",
+            port=8443,
+            expires_at_ms=2_000_000,
+            refresh_after_ms=1_000,
+            uplink_key=b"0" * 16,
+            uplink_salt=b"1" * 8,
+            downlink_key=b"2" * 16,
+            downlink_salt=b"3" * 8,
+            probe_timeout_ms=500,
+        )
+        opened = SessionOpened(
+            request_id="open-1",
+            session_id="session-1",
+            session_epoch="epoch-1",
+            media_id=opened_session().media_id,
+            media_epoch=7,
+            selected_profile=MediaProfile.UDP_OPUS_GCM_V1,
+            heartbeat_interval_ms=15_000,
+            idle_timeout_ms=45_000,
+            udp_grant=udp_grant,
+        )
+        failure = TransportError(f"{failing_child}_failed", "original failure", retryable=True)
+
+        class ControlledControl:
+            def __init__(self) -> None:
+                self.started = asyncio.Event()
+                self.cancelled = False
+
+            async def receive(self) -> str:
+                self.started.set()
+                if failing_child == "control":
+                    await media.started.wait()
+                    raise failure
+                try:
+                    await asyncio.Event().wait()
+                except asyncio.CancelledError:
+                    self.cancelled = True
+                    raise
+                raise AssertionError("unreachable")
+
+        class ControlledMedia:
+            refresh_due = False
+
+            def __init__(self) -> None:
+                self.started = asyncio.Event()
+                self.cancelled = False
+
+            async def receive_audio(self) -> MediaFrame:
+                self.started.set()
+                if failing_child == "media":
+                    await control.started.wait()
+                    raise failure
+                try:
+                    await asyncio.Event().wait()
+                except asyncio.CancelledError:
+                    self.cancelled = True
+                    raise
+                raise AssertionError("unreachable")
+
+        control = ControlledControl()
+        media = ControlledMedia()
+        session = DesktopSession(
+            ClientConfig(
+                director_url="https://director.test",
+                bootstrap_token="secret",
+                device_id="desktop-1",
+            )
+        )
+        session._state = SessionState(opened)
+        session._wss = control  # type: ignore[assignment]
+        session._udp = media  # type: ignore[assignment]
+
+        loop = asyncio.get_running_loop()
+        unhandled: list[dict[str, object]] = []
+        previous_handler = loop.get_exception_handler()
+        loop.set_exception_handler(lambda _loop, context: unhandled.append(context))
+        try:
+            with pytest.raises(TransportError) as caught:
+                await session.next_event()
+            await asyncio.sleep(0)
+        finally:
+            loop.set_exception_handler(previous_handler)
+
+        assert caught.value is failure
+        assert caught.value.code == f"{failing_child}_failed"
+        assert caught.value.retryable is True
+        assert (media.cancelled if failing_child == "control" else control.cancelled) is True
+        assert unhandled == []
+
+    asyncio.run(scenario())
+
+
 @pytest.mark.parametrize("operation", ["close", "reopen"])
 def test_session_teardown_finishes_when_caller_is_cancelled(operation: str) -> None:
     async def scenario() -> None:

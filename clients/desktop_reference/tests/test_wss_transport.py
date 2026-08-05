@@ -89,6 +89,28 @@ def test_wss_close_finishes_when_caller_is_cancelled() -> None:
     asyncio.run(scenario())
 
 
+def test_wss_abnormal_receive_preserves_retryable_transport_error() -> None:
+    async def scenario() -> None:
+        class FailedConnection(FakeConnection):
+            async def recv(self) -> str | bytes:
+                raise ConnectionError("peer reset")
+
+        connection = FailedConnection()
+
+        async def connector(_url: str, _headers: dict[str, str]) -> FailedConnection:
+            return connection
+
+        transport = WssTransport(connector)
+        await transport.open("wss://worker.test/rva/v1/voice", grant="secret-grant", device_id="desktop-1")
+        with pytest.raises(TransportError) as caught:
+            await transport.receive()
+        assert caught.value.code == "wss_receive_failed"
+        assert caught.value.detail == "ConnectionError"
+        assert caught.value.retryable is True
+
+    asyncio.run(scenario())
+
+
 def test_default_websocket_logger_redacts_authorization_grant(monkeypatch, caplog) -> None:
     async def scenario() -> None:
         captured: dict[str, object] = {}
