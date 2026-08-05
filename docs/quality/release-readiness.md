@@ -1,7 +1,7 @@
 # Release readiness
 
 更新日期：2026-08-05
-状态：当前候选 host/弱网/30m 已验证 / fresh bundle 与 HIL 尚未执行
+状态：当前候选 host/弱网/30m 与 fresh bundle 已验证 / 新 bundle HIL 尚未执行
 
 本文只记录当前 Product 候选和可复核的发布门禁。历史 artifact、临时地址、SSID、原始串口日志和旧协议结论不构成
 当前 release evidence；未执行的门禁保持 `not_run` 或 `incomplete`。
@@ -33,17 +33,21 @@ successor可以继承代码行为证据，但最终 artifact identity和构建�
 
 - 分支：`codex/provisioning-weaknet-v0.2`
 - 当前实现 source：`02c8154`（包含 provisioning、capacity/churn、Desktop lifecycle 与 netem harness）
-- 状态：实现已形成可恢复本地提交；最终push、fresh bundle provenance与真机HIL完成前仍不是release-ready
+- 状态：实现已push并从clean source生成fresh bundle；真机HIL完成前仍不是release-ready
 - 当前新鲜host门禁：root `74 passed`、Server `367 passed, 3 skipped`、Desktop Reference `124 passed`
 - provisioning tools：`34 passed`；官方ESP-IDF 5.5.2 generator生成`24576-byte` NVS image通过
-- 当前快照的fresh public bundle build、flash、provision、readback、NVS preserve/erase和双协议HIL：`not_run`
+- fresh public bundle source：`e0ea539408cee2c785c596b76d8c626d63ccc4cf`
+- fresh public bundle SHA-256：`0358f3061f5158e76ec08b644806bc4db822cee29fa102ee2303379af02edf43`
+- fresh application SHA-256：`6d6755f4645db6ba49c07a9c43d9d7c26ccaa9e52d9c4bb51eca1e32b57d9622`
+- fresh bundle build/manifest/checksum/CLI validate与五镜像flash dry-run：`build_passed / host_verified`
+- fresh bundle真机flash、provision、readback、NVS preserve/erase和双协议HIL：`not_run`
 
-本节的host/远端结果绑定上述实现提交；artifact evidence仍必须由clean source构建生成的provenance和digest补齐。
+本节的host/远端结果绑定上述实现提交；bundle evidence绑定精确clean source与digest，不能替代真机HIL。
 
 ## 软件与构建门禁
 
-本轮候选新增公共 bundle provisioning CLI、容量/churn 与 netns/netem harness；尚不存在新的fresh bundle digest，
-因此不替换上节已登记 artifact identity。当前 host 验证事实为：provisioning tools
+本轮候选新增公共 bundle provisioning CLI、容量/churn 与 netns/netem harness，并已从clean `e0ea539`构建新的
+fresh bundle；该bundle尚未完成HIL，因此不替换上节的`device_verified` artifact identity。当前 host 验证事实为：provisioning tools
 `34 passed`，并使用官方 ESP-IDF 5.5.2 NVS generator成功生成固定 `24576-byte` image；capacity harness已对 WSS与
 UDP执行 1/5并发阶梯并标记 `measured`，每个成功 session要求非零上行、固定下行帧数、唯一 playback闭环和必需
 事件，同时验证 Worker `active_sessions=0`、子进程/端口回收及 orphan task修复。第一条测试lease的释放由随后
@@ -199,7 +203,7 @@ reboot loop。MIC会话触发由日志闭环，用户另行确认 `Hi ESP` 语�
 | Product commit + CI | `host_verified` | `3f207a5` 已 push；本地完整门禁与 GitHub Actions run `30875773937`通过；`6fddf82`仅为 evidence 文档 |
 | Server immutable archive | `public_path_verified` | `3f207a5` 只读 archive strict check、部署和 rollback保留通过 |
 | Linux Director/Worker readiness | `public_path_verified` | 当前 release ready，profiles、capacity、provider、coordination和 UDP socket正常 |
-| Native clean build + size | `build_passed / image_sized` | `6fddf82` public bundle release-eligible，五镜像/provenance/SHA-256完整，app余量47% |
+| Native clean build + size | `build_passed / image_sized` | fresh `e0ea539` bundle release-eligible，SHA-256 `0358f306...edf43`，app余量47% |
 | Flash/boot/display/touch | `device_verified` | public五分区hash verified；app identity、显示、触摸、Qwen字体、AFE无异常 |
 | Wi-Fi/NVS/bootstrap | `device_verified` | 空NVS按预期进入provisioning；临时private NVS input未进入bundle/Git，公网bootstrap成功 |
 | WSS voice loop | `device_verified` | public bundle两轮，374/94包、1122 PCM frames、normal close/release、0 invalid/overload |
@@ -208,7 +212,7 @@ reboot loop。MIC会话触发由日志闭环，用户另行确认 `Hi ESP` 语�
 | End-to-end latency | `not_run` | alpha known limitation；未承诺固定 p50/p95/p99 SLO |
 | Weak network | `host_verified / performance incomplete` | 90-cell为83 completed、2 bounded recovery、5预期UDP blocked，各组5/5；无seed且无物理/性能指标，不构成transport优劣或SLO |
 | Stability / capacity | `30m measured / incomplete` | WSS/UDP远端独立30分钟分别`18013/18013`与`17855/17855`；2小时、continuous-session和multi-Worker drain未完成 |
-| Public provisioning CLI HIL | `not_run` | 34项host test和官方NVS generator通过；新CLI的真机flash/provision/readback/erase尚未执行 |
+| Public provisioning CLI HIL | `host_verified / device not_run` | fresh bundle validate与五镜像dry-run通过；真机flash/provision/readback/preserve/erase尚未执行 |
 | AEC/acoustic | `out_of_scope` | 当前开源定位不以 NS/ASR/AEC 主观效果为 release gate |
 | Security/repository | `host_verified / production incomplete` | 当前 secret/repository scan通过；103组件 release SBOM已生成并校验；TLS、漏洞扫描和入口限流仍由部署方完成 |
 
