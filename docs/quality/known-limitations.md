@@ -12,6 +12,9 @@
   受信 HTTPS/WSS gateway；UDP 需单独配置防火墙、NAT 和暴露端口。
 - 单机 Compose 是可复现部署基线，不是高可用拓扑。Redis、主机或唯一 Worker 故障会影响新 session 建立。
 - 示例配置只含占位符。设备 provisioning、secret rotation、撤销、审计和生产证书生命周期由部署方负责。
+- 公共 bundle 工具可避免把凭据放入 firmware image、argv、日志或 Git，并在 NVS 写入后执行 readback digest校验；
+  当前 reference firmware 未启用 NVS encryption，物理 flash读取仍可恢复已 provisioned credential。临时文件删除也
+  不等于 SSD 安全擦除。
 
 ## Endpoint 与协议边界
 
@@ -27,8 +30,14 @@
 
 ## 尚未形成发布承诺的指标
 
-- 尚未完成固定 loss/burst/jitter/reorder 模型下的弱网矩阵。
-- 尚未形成绑定最终 release artifact 的长时间 soak、延迟 p50/p95/p99、CPU/RSS/heap 和容量 SLO。
+- 早期8-cell、1-repeat netem结果只是已被扩展矩阵取代的小样本。修复后的90-cell全量重跑为83次完整
+  `completed`、2次严格`bounded_recovery_verified`和5次预期UDP blocked，各scenario/profile组均为5/5。loss场景
+  只有完整`completed`，或同时证明playback stopped、fresh reopen、
+  旧媒体隔离和资源清理的`bounded_recovery_verified`才可接受；non-loss场景不得用恢复替代成功。目标`tc`不支持seed，
+  `paired_randomness=false`；逻辑pair不能解释为相同随机序列，也不能据此声称WSS/UDP性能优劣。
+- Host 已验证 1/5 并发的 WSS/UDP 短 session容量阶梯及完整资源回收。当前候选source的远端独立30分钟
+  short-session churn为WSS `18013/18013`、UDP `17855/17855`，最终active session均为0且进程/端口回收通过。2小时和同一session
+  continuous soak仍为`not_run`，后者runner尚未实现。1/5均为单Worker场景，也不提供multi-Worker drain或容量SLO。
 - AEC、NS、VAD、远场拾音、double-talk 和 ASR 中文准确率没有形成跨环境声学指标；当前真机证据只证明端云链路，
   不代表特定噪声环境中的识别或主观音质。
 - `VOICE_WORKER_MAX_SESSIONS=5` 是可配置启动值，不是测量容量。
@@ -41,7 +50,9 @@
 - Release SBOM 是锁定组件清单，不是漏洞扫描结论。字体、Python native wheel、FFmpeg/PyAV、PortAudio 等依赖仍须由
   实际二进制发布方按目标平台复核许可证和分发义务。
 
-上述限制不影响当前 alpha 对已登记 wire、资源有界生命周期、当前 Server/Firmware 组合的 WSS/UDP 真机闭环，
-以及 Linux 单节点部署基线的验证结论。公共无凭据 firmware bundle已完成可复现构建、size、provenance、分发内容校验
-和临时NVS provisioning后的WSS/UDP真机门禁；bundle不携带可直接联网的凭据，部署方仍须提供安全provisioning。
-UDP继续保持显式opt-in，弱网矩阵仍未完成。
+上述限制不影响上一可恢复 alpha baseline 对已登记 wire、资源有界生命周期和 WSS/UDP 真机闭环，
+以及 Linux 单节点部署基线的验证结论。上一公共无凭据 firmware bundle已完成可复现构建、size、provenance、临时
+NVS provisioning和WSS/UDP真机门禁；本轮新增的通用 `validate/flash/provision/erase-config` CLI 已通过 host tests，
+但尚未对新生成 bundle 执行真机 provisioning/readback/erase 回归。bundle不携带可直接联网的凭据，部署方仍须
+提供安全 provisioning。当前tooling/weaknet实现已形成本地提交，但仍须push并完成fresh bundle/HIL后才能获得新的发布身份。
+UDP继续保持显式 opt-in；90-cell host矩阵通过不替代真机弱网、物理播放或性能SLO。

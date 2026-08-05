@@ -95,6 +95,28 @@
 reorder 和带宽限制。采集 p50/p95/p99 speech-end-to-playout、media age、late/loss/PLC、underrun、stop tail。
 实验参数和通过门限在首次 baseline 后写入固定实验，不在本文拍脑袋给数字。
 
+Product的Linux netns harness先提供`isolated_loopback_netns` completion matrix：按Worker media port应用netem，
+同一scenario/repeat只保证逻辑`pair_id`相同。只有`tc`接受seed且raw/aggregate记录`tc_seed_control=applied`和
+`paired_randomness=true`时，才能声称WSS/UDP共享受控随机序列；fallback无seed时必须记录
+`tc_seed_control=unavailable`、`paired_randomness=false`和降级后的`comparison_limit`，不得把逻辑pair解释为随机
+扰动配对。用独立TCP `30:`/UDP `40:` handle及profile-specific counter验证规则命中，检查严格媒体闭环和最终
+`active_sessions=0`。clean或不适用profile不要求impairment counter；loss/reorder规则已命中但有限样本没有实际
+drop/reorder时必须记录`no_impairment_observed`，不能写成已观察到扰动。route语义必须区分
+“第一条lease由二次reacquire证明已释放”和“最终lease只收到release request accepted”。仅有session completion
+latency和qdisc/filter counters时必须标记`completion_only`；没有media age、late/loss/PLC与物理播放测量，不得升级
+为transport性能比较。
+
+真实Linux执行若在seed capability、namespace/qdisc或TIME_WAIT端口回收探针等前置条件失败，矩阵状态保持
+failed prerequisite / `not_run`。前置问题修复后可把实际通过的代表cell登记为`host_verified/completion_only`，但
+1-repeat代表矩阵不能继承为完整scenario/repeats、性能比较或release gate通过；每个证据声明必须列出实际scenario、
+profile、repeat和aggregate capability字段。
+
+完整矩阵必须显式覆盖首个媒体包、帧间媒体包和最终媒体包丢失。loss场景只接受两类结果：严格完整的`completed`；
+或`bounded_recovery_verified`，且后者必须同时证明实际发生drop、Endpoint上报`playback.ended=stopped`、fresh session
+identity变化、旧generation媒体未恢复、Worker `active_sessions=0`、route可重新获取以及进程/端口回收。non-loss场景
+不得用bounded recovery替代完整成功；首包丢失后只播放剩余内容却上报`completed`也必须失败。任一cell失败时aggregate
+不得继承旧小矩阵的passed状态，修复后必须完整fresh rerun。
+
 ### 声学
 
 固定设备朝向、扬声器音量、麦克风距离、房间、背景噪声和测试话术。覆盖静音、近讲、远讲、TTS 播放中
@@ -104,6 +126,12 @@ double-talk 和连续 20 轮。采集误唤醒、漏检、ASR CER/人工转写�
 
 - 单设备 30 分钟：heap/stack high-water、queue、socket、provider client、underrun 和 reconnect。
 - 并发阶梯：1/5/10/...，但不得假设默认 `5` 已测量。
+- Host capacity/churn的session必须同时满足非零上行、预期下行帧数、唯一完整playback、必需事件、Worker active
+  归零和进程/端口回收；Desktop client正常返回本身不能算成功。第一条route释放可由二次reacquire证明，最终测试
+  lease只验证release request accepted。Worker drain只在实际启动至少两个Worker时形成证据。
+- 重复短session的30分钟/2小时churn与同一session连续存活的soak是不同证据，执行状态必须分别记录；runner未实现
+  时使用`not_run/not_implemented`，不能只写笼统的长稳未测。
+- 30分钟和2小时结果按profile分别登记；一个profile通过不代表另一profile或双profile release gate通过。
 - cancellation storm、provider 429/timeout、Worker drain/crash、Redis 短时故障。
 - bootstrap 200 后本地 WSS/task allocation 失败、exact release、立即 fresh bootstrap；以及 WSS teardown 无法确认时
   fail-closed restart，不允许旧 owner 与新 session 并存。

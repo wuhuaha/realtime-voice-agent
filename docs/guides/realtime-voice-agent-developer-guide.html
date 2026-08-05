@@ -137,13 +137,13 @@
   <a class="skip" href="#content">跳到正文</a>
   <header class="masthead">
     <div class="masthead-inner">
-      <div class="document-line"><span class="document-mark">RVA / ENGINEERING MANUAL</span><span>2026-08-03 · v0.1 alpha candidate</span></div>
+      <div class="document-line"><span class="document-mark">RVA / ENGINEERING MANUAL</span><span>2026-08-05 · v0.1 alpha candidate</span></div>
       <div class="hero">
         <div class="hero-copy">
           <span class="eyebrow">端侧、协议、服务端的一份共同地图</span>
           <h1>Realtime Voice Agent<br>端云开发手册</h1>
           <p class="lede">面向 ESP32、Server 和平台开发人员，说明 native ESP-IDF endpoint、RVA 控制协议、WSS/UDP 媒体和 LiveKit Agent runtime 的职责与调试路径。</p>
-          <div class="status-row"><span class="status accepted">CI 7 / 7</span><span class="status accepted">WSS DEVICE VERIFIED</span><span class="status accepted">HISTORICAL UDP HIL</span><span class="status not-run">PUBLIC BUNDLE NOT RUN</span><span class="status not-run">ALPHA · NOT PRODUCTION READY</span></div>
+          <div class="status-row"><span class="status accepted">LAST DURABLE BUNDLE HIL</span><span class="status accepted">WORKTREE HOST TESTS PASS</span><span class="status not-run">WEAKNET REPAIR IN PROGRESS</span><span class="status not-run">FRESH BUNDLE / HIL NOT RUN</span><span class="status not-run">ALPHA · NOT PRODUCTION READY</span></div>
         </div>
         <div class="signal-board" aria-label="端云四条责任通道">
           <div class="signal-title">SIGNAL OWNERSHIP / 从设备动作到语音输出</div>
@@ -160,7 +160,7 @@
       <div class="toc-title">CONTENTS</div>
       <a href="#authority">文档权威</a><a href="#architecture">系统架构</a><a href="#server">Server</a>
       <a href="#firmware">Firmware</a><a href="#protocol">RVA 协议</a><a href="#lifecycle">生命周期</a>
-      <a href="#workflow">开发流程</a><a href="#quality">验证矩阵</a><a href="#compatibility">兼容边界</a><a href="#sources">源码入口</a>
+      <a href="#workflow">开发与交付</a><a href="#quality">验证矩阵</a><a href="#compatibility">兼容边界</a><a href="#sources">源码入口</a>
     </nav>
     <main id="content">
       <section id="authority"><div class="section-head"><span class="section-no">00 / AUTHORITY</span><h2>先知道什么才是最终事实</h2></div>
@@ -193,7 +193,7 @@
       <section id="lifecycle"><div class="section-head"><span class="section-no">05 / LIFECYCLE</span><h2>打断正确性来自 owner 与 generation</h2></div>
         <table><thead><tr><th>不变量</th><th>失败时必须发生</th></tr></thead><tbody><tr><td>一个 session 一个 control owner</td><td>重复 open 或 split-brain 明确拒绝</td></tr><tr><td>playback generation 单调增加</td><td>旧 callback、queue、datagram 不能进入 DAC</td></tr><tr><td>cancel target 精确</td><td>未知或 stale target 不猜测相近 response</td></tr><tr><td>close 幂等且有界</td><td>先 revoke admission，再停止 task/socket，最后释放资源</td></tr><tr><td>fresh reconnect</td><td>旧 epoch、key、grant、sequence 全部失效</td></tr></tbody></table>
       </section>
-      <section id="workflow"><div class="section-head"><span class="section-no">06 / WORKFLOW</span><h2>开发顺序围绕可运行纵向闭环</h2></div>
+      <section id="workflow"><div class="section-head"><span class="section-no">06 / WORKFLOW</span><h2>开发与交付都围绕可运行纵向闭环</h2></div>
          <pre><code># Server（Linux/container）
 uv sync --directory server --locked --all-packages --dev
 uv run session-director
@@ -207,12 +207,31 @@ idf.py size
 
 # 只有设备与端口已确认并获授权后
 idf.py -p "$RVA_ESPPORT" flash monitor</code></pre>
+        <h3>公共 bundle 与设备私有配置分离</h3>
+        <p>发布 bundle 只包含五个公共 firmware image、manifest、checksum、烧录说明和 provisioning CLI；它不包含 Wi-Fi、Director URL 或 bootstrap credential，也不写配置 NVS。设备私有配置由部署人员在目标环境单独写入。</p>
+        <pre><code># 在解压后的公共 bundle 中校验并预览五镜像烧录
+python rva-device-provision.py validate --bundle .
+python rva-device-provision.py flash --bundle . --dry-run
+
+# 烧录公共镜像；保留已有配置 NVS
+python rva-device-provision.py flash --bundle . --port COMx
+
+# 从仓库和 bundle 外的私有 JSON 只写配置 NVS，并 readback 校验 SHA-256
+python rva-device-provision.py provision --bundle . --config /secure/device.json \
+  --idf-path /path/to/esp-idf-v5.5.2 --idf-python /path/to/idf-python --port COMx
+
+# 仅清除配置 NVS，使设备返回 provisioning UI
+python rva-device-provision.py erase-config --bundle . --port COMx</code></pre>
+        <div class="notice">密码和 bootstrap token 不通过命令行参数传递；使用仓库外的私有 JSON 或隐藏交互输入。当前参考 firmware 未启用 NVS encryption，因此必须使用每设备、最小权限、可撤销的 bootstrap token，并按部署策略处理私有配置文件。</div>
         <div class="notice notice-danger">候选构建成功不等于最终镜像或设备通过。生命周期修复后必须 fresh rebuild；没有当前 artifact 的串口、hash、端云 trace 或声学证据时，对应状态必须是 <code>not_run</code>。</div>
       </section>
       <section id="quality"><div class="section-head"><span class="section-no">07 / QUALITY</span><h2>把快循环和发布证据分开</h2></div>
         <table><thead><tr><th>证据层</th><th>必须证明</th><th>不能替代</th></tr></thead><tbody><tr><td>contract_verified</td><td>schema、fixtures 与双端 parser 一致</td><td>真实网络和设备行为</td></tr><tr><td>build_passed</td><td>fresh 配置完成编译链接</td><td>外设、音频与网络可用</td></tr><tr><td>device_verified</td><td>指定当前 artifact 与指定 media profile 完成字幕、播放与关闭闭环</td><td>其他 profile、声学和弱网指标</td></tr><tr><td>acoustic_verified</td><td>近讲、远讲、double-talk 与自回授受控</td><td>长时间稳定性</td></tr><tr><td>measured</td><td>固定环境的 soak、延迟、queue 与弱网样本可复核</td><td>其他硬件和部署环境</td></tr></tbody></table>
-          <div class="notice">当前候选已覆盖 repository、Server、Desktop Reference、Redis integration、WSS/UDP host E2E、native host contracts 与 ESP-IDF build/size 门禁，并已有公网 Linux 和 ESP32-S3 HIL 证据。精确 commit、CI run、artifact digest 和仍待执行的门禁统一由 <a href="../quality/release-readiness.md">Release readiness</a> 维护；本文不复制易过期的候选身份。</div>
-         <div class="split"><div class="panel"><h3>当前已验证</h3><p>当前 Server/Firmware artifact已完成 <code>wss-opus/1</code> 双向媒体、完整 playback、normal close、exact release与零 overload门禁；<code>udp-opus-gcm/1</code> 的 authenticated probe、source pinning、完整 playback和normal close已有绑定历史 artifact的证据。</p></div><div class="panel"><h3>当前仍未完成</h3><p>UDP 尚未在当前 freshness 修复 source上重跑。公开无凭据 bundle、固定弱网矩阵、绑定最终 artifact的长时间 soak、延迟分位数和跨环境声学指标仍为 <code>not_run/incomplete</code>。</p></div></div>
+          <div class="notice">上一可恢复 Server/Firmware/bundle 已有公网 Linux 和 ESP32-S3 双协议 HIL；当前 provisioning/weaknet 实现已形成本地提交并具备 host/远端验证信号，但 fresh bundle 与真机 HIL 尚未执行。精确 commit、CI run、artifact digest 和仍待执行的门禁统一由 <a href="../quality/release-readiness.md">Release readiness</a> 维护。</div>
+         <div class="split"><div class="panel"><h3>上一设备闭环</h3><p>上一绑定 artifact 的 <code>wss-opus/1</code> 与 <code>udp-opus-gcm/1</code> 均达到 <code>device_verified</code>：双向媒体、字幕、完整 playback、normal close 和会话回收已有证据。该结论不会自动继承到当前新实现。</p></div><div class="panel"><h3>公共交付工具</h3><p>无凭据 bundle 的 manifest/checksum 校验、固定分区边界、五镜像保留 NVS 烧录计划，以及官方 ESP-IDF generator 生成配置 NVS并 readback 校验的工具链已有 34 项 host tests。最终 fresh bundle 在真机上的 flash → provision → WSS/UDP → preserve/erase HIL 仍为 <code>not_run</code>。</p></div></div>
+         <div class="split"><div class="panel"><h3>Capacity / churn harness</h3><p>host harness 用可配置并发阶梯检查完整会话、playback facts、active session 归零与进程/端口回收。远端 WSS/UDP 独立 30 分钟 short-session churn 已分别完成 18013/18013 与 17855/17855；这不等于 2 小时或 continuous-session soak。</p></div><div class="panel"><h3>Weak-network harness</h3><p><code>isolated_loopback_netns</code> + <code>tc/netem</code> harness 以 profile-specific counter 证明规则和实际 drop。loss 只接受完整 <code>completed</code>，或严格证明 stopped、fresh reopen、旧媒体隔离与资源回收的 <code>bounded_recovery_verified</code>；non-loss 场景不得用恢复替代成功。无 seed 时逻辑 pair 不代表相同随机序列。</p></div></div>
+         <div class="notice">旧 8-cell 小样本已被 90-cell 扩展运行取代。严格 bounded recovery 修复后的 fresh rerun 为 83 次完整 completed、2 次 bounded recovery、5 次预期 UDP blocked，各 scenario/profile 组均为 5/5。该结果是 host completion/recovery 证据，不是物理播放或 transport 性能优劣证明。</div>
+         <div class="notice notice-danger">当前候选source的双 profile 30 分钟结果不能外推到 2 小时或同一 session continuous soak。最终 fresh public bundle + ESP32-S3 flash/provision/readback/preserve/erase/WSS/UDP HIL 均为 <code>not_run</code>。最终门禁身份以 <a href="../quality/release-readiness.md">Release readiness</a> 为准。</div>
       </section>
       <section id="compatibility"><div class="section-head"><span class="section-no">08 / COMPATIBILITY</span><h2>已退役兼容面不进入当前产品</h2></div>
         <p class="section-intro">Current Product endpoint 先经 Director bootstrap 获取 worker-bound grant，再连接选定 Worker 的 <code>/rva/v1/voice</code>；设备 wire 仅为 <code>rva/1</code> 与 <code>wss-opus/1</code> / <code>udp-opus-gcm/1</code>。</p>

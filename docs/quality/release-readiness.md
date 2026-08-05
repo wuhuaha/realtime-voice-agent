@@ -1,12 +1,12 @@
 # Release readiness
 
-更新日期：2026-08-04
-状态：WSS/UDP device verified / alpha release work remains
+更新日期：2026-08-05
+状态：当前候选 host/弱网/30m 已验证 / fresh bundle 与 HIL 尚未执行
 
 本文只记录当前 Product 候选和可复核的发布门禁。历史 artifact、临时地址、SSID、原始串口日志和旧协议结论不构成
 当前 release evidence；未执行的门禁保持 `not_run` 或 `incomplete`。
 
-## 当前候选身份
+## 上一可恢复发布基线
 
 - 分支：`main`
 - 当前 Server source：`3f207a51f42c2a7d53982a5ab9b3117795549f62`
@@ -15,12 +15,12 @@
 - 当前 private sdkconfig SHA-256：`960d1a7e41bf0604a827e0e5430195b2b9962b2a20b6aef6599a0965c5be0557`
 - 当前 Server release：`rva-20260804T034936Z-3f207a5`
 - 当前 Server archive SHA-256：`24341a1a94e4a993900a3accfc899b6039e9d4b6f63f96568acd0deb46b07642`
-- 当前 WSS HIL：`device_verified`
-- 当前 UDP HIL：`device_verified`
+- WSS HIL：`device_verified`
+- UDP HIL：`device_verified`
 - 当前 public release bundle source：`6fddf82654460ae1bf2a3244cbca8d5bceac41d6`
 - 当前 public release bundle SHA-256：`e63d799cce524bab65b45a582592776f88c92072dbea2ce45ae1ad1865c6f3be`
 - 当前 public release app SHA-256：`316a1aeff6022c385f12e7ab39367e9a73679a38a150160fccc14610bd865e06`
-- 当前 public release bundle：`device_verified`
+- public release bundle：`device_verified`
 
 当前 HIL 使用 `c1dc5bb` Firmware 与 `3f207a5` Server。Server 的 bounded WSS catch-up 只处理尚未 decode 的孤立
 stale packet；catch-up 不收敛、partial runner push、UDP stale 和真实 backpressure 仍 fail closed。Firmware 由 clean
@@ -29,7 +29,43 @@ source 和 ignored/private Kconfig input 构建；private input、凭据和 imag
 provisioning、WSS和UDP真机门禁。若正式 tag不再指向该 source identity，仍须从最终 tag source重建；docs-only
 successor可以继承代码行为证据，但最终 artifact identity和构建校验必须重新生成。
 
+## 当前候选身份
+
+- 分支：`codex/provisioning-weaknet-v0.2`
+- 当前实现 source：`02c8154`（包含 provisioning、capacity/churn、Desktop lifecycle 与 netem harness）
+- 状态：实现已形成可恢复本地提交；最终push、fresh bundle provenance与真机HIL完成前仍不是release-ready
+- 当前新鲜host门禁：root `74 passed`、Server `367 passed, 3 skipped`、Desktop Reference `124 passed`
+- provisioning tools：`34 passed`；官方ESP-IDF 5.5.2 generator生成`24576-byte` NVS image通过
+- 当前快照的fresh public bundle build、flash、provision、readback、NVS preserve/erase和双协议HIL：`not_run`
+
+本节的host/远端结果绑定上述实现提交；artifact evidence仍必须由clean source构建生成的provenance和digest补齐。
+
 ## 软件与构建门禁
+
+本轮候选新增公共 bundle provisioning CLI、容量/churn 与 netns/netem harness；尚不存在新的fresh bundle digest，
+因此不替换上节已登记 artifact identity。当前 host 验证事实为：provisioning tools
+`34 passed`，并使用官方 ESP-IDF 5.5.2 NVS generator成功生成固定 `24576-byte` image；capacity harness已对 WSS与
+UDP执行 1/5并发阶梯并标记 `measured`，每个成功 session要求非零上行、固定下行帧数、唯一 playback闭环和必需
+事件，同时验证 Worker `active_sessions=0`、子进程/端口回收及 orphan task修复。第一条测试lease的释放由随后
+epoch/fencing前进的reacquire证明；最终测试lease只验证release request被接受。1/5均为单Worker场景，不提供
+multi-Worker drain证据。上述是当前实现source的host evidence，不属于fresh firmware artifact或真机证据。
+
+早期8-cell、1-repeat Linux snapshot只是一项已被扩展矩阵取代的小样本。首次完整
+`9 scenarios x 2 profiles x 5 repeats`运行共90次，WSS全部满足，但UDP在3% random loss有1/5、5% random loss有
+2/5失败；失败均实际丢失1个UDP包，session/route清理正常。当前修复把结果严格区分为完整`completed`和
+`bounded_recovery_verified`：后者只允许用于实际发生UDP loss且明确观察到playback stopped、fresh session identity、
+旧媒体未恢复、active session归零与route reacquire的场景；non-loss场景不得用恢复替代成功。修复后的完整矩阵
+fresh rerun为`all_expectations_met=true`、`attempts=90`：83次完整`completed`、2次严格
+`bounded_recovery_verified`、5次预期`udp_probe_timeout`，每个scenario/profile组均为5/5。目标`tc`不支持seed，
+aggregate为`evidence_scope=completion_and_bounded_recovery`、`paired_randomness=false`、
+`comparison_limit=completion_and_bounded_recovery_unpaired_random_impairment`；没有media age、late/loss/PLC或物理播放
+数据时仍不得声明性能SLO或transport优劣。
+
+远端UDP short-session churn已连续运行`1800.038s`并完成`17855/17855`个严格媒体闭环，p50/p95/p99为
+`32.523/42.102/58.014ms`、最大`181.659ms`。远端WSS也连续运行`1800.050s`并完成`18013/18013`，
+p50/p95/p99为`31.849/41.710/49.143ms`、最大`144.454ms`。两轮最终active session均为0且进程/端口回收通过。
+2小时short-session churn与continuous-session soak均为`not_run`，后者runner尚未实现。使用新CLI进行真机
+flash/provision/readback/preserve/erase也为`not_run`。单个profile通过不能外推为另一profile或双profile门禁通过。
 
 历史 GitHub Actions 已覆盖 `repository`、`server`、`desktop-reference`、Linux host E2E、Redis integration、native
 host contracts 和 ESP-IDF build/size。当前 `3f207a5` 本地完整门禁为 root `52 passed`、Server
@@ -170,8 +206,9 @@ reboot loop。MIC会话触发由日志闭环，用户另行确认 `Hi ESP` 语�
 | UDP admission/bootstrap | `device_verified` | public bundle完成AEAD probe、source pinning，elapsed 47 ms、invalid 0 |
 | UDP voice loop | `device_verified` | public bundle两轮双向Opus，462/82包、1386 PCM frames、normal close、0 invalid/overload |
 | End-to-end latency | `not_run` | alpha known limitation；未承诺固定 p50/p95/p99 SLO |
-| Weak network | `not_run` | 当前 deterministic fault matrix通过；真实 random/burst/jitter/netem仍未测 |
-| Stability | `incomplete` | 当前 source完成 fault matrix、618.982秒短 churn和短 HIL；一次 Windows harness readiness超时尚未定因，且未重跑长 soak |
+| Weak network | `host_verified / performance incomplete` | 90-cell为83 completed、2 bounded recovery、5预期UDP blocked，各组5/5；无seed且无物理/性能指标，不构成transport优劣或SLO |
+| Stability / capacity | `30m measured / incomplete` | WSS/UDP远端独立30分钟分别`18013/18013`与`17855/17855`；2小时、continuous-session和multi-Worker drain未完成 |
+| Public provisioning CLI HIL | `not_run` | 34项host test和官方NVS generator通过；新CLI的真机flash/provision/readback/erase尚未执行 |
 | AEC/acoustic | `out_of_scope` | 当前开源定位不以 NS/ASR/AEC 主观效果为 release gate |
 | Security/repository | `host_verified / production incomplete` | 当前 secret/repository scan通过；103组件 release SBOM已生成并校验；TLS、漏洞扫描和入口限流仍由部署方完成 |
 

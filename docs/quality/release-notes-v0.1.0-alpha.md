@@ -2,6 +2,9 @@
 
 状态：release candidate / not release-ready
 
+> 本文的设备与artifact摘要描述上一可恢复alpha baseline，不代表当前未提交工作快照已经release-ready。
+> 当前身份、门禁和未运行项以 [Release readiness](release-readiness.md) 为准。
+
 `v0.1.0-alpha` 是 realtime-voice-agent 的首个开源技术预览。它聚焦低资源 endpoint 与 LiveKit Agents 之间的
 roomless 实时语音接入，不把具体闲聊业务、模型效果或完整 RTC 能力作为产品核心。
 
