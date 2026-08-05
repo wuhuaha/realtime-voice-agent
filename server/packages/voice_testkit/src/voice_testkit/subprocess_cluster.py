@@ -121,19 +121,39 @@ def _stop_process(process: subprocess.Popen[bytes], *, timeout: float = 5) -> No
         process.wait(timeout=timeout)
 
 
+def _rebind_tcp_port(port: int) -> socket.socket | None:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+        probe.settimeout(0.1)
+        if probe.connect_ex(("127.0.0.1", port)) == 0:
+            return None
+    candidate = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        if hasattr(socket, "SO_EXCLUSIVEADDRUSE"):
+            candidate.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+        else:
+            # Uvicorn enables address reuse. Match its restart semantics after the
+            # connect gate has proven that no process is still accepting traffic.
+            candidate.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        candidate.bind(("127.0.0.1", port))
+        candidate.listen(1)
+    except OSError:
+        candidate.close()
+        return None
+    return candidate
+
+
 def _ports_released(cluster: ProcessCluster) -> bool:
     sockets: list[socket.socket] = []
     try:
         for port in [cluster.director_port, *(worker.http_port for worker in cluster.workers)]:
-            candidate = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            # Health probes can leave short-lived TCP connections in TIME_WAIT after the process exits.
-            # Reuse is safe here because this probe only runs after the child process has been reaped.
-            candidate.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            candidate.bind(("127.0.0.1", port))
+            candidate = _rebind_tcp_port(port)
+            if candidate is None:
+                return False
             sockets.append(candidate)
         for worker in cluster.workers:
             candidate = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            candidate.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            if hasattr(socket, "SO_EXCLUSIVEADDRUSE"):
+                candidate.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
             candidate.bind(("127.0.0.1", worker.udp_port))
             sockets.append(candidate)
     except OSError:
@@ -149,6 +169,7 @@ def running_process_cluster(
     tmp_path: Path,
     *,
     worker_count: int,
+    worker_max_sessions: int = 5,
     udp_enabled: bool = False,
     redis_url: str | None = None,
     redis_prefix: str | None = None,
@@ -160,6 +181,8 @@ def running_process_cluster(
 ) -> Iterator[ProcessCluster]:
     if worker_count < 1:
         raise ValueError("worker_count must be positive")
+    if worker_max_sessions < 1:
+        raise ValueError("worker_max_sessions must be positive")
     if redis_url is not None and not redis_prefix:
         raise ValueError("redis_prefix is required with redis_url")
 
@@ -185,6 +208,7 @@ def running_process_cluster(
         "VOICE_DEVICE_BOOTSTRAP_TOKEN": bootstrap_token,
         "VOICE_LAB_TOKEN": lab_token,
         "VOICE_HEARTBEAT_INTERVAL_SECONDS": "1",
+        "VOICE_WORKER_MAX_SESSIONS": str(worker_max_sessions),
         "VOICE_ROUTE_LEASE_TTL_SECONDS": "5",
         "VOICE_RUNNER": "deterministic",
         # Host E2E validates protocol/lifecycle behavior; latency budgets are measured separately.

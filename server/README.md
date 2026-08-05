@@ -22,6 +22,38 @@ uv run ruff check .
 uv run pytest --timeout=20 --timeout-method=thread
 ```
 
+确定性容量阶梯和 session churn harness 使用独立 Director/Worker 子进程，并把逐事件 JSONL 与摘要 JSON 写到 ignored
+artifact 目录：
+
+```bash
+uv run python tools/capacity_soak.py capacity --profile wss-opus/1 --steps 1,5,10 \
+  --worker-max-sessions 5 --duration-seconds 10 \
+  --raw ../artifacts/capacity-wss.jsonl --summary ../artifacts/capacity-wss.json
+
+uv run python tools/capacity_soak.py capacity --profile udp-opus-gcm/1 --steps 1,5,10 \
+  --worker-max-sessions 5 --duration-seconds 10 \
+  --raw ../artifacts/capacity-udp.jsonl --summary ../artifacts/capacity-udp.json
+```
+
+一次会话只有在上行非零、固定下行帧数、唯一完整 playback 和必需生命周期事件全部闭环后才计为成功。每个阶梯还
+检查 Worker `active_sessions` 的同刻峰值与最终归零，以及子进程和端口回收。route 检查先释放第一条测试 lease，
+再以 epoch/fencing 前进的二次 reacquire 证明第一条已释放；第二条 lease 只验证 release request 被接受，不把 HTTP
+成功扩大为 exact release 证据，因为 harness 未执行第三次获取。
+
+Worker drain 只有场景实际启动至少两个 Worker 时执行，否则摘要明确为 `not_run`。上例中 `worker-max-sessions=5`
+使并发 10 的 cell 启动两个 Worker并验证 fresh route避开 draining Worker；并发 1/5 的单 Worker cell不提供 drain
+证据。结果是当前机器上的 `measured` session-churn证据，不是容量 SLO。
+
+30 分钟或 2 小时 short-session churn 必须显式使用 `churn --execute --duration-seconds 1800|7200`；当前两种时长均
+为 `not_run`。它重复建立和关闭短 session，不是保持同一 session连续存活。continuous-session soak runner尚未实现，
+因此该门禁为 `not_run/not_implemented`；真实provider故障和受控Redis outage未运行时也保持`not_run`。
+
+```bash
+uv run python tools/capacity_soak.py churn --execute --profile wss-opus/1 \
+  --concurrency 5 --worker-max-sessions 5 --duration-seconds 1800 \
+  --raw ../artifacts/churn-30m-wss.jsonl --summary ../artifacts/churn-30m-wss.json
+```
+
 Redis integration 默认不访问本机服务。对专用测试实例显式运行：
 
 ```bash
