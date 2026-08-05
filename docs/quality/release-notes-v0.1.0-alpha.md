@@ -20,13 +20,16 @@ roomless 实时语音接入，不把具体闲聊业务、模型效果或完整 R
 
 ## 当前验证摘要
 
-- 历史候选 GitHub Actions 的 repository、server、desktop reference、host E2E、Redis integration、native host contracts
-  和 ESP-IDF build/size jobs 已通过；当前 freshness 修复的本地自动门禁与 commit-addressable CI 7/7已通过。
+- GitHub Actions 的 repository、server、desktop reference、host E2E、Redis integration、native host contracts和
+  ESP-IDF build/size jobs已通过；当前 Server source `3f207a5` 的本地完整门禁与 commit-addressable CI 7/7已通过。
 - 公网 Linux Director/Worker/Redis readiness、real-provider desktop canary和 ESP32-S3 UDP 双向 Opus 真机闭环已有
   commit-addressable 证据。历史 WSS artifact触发的 freshness regression已修复；当前 Server/Firmware artifact完成
   WSS 真机完整播放、normal close、exact release和零 overload门禁。
-- 当前 WSS 真机验证覆盖 bootstrap、完整 playback fact、normal close 与 exact route release；UDP authenticated
-  probe/source pinning和双向媒体只保留绑定历史 artifact的证据，不外推为当前 HIL。
+- 当前 WSS/UDP 真机验证均绑定同一 Server/Firmware 组合，覆盖 bootstrap、双向 Opus、完整 playback fact、normal close
+  与 exact route release；UDP还覆盖 authenticated probe和source pinning，当前两条链路均为 `device_verified`。
+- 当前 clean Product source已完成公共空凭据 ESP32-S3 bundle的可复现构建、size、五分区打包、provenance、许可证声明
+  和 SHA-256校验；CycloneDX 1.5 release SBOM已确定性生成并通过 `--check`。公共镜像通过临时本地NVS provisioning
+  完成启动、触屏/语音唤醒、WSS/UDP双协议问答、normal close和exact release真机门禁，测试凭据未进入bundle或Git。
 
 精确 commit、artifact digest、测试数量和仍未执行的门禁只在
 [Release readiness](release-readiness.md) 维护，避免 release notes 复制易过期的瞬时数据。
@@ -34,9 +37,9 @@ roomless 实时语音接入，不把具体闲聊业务、模型效果或完整 R
 ## 发布边界
 
 本版本不是 production-ready 声明。Linux/TLS/HA、UDP opt-in、弱网、长稳、延迟、声学和 provider 责任边界见
-[Known limitations](known-limitations.md)。正式 tag 前仍需从最终 Product commit fresh 构建公共无凭据 firmware、
-Server artifact、public firmware bundle和 release SBOM；UDP 当前证据仅对历史已测 artifact 有效，
-正式 tag 前必须在最终 current source上完成简化真机复验，不能用历史 artifact替代。
+[Known limitations](known-limitations.md)。公共 firmware bundle和 release SBOM候选已生成，但尚未创建正式 tag或
+GitHub Release；若 tag source不同于当前 bundle source，必须从 tag source重新构建。当前 private deployment image的
+真机证据不替代公共 bundle验证；最终release artifact仍以其内置manifest、provenance和GitHub Release digest为准。
 
 ## SBOM
 

@@ -41,5 +41,7 @@
 - Release SBOM 是锁定组件清单，不是漏洞扫描结论。字体、Python native wheel、FFmpeg/PyAV、PortAudio 等依赖仍须由
   实际二进制发布方按目标平台复核许可证和分发义务。
 
-上述限制不影响当前 alpha 对已登记 wire、资源有界生命周期、WSS 当前 artifact与 UDP 历史 artifact真机闭环、
-Linux 单节点部署基线的验证结论。UDP 尚未在当前 freshness 修复 source上重跑，因此只保留历史 device evidence。
+上述限制不影响当前 alpha 对已登记 wire、资源有界生命周期、当前 Server/Firmware 组合的 WSS/UDP 真机闭环，
+以及 Linux 单节点部署基线的验证结论。公共无凭据 firmware bundle已完成可复现构建、size、provenance、分发内容校验
+和临时NVS provisioning后的WSS/UDP真机门禁；bundle不携带可直接联网的凭据，部署方仍须提供安全provisioning。
+UDP继续保持显式opt-in，弱网矩阵仍未完成。

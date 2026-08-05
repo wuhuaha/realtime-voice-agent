@@ -17,12 +17,17 @@
 - 当前 Server archive SHA-256：`24341a1a94e4a993900a3accfc899b6039e9d4b6f63f96568acd0deb46b07642`
 - 当前 WSS HIL：`device_verified`
 - 当前 UDP HIL：`device_verified`
-- 当前 public release bundle：`not_run`
+- 当前 public release bundle source：`6fddf82654460ae1bf2a3244cbca8d5bceac41d6`
+- 当前 public release bundle SHA-256：`e63d799cce524bab65b45a582592776f88c92072dbea2ce45ae1ad1865c6f3be`
+- 当前 public release app SHA-256：`316a1aeff6022c385f12e7ab39367e9a73679a38a150160fccc14610bd865e06`
+- 当前 public release bundle：`device_verified`
 
 当前 HIL 使用 `c1dc5bb` Firmware 与 `3f207a5` Server。Server 的 bounded WSS catch-up 只处理尚未 decode 的孤立
 stale packet；catch-up 不收敛、partial runner push、UDP stale 和真实 backpressure 仍 fail closed。Firmware 由 clean
-source 和 ignored/private Kconfig input 构建；private input、凭据和 image 不进入 Git 或公开 release。正式 tag 前仍须
-从最终 source fresh 构建无凭据 public bundle；本文之后的 evidence-only commit 不改变 Server/Firmware source identity。
+source 和 ignored/private Kconfig input 构建；private input、凭据和 image 不进入 Git 或公开 release。另已从 clean
+`6fddf82` source 使用 public 空凭据配置 fresh 构建 bundle，并在 ESP32-S3 revision 0.2 上完成 boot、临时 NVS
+provisioning、WSS和UDP真机门禁。若正式 tag不再指向该 source identity，仍须从最终 tag source重建；docs-only
+successor可以继承代码行为证据，但最终 artifact identity和构建校验必须重新生成。
 
 ## 软件与构建门禁
 
@@ -30,10 +35,19 @@ source 和 ignored/private Kconfig input 构建；private input、凭据和 imag
 host contracts 和 ESP-IDF build/size。当前 `3f207a5` 本地完整门禁为 root `52 passed`、Server
 `310 passed, 3 skipped`、Desktop Reference `116 passed, 4 deselected`；Ruff、repository contracts、tracked/untracked
 secret scan 与 `git diff --check` 均通过。3 个 Server skip 是未配置 Redis subprocess URL，4 个 Desktop deselect 是
-Linux-only deterministic host E2E；当前 commit 的远端 CI 状态未在本轮登记。Private deployment app 从 clean
+Linux-only deterministic host E2E。Server source `3f207a5` 的 GitHub Actions
+[run 30875773937](https://github.com/wuhuaha/realtime-voice-agent/actions/runs/30875773937) 已成功；后续
+`6fddf82` 只包含 evidence 文档，不改变 Server/Firmware source，未登记独立 CI。Private deployment app 从 clean
 source/config构建，大小 `0x21aa80`，4 MiB app partition余量
 `0x1e5580`（47%）；其 provenance、source revision、config digest与 artifact digest 已记录。该 private app不等于
 公开 release bundle。
+
+公共 bundle 使用锁定 ESP-IDF `v5.5.2` 和 tracked `sdkconfig.defaults` 构建，六个 Wi-Fi/bootstrap敏感字段均为空。
+application大小 `0x21a650`，4 MiB app partition余量 `0x1e59b0`（47%）；五个烧录镜像、分区 offset、固定字体来源、
+许可证和 SHA-256 均由 manifest/provenance绑定。provenance SHA-256为
+`eb3eb74223d7e534f0c5a3dbd2ee5eff276ade990bbbeb94c20f820542ecc1b8`。CycloneDX 1.5 release SBOM 从四个 lock input
+确定性生成，共 103 个组件，SHA-256为 `051b3576694b46da7dad0462777325f99e5595db629dd933429e1e8c9f3fded8`，
+`--check` 与 secret scan 均通过。bundle、SBOM和 provenance保持 ignored，等待正式 release流程上传，不进入 Git。
 
 ## 自动稳定性与故障注入
 
@@ -117,24 +131,49 @@ bootstrap；UDP 本地轮换使用 authenticated `refresh_after_ms` 的 monotoni
 切分和 ASR 准确率不属于本项目本轮门禁，只要求这些输入不得破坏 transport、session、playback generation、terminal
 或资源释放。声学、真实 netem 和固定延迟分位数不进入本次门禁。
 
+### Public bundle 真机门禁
+
+公共 bundle `e63d799c...c6f3be` 的五个分区通过 `COM11` 烧录并逐段 hash verified，未把 Wi-Fi、Director endpoint或
+token写入 firmware image。首次空 NVS启动按预期进入 provisioning UI；随后从 ignored local input生成临时 NVS image，
+只写入 `0x9000` NVS分区并在烧录后删除临时 CSV/image。完整重启日志确认 app version `6fddf82`、ESP-IDF `v5.5.2`、
+16 MB Flash、8 MB PSRAM、Qwen字体、显示/触摸、Wi-Fi、WakeNet model、AEC/VAD和codec初始化，无 panic、Task WDT或
+reboot loop。MIC会话触发由日志闭环，用户另行确认 `Hi ESP` 语音唤醒正常。
+
+公共 bundle WSS回归：
+
+- bootstrap `200`、selected profile=`wss-opus/1`
+- 两轮真实问答完成；上行 `374` 个 packet、`1122` 个 PCM frame、下行 `94` 个 packet
+- `invalid_opus_packets=0`、`overload_source=none`、drop=`0`
+- `close_code=1000`、`close_reason=normal`、`session_closed reason=user_initiated`
+- stop阶段前两次 release连接超时，析构有界兜底下一次成功；Director exact release `200`，无 lease残留
+
+公共 bundle UDP回归：
+
+- bootstrap `200`、selected profile=`udp-opus-gcm/1`
+- authenticated probe单次成功，`elapsed_ms=47`，Server完成source pinning
+- 两轮真实问答完成；上行 `462` 个 packet、`1386` 个 PCM frame、下行 `82` 个 packet
+- `invalid_opus_packets=0`、`overload_source=none`、drop=`0`
+- `close_code=1000`、`close_reason=normal`、`session_closed reason=user_initiated`
+- Director exact release `200`；最终 Worker `active_sessions=0/5`，Director/Worker `NRestarts=0`
+
 ## 当前发布门禁
 
 | Gate | 当前状态 | 当前证据与完成条件 |
 | --- | --- | --- |
-| Product commit + CI | `host_verified` | `3f207a5` 已 push；本地完整门禁通过，当前远端 CI状态未登记 |
+| Product commit + CI | `host_verified` | `3f207a5` 已 push；本地完整门禁与 GitHub Actions run `30875773937`通过；`6fddf82`仅为 evidence 文档 |
 | Server immutable archive | `public_path_verified` | `3f207a5` 只读 archive strict check、部署和 rollback保留通过 |
 | Linux Director/Worker readiness | `public_path_verified` | 当前 release ready，profiles、capacity、provider、coordination和 UDP socket正常 |
-| Native clean build + size | `build_passed / image_sized` | `c1dc5bb` private app provenance/digest，47% app余量；public bundle仍未构建 |
-| Flash/boot/display/touch | `device_verified` | 当前 app hash verified；启动、显示、触摸、字体、AFE无异常 |
-| Wi-Fi/NVS/bootstrap | `device_verified` | 保留 NVS，自动联网并完成当前公网 bootstrap |
-| WSS voice loop | `device_verified` | 当前 Server/Firmware 完成多轮、1888/263包、normal close/release、0 overload |
-| UDP admission/bootstrap | `device_verified` | 当前 Server/Firmware 完成 AEAD probe、source pinning，elapsed 28 ms、invalid 0 |
-| UDP voice loop | `device_verified` | 双向 Opus、24300 ms完整 playback fact、573/270包、normal close、0 invalid |
+| Native clean build + size | `build_passed / image_sized` | `6fddf82` public bundle release-eligible，五镜像/provenance/SHA-256完整，app余量47% |
+| Flash/boot/display/touch | `device_verified` | public五分区hash verified；app identity、显示、触摸、Qwen字体、AFE无异常 |
+| Wi-Fi/NVS/bootstrap | `device_verified` | 空NVS按预期进入provisioning；临时private NVS input未进入bundle/Git，公网bootstrap成功 |
+| WSS voice loop | `device_verified` | public bundle两轮，374/94包、1122 PCM frames、normal close/release、0 invalid/overload |
+| UDP admission/bootstrap | `device_verified` | public bundle完成AEAD probe、source pinning，elapsed 47 ms、invalid 0 |
+| UDP voice loop | `device_verified` | public bundle两轮双向Opus，462/82包、1386 PCM frames、normal close、0 invalid/overload |
 | End-to-end latency | `not_run` | alpha known limitation；未承诺固定 p50/p95/p99 SLO |
 | Weak network | `not_run` | 当前 deterministic fault matrix通过；真实 random/burst/jitter/netem仍未测 |
 | Stability | `incomplete` | 当前 source完成 fault matrix、618.982秒短 churn和短 HIL；一次 Windows harness readiness超时尚未定因，且未重跑长 soak |
 | AEC/acoustic | `out_of_scope` | 当前开源定位不以 NS/ASR/AEC 主观效果为 release gate |
-| Security/repository | `host_verified / production incomplete` | 当前 secret/repository scan通过；历史 SBOM/许可证digest不替代当前 release SBOM，后者仍`not_run`；TLS/限流由部署方提供 |
+| Security/repository | `host_verified / production incomplete` | 当前 secret/repository scan通过；103组件 release SBOM已生成并校验；TLS、漏洞扫描和入口限流仍由部署方完成 |
 
 ## 证据规则
 
