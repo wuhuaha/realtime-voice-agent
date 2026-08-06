@@ -24,6 +24,9 @@ CONFIG_ESP_TASK_WDT_CHECK_IDLE_TASK_CPU1=y
 CONFIG_LOG_DEFAULT_LEVEL_INFO=y
 CONFIG_ESP_CONSOLE_UART_DEFAULT=y
 CONFIG_ESP_CONSOLE_SECONDARY_USB_SERIAL_JTAG=y
+# Full-duplex voice sends uplink audio while TTS frames arrive. Keep TX
+# serialization independent from the client's receive/state lock.
+CONFIG_ESP_WS_CLIENT_SEPARATE_TX_LOCK=y
 CONFIG_RVA_ENABLE_UI=y
 # A conversation is an explicit user-owned lifecycle. Keeping the network and
 # UI ready while idle avoids occupying a worker lease until MIC is pressed.
