@@ -32,16 +32,19 @@ successor可以继承代码行为证据，但最终 artifact identity和构建�
 ## 当前候选身份
 
 - 分支：`codex/provisioning-weaknet-v0.2`
-- 当前实现与 fresh bundle source：`b03f706c394fddedef2364e594e8fc5680473131`
+- 当前 Product source：`4950ad3eb37f753de5c6a13689f93312eda82713`
+- fresh bundle source：`b03f706c394fddedef2364e594e8fc5680473131`
 - 状态：已从 clean source 构建 public bundle，并完成真机 flash、配置 NVS 与双协议 HIL；仍受本文列出的 alpha 边界约束
-- 当前新鲜host门禁：root `74 passed`、Server `367 passed, 3 skipped`、Desktop Reference `124 passed`
+- 当前新鲜host门禁：root `74 passed`、Server `369 passed, 3 skipped`、Desktop Reference `124 passed`
+- 当前 GitHub Actions：[run 31068975637](https://github.com/wuhuaha/realtime-voice-agent/actions/runs/31068975637) 全部成功
 - provisioning tools：`34 passed`；官方ESP-IDF 5.5.2 generator生成`24576-byte` NVS image通过
 - fresh public bundle SHA-256：`8cf5382eac72704b2b06de3d0a4b0d5b7a53191a4fc9deadaf2e46e7203c80e4`
 - fresh application SHA-256：`7b431f10a8a7c96053b76745d965fc61b0ca8ad670626d4de336bb1711e69f14`
 - fresh bundle build/manifest/checksum/CLI validate与五镜像flash dry-run：`build_passed / host_verified`
 - fresh bundle真机flash、provision/readback、NVS preserve/erase和双协议HIL：`device_verified`
 
-本节的host/远端结果绑定上述实现提交；bundle evidence绑定精确clean source与digest，不能替代真机HIL。
+当前 Product source 在 fresh bundle source 后只增加 HIL 证据和 host capacity harness修复；没有改变 Firmware或Server
+runtime。host/CI结果绑定当前 Product source；bundle evidence继续绑定精确clean source与digest，不能替代真机HIL。
 
 ## 软件与构建门禁
 
@@ -53,7 +56,10 @@ fresh bundle。项目显式启用 `CONFIG_ESP_WS_CLIENT_SEPARATE_TX_LOCK=y`；�
 UDP执行 1/5并发阶梯并标记 `measured`，每个成功 session要求非零上行、固定下行帧数、唯一 playback闭环和必需
 事件，同时验证 Worker `active_sessions=0`、子进程/端口回收及 orphan task修复。第一条测试lease的释放由随后
 epoch/fencing前进的reacquire证明；最终测试lease只验证release request被接受。1/5均为单Worker场景，不提供
-multi-Worker drain证据。上述是当前实现source的host evidence，不属于fresh firmware artifact或真机证据。
+multi-Worker drain证据。Linux CI另以`concurrency=5 / worker_max_sessions=2`运行三Worker WSS/UDP场景并验证drain。
+capacity模式在`session.opened`后使用最长2秒的有界overlap窗口，只有真实Worker health观察到目标峰值才标记
+`measured`；取消路径统一回收session/observer task。该窗口不用于churn，不改变既有30分钟自然短会话负载语义。
+上述是当前实现source的host evidence，不属于fresh firmware artifact或真机证据。
 
 早期8-cell、1-repeat Linux snapshot只是一项已被扩展矩阵取代的小样本。首次完整
 `9 scenarios x 2 profiles x 5 repeats`运行共90次，WSS全部满足，但UDP在3% random loss有1/5、5% random loss有
@@ -72,13 +78,15 @@ p50/p95/p99为`31.849/41.710/49.143ms`、最大`144.454ms`。两轮最终active 
 2小时short-session churn与continuous-session soak均为`not_run`，后者runner尚未实现。新CLI的真机
 flash/provision/readback/preserve/erase已完成；这些设备交付证据不替代尚未运行的长时稳定性门禁。
 
-历史 GitHub Actions 已覆盖 `repository`、`server`、`desktop-reference`、Linux host E2E、Redis integration、native
+GitHub Actions 已覆盖 `repository`、`server`、`desktop-reference`、Linux host E2E、Redis integration、native
 host contracts 和 ESP-IDF build/size。当前 `3f207a5` 本地完整门禁为 root `52 passed`、Server
 `310 passed, 3 skipped`、Desktop Reference `116 passed, 4 deselected`；Ruff、repository contracts、tracked/untracked
 secret scan 与 `git diff --check` 均通过。3 个 Server skip 是未配置 Redis subprocess URL，4 个 Desktop deselect 是
 Linux-only deterministic host E2E。Server source `3f207a5` 的 GitHub Actions
 [run 30875773937](https://github.com/wuhuaha/realtime-voice-agent/actions/runs/30875773937) 已成功；后续
-`6fddf82` 只包含 evidence 文档，不改变 Server/Firmware source，未登记独立 CI。Private deployment app 从 clean
+`6fddf82` 只包含 evidence 文档，不改变 Server/Firmware source。当前 Product source `4950ad3` 的
+[run 31068975637](https://github.com/wuhuaha/realtime-voice-agent/actions/runs/31068975637) 已全部成功，包含 Linux
+Server capacity、双协议 Desktop E2E、Redis、native host contracts和ESP-IDF build/size。Private deployment app 从 clean
 source/config构建，大小 `0x21aa80`，4 MiB app partition余量
 `0x1e5580`（47%）；其 provenance、source revision、config digest与 artifact digest 已记录。该 private app不等于
 公开 release bundle。
@@ -86,9 +94,10 @@ source/config构建，大小 `0x21aa80`，4 MiB app partition余量
 当前 fresh 公共 bundle 使用锁定 ESP-IDF `v5.5.2` 和 tracked `sdkconfig.defaults` 构建，六个 Wi-Fi/bootstrap敏感字段均为空。
 application大小 `0x21a9c0`，4 MiB app partition余量 `0x1e5640`（47%）；五个烧录镜像、分区 offset、固定字体来源、
 许可证和 SHA-256 均由 manifest/provenance绑定。当前 build provenance SHA-256为
-`3f0ded37bc28219c56ac043829cccf1ac96751f75a9f78677400ba2ae3ad463f`。依赖 lock 未改变；既有 CycloneDX 1.5
-SBOM 是依赖清单证据，但未在本轮重新生成并核验为当前 bundle artifact，正式 release 前仍须从目标 source 重建并执行
-`--check`。bundle、SBOM和 provenance保持 ignored，等待正式 release流程上传，不进入 Git。
+`3f0ded37bc28219c56ac043829cccf1ac96751f75a9f78677400ba2ae3ad463f`。依赖 lock 未改变；已从当前 Product source
+重新生成 CycloneDX 1.5 SBOM并执行`--check`，共103个component，SHA-256为
+`051b3576694b46da7dad0462777325f99e5595db629dd933429e1e8c9f3fded8`。SBOM是锁定依赖清单，不是漏洞扫描或
+许可证复核结论。bundle、SBOM和 provenance保持 ignored，等待正式 release流程上传，不进入 Git。
 
 ## 自动稳定性与故障注入
 
@@ -232,7 +241,7 @@ SHA-256 为 `7b431f10a8a7c96053b76745d965fc61b0ca8ad670626d4de336bb1711e69f14`�
 
 | Gate | 当前状态 | 当前证据与完成条件 |
 | --- | --- | --- |
-| Product commit + CI | `host_verified / current CI not_run` | 当前 `b03f706` 本地 root 74项及仓库门禁通过；尚未登记该 source 的新 CI。历史 Server source `3f207a5` GitHub Actions run `30875773937`通过，不替代当前 source CI |
+| Product commit + CI | `host_verified` | 当前 `4950ad3` 本地root 74项、Server 369项通过；GitHub Actions run `31068975637`全部成功 |
 | Server immutable archive | `public_path_verified` | `3f207a5` 只读 archive strict check、部署和 rollback保留通过 |
 | Linux Director/Worker readiness | `public_path_verified` | 当前 release ready，profiles、capacity、provider、coordination和 UDP socket正常 |
 | Native clean build + size | `build_passed / image_sized` | fresh `b03f706` bundle SHA-256 `8cf5382e...c80e4`；application `0x21a9c0`，app余量47% |
@@ -243,10 +252,10 @@ SHA-256 为 `7b431f10a8a7c96053b76745d965fc61b0ca8ad670626d4de336bb1711e69f14`�
 | UDP voice loop | `device_verified / serial_partial` | 当前 fresh bundle 533/135包、1599 PCM frames、normal close、active 0；用户体验和Server evidence通过，串口因USB重枚举中止 |
 | End-to-end latency | `not_run` | alpha known limitation；未承诺固定 p50/p95/p99 SLO |
 | Weak network | `host_verified / performance incomplete` | 90-cell为83 completed、2 bounded recovery、5预期UDP blocked，各组5/5；无seed且无物理/性能指标，不构成transport优劣或SLO |
-| Stability / capacity | `30m measured / incomplete` | WSS/UDP远端独立30分钟分别`18013/18013`与`17855/17855`；2小时、continuous-session和multi-Worker drain未完成 |
+| Stability / capacity | `30m measured / incomplete` | WSS/UDP远端独立30分钟分别`18013/18013`与`17855/17855`；确定性三Worker drain已host验证，2小时、continuous-session和真实容量测量未完成 |
 | Public provisioning CLI HIL | `device_verified` | fresh bundle validate、五镜像flash、provision/readback、五键preserve与erase-config真机路径通过 |
 | AEC/acoustic | `out_of_scope` | 当前开源定位不以 NS/ASR/AEC 主观效果为 release gate |
-| Security/repository | `host_verified / production incomplete` | 当前 secret/repository scan通过；依赖locks未变且既有SBOM inventory可用，但当前bundle SBOM尚未重建核验；TLS、漏洞扫描和入口限流仍由部署方完成 |
+| Security/repository | `host_verified / production incomplete` | 当前 secret/repository scan通过；103-component SBOM已重新生成并通过确定性检查；TLS、漏洞扫描、许可证复核和入口限流仍由部署方完成 |
 
 ## 证据规则
 
