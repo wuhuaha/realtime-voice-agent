@@ -19,6 +19,16 @@ sys.modules[SPEC.name] = capacity_soak
 SPEC.loader.exec_module(capacity_soak)
 
 
+def _capacity_failure_detail(summary: Path, raw: Path, cluster_root: Path) -> str:
+    sections = [f"summary:\n{summary.read_text(encoding='utf-8')}"]
+    raw_lines = raw.read_text(encoding="utf-8").splitlines()
+    sections.append("raw tail:\n" + "\n".join(raw_lines[-20:]))
+    for log in sorted(cluster_root.rglob("*.log")):
+        log_lines = log.read_text(encoding="utf-8", errors="replace").splitlines()
+        sections.append(f"{log.name} tail:\n" + "\n".join(log_lines[-40:]))
+    return "\n\n".join(sections)
+
+
 def test_capacity_steps_and_churn_guard(tmp_path: Path) -> None:
     assert capacity_soak.parse_steps("1,5,10") == (1, 5, 10)
     with pytest.raises(Exception, match="unique positive"):
@@ -62,6 +72,7 @@ def test_short_capacity_round_trip_releases_all_sessions(
 ) -> None:
     raw = tmp_path / "raw.jsonl"
     summary = tmp_path / "summary.json"
+    cluster_root = tmp_path / "cluster"
     exit_code = capacity_soak.main(
         [
             "capacity",
@@ -80,10 +91,10 @@ def test_short_capacity_round_trip_releases_all_sessions(
             "--summary",
             str(summary),
             "--temp-root",
-            str(tmp_path / "cluster"),
+            str(cluster_root),
         ]
     )
-    assert exit_code == 0
+    assert exit_code == 0, _capacity_failure_detail(summary, raw, cluster_root)
     report = json.loads(summary.read_text(encoding="utf-8"))
     result = report["results"][0]
     assert result["status"] == "measured"
