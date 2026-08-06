@@ -75,8 +75,10 @@ aggregate为`evidence_scope=completion_and_bounded_recovery`、`paired_randomnes
 远端UDP short-session churn已连续运行`1800.038s`并完成`17855/17855`个严格媒体闭环，p50/p95/p99为
 `32.523/42.102/58.014ms`、最大`181.659ms`。远端WSS也连续运行`1800.050s`并完成`18013/18013`，
 p50/p95/p99为`31.849/41.710/49.143ms`、最大`144.454ms`。两轮最终active session均为0且进程/端口回收通过。
-2小时short-session churn与continuous-session soak均为`not_run`，后者runner尚未实现。新CLI的真机
-flash/provision/readback/preserve/erase已完成；这些设备交付证据不替代尚未运行的长时稳定性门禁。
+2小时short-session churn仍为`not_run`。UDP设备continuous-operation soak已于2026-08-06完成：设备从
+14:11:59到16:30:24保持UDP聆听体验并在终点normal close，覆盖约2小时18分钟。该run不是单个加密session永久
+存活；设备按约10分钟monotonic freshness deadline执行fresh bootstrap和换钥。它不替代WSS 2小时、2小时
+short-session churn、24小时稳定性或真实容量测量。
 
 GitHub Actions 已覆盖 `repository`、`server`、`desktop-reference`、Linux host E2E、Redis integration、native
 host contracts 和 ESP-IDF build/size。当前 `3f207a5` 本地完整门禁为 root `52 passed`、Server
@@ -237,6 +239,24 @@ SHA-256 为 `7b431f10a8a7c96053b76745d965fc61b0ca8ad670626d4de336bb1711e69f14`�
 - 串口采集因 Windows USB 重枚举中止，未取得完整串口尾段；该缺口不写成串口通过，UDP 结论绑定用户体验与完整服务端
   media/session evidence
 
+### UDP continuous-operation 长稳
+
+2026-08-06使用同一块立创实战派ESP32-S3、fresh `b03f706` firmware、Linux release
+`rva-20260804T034936Z-3f207a5`和`udp-opus-gcm/1`执行真实设备长稳。观察窗口为14:11:59至16:30:24，
+有效时长约2小时18分钟。中点和终点固定语句均完成ASR、TTS与物理播放确认；终点目标回复
+`playback_position_ms=3150`、`interrupted=false`。MIC stop后Server记录`close_code=1000`、
+`close_reason=normal`、`session_closed reason=user_initiated`，最终Worker `active_sessions=0/5`。
+
+设备串口在稳定阶段记录8次计划内monotonic grant refresh；每次均先exact route release，再fresh bootstrap、
+authenticated UDP probe和AFE恢复，未发生transport fallback。稳定阶段持续报告`drops=0/0`、
+`presend_stale=0`、`wss_send_fail=0`，AFE ring free约`0.99-1.00`，无panic、Task WDT或reboot。
+
+开始后约6分钟曾出现一组有界恢复：两次`invalid_media_timestamp`、两次`opus_input_stale`和一次握手超时导致
+fresh session重建；设备自动恢复，随后约132分钟仅发生计划内refresh。该finding不写成“全程零重连”，也不归因于
+声学；它证明当前fail-closed/fresh-reopen逃生路径有效，但Server media timeline和冷启动瞬态仍保留为后续诊断项。
+观察期间另有一次LLM `504 queue_timeout`自动重试成功，未导致session关闭。原始串口和systemd journal保持ignored或
+远端受控保存，不进入Git。
+
 ## 当前发布门禁
 
 | Gate | 当前状态 | 当前证据与完成条件 |
@@ -252,7 +272,7 @@ SHA-256 为 `7b431f10a8a7c96053b76745d965fc61b0ca8ad670626d4de336bb1711e69f14`�
 | UDP voice loop | `device_verified / serial_partial` | 当前 fresh bundle 533/135包、1599 PCM frames、normal close、active 0；用户体验和Server evidence通过，串口因USB重枚举中止 |
 | End-to-end latency | `not_run` | alpha known limitation；未承诺固定 p50/p95/p99 SLO |
 | Weak network | `host_verified / performance incomplete` | 90-cell为83 completed、2 bounded recovery、5预期UDP blocked，各组5/5；无seed且无物理/性能指标，不构成transport优劣或SLO |
-| Stability / capacity | `30m measured / incomplete` | WSS/UDP远端独立30分钟分别`18013/18013`与`17855/17855`；确定性三Worker drain已host验证，2小时、continuous-session和真实容量测量未完成 |
+| Stability / capacity | `UDP 2h device measured / incomplete` | UDP continuous-operation约2小时18分钟，8次计划内freshness refresh后继续运行并normal close；启动早期有5次有界session/bootstrap failure finding。WSS 2小时、2小时short-session churn、24小时和真实容量测量未完成 |
 | Public provisioning CLI HIL | `device_verified` | fresh bundle validate、五镜像flash、provision/readback、五键preserve与erase-config真机路径通过 |
 | AEC/acoustic | `out_of_scope` | 当前开源定位不以 NS/ASR/AEC 主观效果为 release gate |
 | Security/repository | `host_verified / production incomplete` | 当前 secret/repository scan通过；103-component SBOM已重新生成并通过确定性检查；TLS、漏洞扫描、许可证复核和入口限流仍由部署方完成 |

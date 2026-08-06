@@ -36,8 +36,11 @@
   旧媒体隔离和资源清理的`bounded_recovery_verified`才可接受；non-loss场景不得用恢复替代成功。目标`tc`不支持seed，
   `paired_randomness=false`；逻辑pair不能解释为相同随机序列，也不能据此声称WSS/UDP性能优劣。
 - Host 已验证 1/5 并发的 WSS/UDP 短 session容量阶梯及完整资源回收。当前候选source的远端独立30分钟
-  short-session churn为WSS `18013/18013`、UDP `17855/17855`，最终active session均为0且进程/端口回收通过。2小时和同一session
-  continuous soak仍为`not_run`，后者runner尚未实现。1/5均为单Worker场景，也不提供multi-Worker drain或容量SLO。
+  short-session churn为WSS `18013/18013`、UDP `17855/17855`，最终active session均为0且进程/端口回收通过。
+  UDP真机已完成约2小时18分钟continuous-operation soak，覆盖计划内freshness换钥、终点交互和normal close；开始约
+  6分钟处出现两次timestamp拒绝、两次stale-media熔断和一次handshake timeout，均通过fresh reopen有界恢复，随后约
+  132分钟仅发生计划内refresh。因此该结果不是“单session零重连”声明。WSS 2小时、2小时short-session churn、
+  24小时和真实容量仍为`not_run`；1/5启动值也不提供容量SLO。
 - AEC、NS、VAD、远场拾音、double-talk 和 ASR 中文准确率没有形成跨环境声学指标；当前真机证据只证明端云链路，
   不代表特定噪声环境中的识别或主观音质。
 - `VOICE_WORKER_MAX_SESSIONS=5` 是可配置启动值，不是测量容量。

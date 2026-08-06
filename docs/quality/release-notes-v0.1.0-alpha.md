@@ -30,6 +30,8 @@ roomless 实时语音接入，不把具体闲聊业务、模型效果或完整 R
   WSS 真机完整播放、normal close、exact release和零 overload门禁。
 - 当前 WSS/UDP 真机验证均绑定同一 Server/Firmware 组合，覆盖 bootstrap、双向 Opus、完整 playback fact、normal close
   与 exact route release；UDP还覆盖 authenticated probe和source pinning，当前两条链路均为 `device_verified`。
+- UDP真机另完成约2小时18分钟continuous-operation soak，覆盖多次计划内freshness换钥、终点交互与normal close；
+  早期有界fresh-reopen finding和仍未运行的WSS/24小时/容量门禁在release readiness中保留，不提升为全面稳定性声明。
 - 当前 clean Product source已完成公共空凭据 ESP32-S3 bundle的可复现构建、size、五分区打包、provenance、许可证声明
   和 SHA-256校验；CycloneDX 1.5 release SBOM已确定性生成并通过 `--check`。公共镜像通过临时本地NVS provisioning
   完成启动、触屏/语音唤醒、WSS/UDP双协议问答、normal close和exact release真机门禁，测试凭据未进入bundle或Git。

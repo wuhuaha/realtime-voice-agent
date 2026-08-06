@@ -129,8 +129,10 @@ double-talk 和连续 20 轮。采集误唤醒、漏检、ASR CER/人工转写�
 - Host capacity/churn的session必须同时满足非零上行、预期下行帧数、唯一完整playback、必需事件、Worker active
   归零和进程/端口回收；Desktop client正常返回本身不能算成功。第一条route释放可由二次reacquire证明，最终测试
   lease只验证release request accepted。Worker drain只在实际启动至少两个Worker时形成证据。
-- 重复短session的30分钟/2小时churn与同一session连续存活的soak是不同证据，执行状态必须分别记录；runner未实现
-  时使用`not_run/not_implemented`，不能只写笼统的长稳未测。
+- 重复短session的30分钟/2小时churn与设备连续operation soak是不同证据，执行状态必须分别记录。UDP短期key/grant
+  按协议freshness deadline主动换新，因此continuous-operation按“用户体验连续、旧route释放、fresh identity、旧媒体隔离、
+  新probe认证和资源有界”验收，不要求单个加密session跨越expiry永久存活；runner未实现时使用
+  `not_run/not_implemented`，不能只写笼统的长稳未测。
 - 30分钟和2小时结果按profile分别登记；一个profile通过不代表另一profile或双profile release gate通过。
 - cancellation storm、provider 429/timeout、Worker drain/crash、Redis 短时故障。
 - bootstrap 200 后本地 WSS/task allocation 失败、exact release、立即 fresh bootstrap；以及 WSS teardown 无法确认时
