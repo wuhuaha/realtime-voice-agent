@@ -46,6 +46,7 @@ _TIMELINE_REBASE_SECONDS = 30.0
 _TIMELINE_MAX_WSS_CLOCK_SKEW_RATIO = 0.02
 _UPLINK_STALE_RECOVERY_WINDOW_SECONDS = 10.0
 _UPLINK_MAX_RECOVERABLE_STALE_DROPS = 2
+_UDP_FORWARD_GAP_MAX_FRESHNESS_WINDOWS = 2
 _WSS_CATCHUP_MAX_FRESHNESS_WINDOWS = 2
 _WSS_CATCHUP_REQUIRED_PACED_INTERVALS = 2
 
@@ -256,16 +257,45 @@ class _AudioQueuePort(AudioInputPort):
                 raise RvaBindingError("invalid_media_timestamp")
             local_future_lead = max(0.0, media_delta - arrival_delta)
             if local_future_lead > self._owner._limits.uplink_max_age_seconds:  # noqa: SLF001
+                # UDP has no transport backlog to drain. A cadence-aligned gap
+                # can therefore represent frames deliberately dropped by the
+                # endpoint's bounded latest-wins pipeline. Keep WSS strict, and
+                # reject deltas in the uint32 backward/ambiguous half-range.
+                maximum_udp_gap = (
+                    self._owner._limits.uplink_max_age_seconds  # noqa: SLF001
+                    * _UDP_FORWARD_GAP_MAX_FRESHNESS_WINDOWS
+                )
+                udp_forward_gap = (
+                    not enforce_wss_burst_budget
+                    and timestamp_delta < 0x80000000
+                    and media_delta <= maximum_udp_gap + 1e-9
+                    and self.queue.empty()
+                    and self._pending_audio_puts == 0
+                    and self._owner._claim_uplink_freshness_recovery()  # noqa: SLF001
+                )
+                if not udp_forward_gap:
+                    self._log_timestamp_warning(
+                        reason="oversized_future_jump",
+                        action="reject",
+                        previous_timestamp=previous_timestamp,
+                        packet=packet,
+                        timestamp_delta=timestamp_delta,
+                        arrival_delta=arrival_delta,
+                        expected_lead=local_future_lead,
+                    )
+                    raise RvaBindingError("invalid_media_timestamp")
                 self._log_timestamp_warning(
-                    reason="oversized_future_jump",
-                    action="reject",
+                    reason="forward_gap",
+                    action="reanchor",
                     previous_timestamp=previous_timestamp,
                     packet=packet,
                     timestamp_delta=timestamp_delta,
                     arrival_delta=arrival_delta,
                     expected_lead=local_future_lead,
                 )
-                raise RvaBindingError("invalid_media_timestamp")
+                self._consumer_timeline_timestamp = packet.timestamp
+                self._consumer_timeline_started_at = received_at
+                self._owner._recovered_forward_gaps += 1  # noqa: SLF001
             if enforce_wss_burst_budget and self._wss_catchup_active:
                 first_catchup_packet = self._wss_catchup_dropped_packets == 0
                 paced_arrival = (
@@ -650,6 +680,7 @@ class RvaWssConnection:
         self._overload_fresh_packet_available: bool | None = None
         self._recovered_stale_packets = 0
         self._recovered_catchup_packets = 0
+        self._recovered_forward_gaps = 0
         self._stale_recovery_window_started_at: float | None = None
         self._stale_recovery_count = 0
         self._primary_close_cause: tuple[int, str] | None = None
@@ -808,7 +839,7 @@ class RvaWssConnection:
                 "decoded_pcm_frames=%d invalid_opus_packets=%d runner_push_frames=%d downlink_packets=%d "
                 "overload_source=%s overload_qsize=%d overload_capacity=%d overload_media_age_ms=%d "
                 "overload_dropped_packets=%d overload_fresh_packet_available=%s recovered_stale_packets=%d "
-                "recovered_catchup_packets=%d",
+                "recovered_catchup_packets=%d recovered_forward_gaps=%d",
                 self._binding_id,
                 self._binding.session_epoch,
                 code,
@@ -832,6 +863,7 @@ class RvaWssConnection:
                 ),
                 self._recovered_stale_packets,
                 self._recovered_catchup_packets,
+                self._recovered_forward_gaps,
             )
             self._close_task = asyncio.create_task(self._close_impl(code, reason), name=f"rva-close-{self._binding_id}")
         try:
@@ -1023,17 +1055,10 @@ class RvaWssConnection:
         )
 
     def _recover_isolated_stale(self, error: RvaOverloadedError) -> bool:
-        if error.source != "opus_input_stale" or self._binding.selected_media_profile != WSS_PROFILE:
+        profile = self._binding.selected_media_profile
+        if error.source != "opus_input_stale" or profile not in {WSS_PROFILE, UDP_PROFILE}:
             return False
-        now = self._clock()
-        if (
-            self._stale_recovery_window_started_at is None
-            or now - self._stale_recovery_window_started_at > _UPLINK_STALE_RECOVERY_WINDOW_SECONDS
-        ):
-            self._stale_recovery_window_started_at = now
-            self._stale_recovery_count = 0
-        self._stale_recovery_count += 1
-        if self._stale_recovery_count > _UPLINK_MAX_RECOVERABLE_STALE_DROPS:
+        if not self._claim_uplink_freshness_recovery():
             logger.warning(
                 "rva_uplink_stale_recovery_exhausted session=%s recovery_count=%d recovery_limit=%d "
                 "media_age_ms=%d dropped_packets=%d fresh_packet_available=%s",
@@ -1045,8 +1070,9 @@ class RvaWssConnection:
                 str(error.fresh_packet_available).lower(),
             )
             return False
+
         self._recovered_stale_packets += error.dropped_packets
-        if error.fresh_packet_available is False:
+        if error.fresh_packet_available is False and profile == WSS_PROFILE:
             self._audio_port.begin_wss_catchup()
         logger.warning(
             "rva_uplink_stale_recovered session=%s recovery_count=%d recovery_limit=%d "
@@ -1059,6 +1085,17 @@ class RvaWssConnection:
             str(error.fresh_packet_available).lower(),
         )
         return True
+
+    def _claim_uplink_freshness_recovery(self) -> bool:
+        now = self._clock()
+        if (
+            self._stale_recovery_window_started_at is None
+            or now - self._stale_recovery_window_started_at > _UPLINK_STALE_RECOVERY_WINDOW_SECONDS
+        ):
+            self._stale_recovery_window_started_at = now
+            self._stale_recovery_count = 0
+        self._stale_recovery_count += 1
+        return self._stale_recovery_count <= _UPLINK_MAX_RECOVERABLE_STALE_DROPS
 
     async def _writer_loop(self) -> None:
         while True:

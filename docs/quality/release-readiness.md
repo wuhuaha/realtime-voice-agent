@@ -257,6 +257,23 @@ fresh session重建；设备自动恢复，随后约132分钟仅发生计划内r
 观察期间另有一次LLM `504 queue_timeout`自动重试成功，未导致session关闭。原始串口和systemd journal保持ignored或
 远端受控保存，不进入Git。
 
+### UDP cold-entry timeline candidate
+
+后续确定性测试按真实日志复现了两个边界：`10560 samples / 56 ms arrival`和
+`12480 samples / 2 ms arrival`在baseline均触发`oversized_future_jump`。Firmware `UplinkFramer`在latest-wins
+丢帧时有意继续推进media timestamp，因此这些已认证、cadence合法且无Server backlog的UDP gap可以表示当前live edge，
+不应直接归类为协议攻击。
+
+Candidate修复只允许UDP在两个freshness window内、queue无backlog/pending put时reanchor，并与isolated stale共用
+10秒最多2次的恢复预算；第三次、超界、uint32倒退/模糊半区、duplicate、non-cadenced和WSS burst仍fail closed。
+它不扩大queue、不伪造PCM/PLC、不放宽AEAD/replay/generation admission，也不让UDP进入WSS catch-up。
+
+验证结果：聚焦11项、Server `376 passed, 3 skipped`、Product `74 passed`、native/UDP host tests和ESP-IDF 5.5.2
+build/size均通过；app分区余量47%。只读验证release
+`rva-20260806T091641Z-bf98119-wt9272aa5c`完成一轮真实UDP probe、ASR、TTS和播放，无protocol error、stale或重连。
+本轮未自然命中forward-gap分支，因此只证明确定性行为和真机无明显劣化，不能替代重复长稳。该release由
+`bf98119`加worktree patch构成，不是正式Product release identity，正式门禁必须先形成clean commit并重新部署。
+
 ## 当前发布门禁
 
 | Gate | 当前状态 | 当前证据与完成条件 |

@@ -18,6 +18,7 @@ from realtime_worker.bindings.rva import (
     WssMediaFrame,
 )
 from realtime_worker.bindings.rva.binding import ControlEffect, InboundAudioPacket
+from realtime_worker.bindings.rva.protocol import UDP_PROFILE
 from realtime_worker.bindings.rva.runtime import RvaControlTimeoutError
 from realtime_worker.interruption import InterruptionPolicyConfig, LayeredInterruptionPolicy
 from realtime_worker.transport.udp_gateway import UdpGrantExpiredError
@@ -1209,7 +1210,49 @@ async def test_wss_input_timeline_retains_burst_budget_after_long_paced_session(
 
 
 @pytest.mark.unit
-async def test_input_timeline_rejects_oversized_cadenced_future_jump() -> None:
+@pytest.mark.parametrize(
+    ("timestamp_delta", "arrival_delta"),
+    [
+        (10_560, 0.056),
+        (12_480, 0.002),
+    ],
+)
+async def test_udp_input_timeline_reanchors_observed_forward_gap(
+    timestamp_delta: int,
+    arrival_delta: float,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    clock = MutableMonotonicClock()
+    connection, _ = create_connection(
+        FakeWebSocket(),
+        limits=RvaRuntimeLimits(uplink_max_age_seconds=0.6),
+        clock=clock,
+    )
+    port = connection._audio_port  # noqa: SLF001
+
+    await port.receive_audio(InboundAudioPacket(0, 0, b"first"))
+    first = port.queue.get_nowait()
+    assert first is not None
+    port.mark_consumed(first)
+    clock.advance(arrival_delta)
+
+    await port.receive_udp_audio(InboundAudioPacket(1, timestamp_delta, b"live-edge"))
+    live_edge = port.queue.get_nowait()
+    assert live_edge is not None
+    assert live_edge.expected_at == pytest.approx(clock())
+    assert live_edge.deadline_at - clock() == pytest.approx(0.6)
+    port.mark_consumed(live_edge)
+
+    clock.advance(0.06)
+    await port.receive_udp_audio(InboundAudioPacket(2, timestamp_delta + 960, b"paced"))
+    paced = port.queue.get_nowait()
+    assert paced is not None
+    assert paced.expected_at == pytest.approx(clock())
+    assert any("reason=forward_gap action=reanchor" in message for message in caplog.messages)
+
+
+@pytest.mark.unit
+async def test_wss_input_timeline_still_rejects_oversized_cadenced_future_jump() -> None:
     clock = MutableMonotonicClock()
     connection, _ = create_connection(
         FakeWebSocket(),
@@ -1225,7 +1268,76 @@ async def test_input_timeline_rejects_oversized_cadenced_future_jump() -> None:
     clock.advance(0.06)
 
     with pytest.raises(RvaBindingError, match="invalid_media_timestamp"):
-        await port.receive_udp_audio(InboundAudioPacket(1, 960 * 20, b"oversized-jump"))
+        await port.receive_audio(InboundAudioPacket(1, 960 * 20, b"oversized-jump"))
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("timestamp_delta", [960 * 21, 2_147_484_480])
+async def test_udp_input_timeline_rejects_unbounded_or_ambiguous_forward_gap(
+    timestamp_delta: int,
+) -> None:
+    clock = MutableMonotonicClock()
+    connection, _ = create_connection(
+        FakeWebSocket(),
+        limits=RvaRuntimeLimits(uplink_max_age_seconds=0.6),
+        clock=clock,
+    )
+    port = connection._audio_port  # noqa: SLF001
+
+    await port.receive_udp_audio(InboundAudioPacket(0, 0, b"first"))
+    first = port.queue.get_nowait()
+    assert first is not None
+    port.mark_consumed(first)
+    clock.advance(0.06)
+
+    with pytest.raises(RvaBindingError, match="invalid_media_timestamp"):
+        await port.receive_udp_audio(InboundAudioPacket(1, timestamp_delta, b"invalid-gap"))
+
+
+@pytest.mark.unit
+async def test_udp_input_timeline_rejects_forward_gap_with_server_backlog() -> None:
+    clock = MutableMonotonicClock()
+    connection, _ = create_connection(
+        FakeWebSocket(),
+        limits=RvaRuntimeLimits(input_queue_packets=3, uplink_max_age_seconds=0.6),
+        clock=clock,
+    )
+    port = connection._audio_port  # noqa: SLF001
+
+    await port.receive_udp_audio(InboundAudioPacket(0, 0, b"queued"))
+    clock.advance(0.056)
+
+    with pytest.raises(RvaBindingError, match="invalid_media_timestamp"):
+        await port.receive_udp_audio(InboundAudioPacket(1, 10_560, b"must-not-hide-backlog"))
+
+
+@pytest.mark.unit
+async def test_udp_input_timeline_forward_gap_recovery_is_bounded() -> None:
+    clock = MutableMonotonicClock()
+    connection, _ = create_connection(
+        FakeWebSocket(),
+        limits=RvaRuntimeLimits(uplink_max_age_seconds=0.6),
+        clock=clock,
+    )
+    port = connection._audio_port  # noqa: SLF001
+
+    await port.receive_udp_audio(InboundAudioPacket(0, 0, b"first"))
+    queued = port.queue.get_nowait()
+    assert queued is not None
+    port.mark_consumed(queued)
+
+    for sequence in (1, 2):
+        clock.advance(0.056)
+        await port.receive_udp_audio(InboundAudioPacket(sequence, sequence * 10_560, b"bounded-gap"))
+        queued = port.queue.get_nowait()
+        assert queued is not None
+        port.mark_consumed(queued)
+
+    clock.advance(0.056)
+    with pytest.raises(RvaBindingError, match="invalid_media_timestamp"):
+        await port.receive_udp_audio(InboundAudioPacket(3, 3 * 10_560, b"exhausted-gap"))
+
+    assert connection._recovered_forward_gaps == 2  # noqa: SLF001
 
 
 @pytest.mark.unit
@@ -1315,6 +1427,34 @@ async def test_current_only_stale_packet_is_not_misclassified_as_backpressure() 
     assert fresh is not None
     assert fresh.packet.sequence == 3
     assert fresh.deadline_at > clock()
+
+
+@pytest.mark.unit
+async def test_udp_current_only_stale_packet_recovers_at_next_live_packet() -> None:
+    clock = MutableMonotonicClock()
+    connection, _ = create_connection(
+        FakeWebSocket(),
+        limits=RvaRuntimeLimits(input_queue_packets=3, uplink_max_age_seconds=0.6),
+        clock=clock,
+    )
+    port = connection._audio_port  # noqa: SLF001
+    await connection.binding.receive_control(session_open())
+    connection._binding._selected_media_profile = UDP_PROFILE  # noqa: SLF001
+    await port.receive_udp_audio(InboundAudioPacket(0, 0, b"stale"))
+    queued = port.queue.get_nowait()
+    assert queued is not None
+    clock.advance(0.7)
+
+    error = connection._stale_uplink_error(queued)  # noqa: SLF001
+
+    assert error.source == "opus_input_stale"
+    assert connection._recover_isolated_stale(error) is True  # noqa: SLF001
+    assert port._consumer_timeline_timestamp is None  # noqa: SLF001
+
+    await port.receive_udp_audio(InboundAudioPacket(1, 960, b"live"))
+    live = port.queue.get_nowait()
+    assert live is not None
+    assert live.deadline_at - clock() == pytest.approx(0.6)
 
 
 @pytest.mark.unit

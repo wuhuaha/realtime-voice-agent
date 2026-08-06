@@ -39,7 +39,10 @@
   short-session churn为WSS `18013/18013`、UDP `17855/17855`，最终active session均为0且进程/端口回收通过。
   UDP真机已完成约2小时18分钟continuous-operation soak，覆盖计划内freshness换钥、终点交互和normal close；开始约
   6分钟处出现两次timestamp拒绝、两次stale-media熔断和一次handshake timeout，均通过fresh reopen有界恢复，随后约
-  132分钟仅发生计划内refresh。因此该结果不是“单session零重连”声明。WSS 2小时、2小时short-session churn、
+  132分钟仅发生计划内refresh。后续candidate已用确定性测试复现timestamp/stale边界，并实现仅UDP、queue无backlog、
+  最大两个freshness window、10秒最多两次的有界reanchor/recovery；完整Server/firmware host门禁和一轮真机无劣化回归
+  通过，但尚未以clean Product commit重复长稳并自然命中该分支。因此原结果仍不是“单session零重连”声明。
+  WSS 2小时、2小时short-session churn、
   24小时和真实容量仍为`not_run`；1/5启动值也不提供容量SLO。
 - AEC、NS、VAD、远场拾音、double-talk 和 ASR 中文准确率没有形成跨环境声学指标；当前真机证据只证明端云链路，
   不代表特定噪声环境中的识别或主观音质。
