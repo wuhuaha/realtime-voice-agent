@@ -54,6 +54,74 @@ def test_capacity_steps_and_churn_guard(tmp_path: Path) -> None:
     assert json.loads((tmp_path / "raw.jsonl").read_text(encoding="utf-8"))["event"] == "churn.not_run"
 
 
+def test_session_overlap_gate_holds_until_explicit_release() -> None:
+    async def exercise() -> None:
+        gate = capacity_soak._SessionOverlapGate(2)
+        first = asyncio.create_task(gate.hold("device-1"))
+        await asyncio.sleep(0)
+        assert gate.all_arrived.is_set() is False
+        assert first.done() is False
+
+        second = asyncio.create_task(gate.hold("device-2"))
+        await asyncio.wait_for(gate.all_arrived.wait(), timeout=0.1)
+        assert first.done() is False
+        assert second.done() is False
+
+        gate.release()
+        await asyncio.gather(first, second)
+
+    asyncio.run(exercise())
+
+
+def test_run_scenario_cancellation_reaps_round_tasks(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def exercise() -> None:
+        sessions_started = asyncio.Event()
+        observer_finished = asyncio.Event()
+        running_sessions = 0
+
+        async def blocked_session(*_args: object) -> None:
+            nonlocal running_sessions
+            running_sessions += 1
+            if running_sessions == 2:
+                sessions_started.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                running_sessions -= 1
+
+        async def observer(
+            _cluster: object,
+            stop: asyncio.Event,
+            **_kwargs: object,
+        ) -> tuple[dict[str, int], int]:
+            try:
+                await stop.wait()
+                return {}, 0
+            finally:
+                observer_finished.set()
+
+        monkeypatch.setattr(capacity_soak, "_one_session", blocked_session)
+        monkeypatch.setattr(capacity_soak, "_observe_worker_load", observer)
+        scenario = capacity_soak.Scenario(
+            2,
+            1.0,
+            7,
+            capacity_soak.MediaProfile.WSS_OPUS_V1,
+            require_observable_overlap=True,
+        )
+        recorder = SimpleNamespace(emit=lambda *_args, **_kwargs: None)
+        cluster = SimpleNamespace(workers=())
+        task = asyncio.create_task(capacity_soak.run_scenario(cluster, scenario, recorder))
+        await asyncio.wait_for(sessions_started.wait(), timeout=1.0)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert running_sessions == 0
+        assert observer_finished.is_set() is True
+
+    asyncio.run(exercise())
+
+
 @pytest.mark.e2e_host
 @pytest.mark.parametrize(
     ("profile", "concurrency", "worker_max_sessions"),
@@ -97,6 +165,7 @@ def test_short_capacity_round_trip_releases_all_sessions(
     assert exit_code == 0, _capacity_failure_detail(summary, raw, cluster_root)
     report = json.loads(summary.read_text(encoding="utf-8"))
     result = report["results"][0]
+    assert result["scenario"]["require_observable_overlap"] is True
     assert result["status"] == "measured"
     assert result["sessions_attempted"] == concurrency
     assert result["sessions_succeeded"] == concurrency

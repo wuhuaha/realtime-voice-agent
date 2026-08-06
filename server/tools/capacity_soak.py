@@ -56,6 +56,7 @@ class Scenario:
     seed: int
     profile: MediaProfile
     worker_max_sessions: int = 5
+    require_observable_overlap: bool = False
 
     def __post_init__(self) -> None:
         if self.concurrency < 1:
@@ -101,6 +102,25 @@ class JsonlRecorder:
 
     def __exit__(self, *_: object) -> None:
         self.close()
+
+
+class _SessionOverlapGate:
+    """Keeps short fixture sessions open until their concurrency is observable."""
+
+    def __init__(self, expected_sessions: int) -> None:
+        self._expected_sessions = expected_sessions
+        self._arrived: set[str] = set()
+        self.all_arrived = asyncio.Event()
+        self._released = asyncio.Event()
+
+    async def hold(self, device_id: str) -> None:
+        self._arrived.add(device_id)
+        if len(self._arrived) >= self._expected_sessions:
+            self.all_arrived.set()
+        await self._released.wait()
+
+    def release(self) -> None:
+        self._released.set()
 
 
 def parse_steps(value: str) -> tuple[int, ...]:
@@ -233,7 +253,13 @@ async def _wait_workers_idle(director_url: str, *, timeout: float = 8.0) -> list
     )
 
 
-async def _observe_worker_load(cluster: ProcessCluster, stop: asyncio.Event) -> tuple[dict[str, int], int]:
+async def _observe_worker_load(
+    cluster: ProcessCluster,
+    stop: asyncio.Event,
+    *,
+    target_concurrency: int,
+    target_observed: asyncio.Event,
+) -> tuple[dict[str, int], int]:
     peaks: dict[str, int] = {}
     total_peak = 0
     async with httpx.AsyncClient(timeout=2) as client:
@@ -257,6 +283,8 @@ async def _observe_worker_load(cluster: ProcessCluster, stop: asyncio.Event) -> 
                 except (httpx.HTTPError, KeyError, TypeError, ValueError):
                     pass
             total_peak = max(total_peak, sample_total)
+            if total_peak >= target_concurrency:
+                target_observed.set()
             try:
                 await asyncio.wait_for(stop.wait(), timeout=0.05)
             except TimeoutError:
@@ -438,13 +466,16 @@ async def _one_session(
     device_id: str,
     recorder: JsonlRecorder,
     startup_delay: float,
+    overlap_gate: _SessionOverlapGate | None,
 ) -> SessionResult:
     await asyncio.sleep(startup_delay)
     started = time.monotonic()
     events: list[Any] = []
 
-    def on_event(event: Any) -> None:
+    async def on_event(event: Any) -> None:
         events.append(event)
+        if event.kind == "session.opened" and overlap_gate is not None:
+            await overlap_gate.hold(device_id)
 
     session = DesktopSession(
         ClientConfig(
@@ -544,26 +575,73 @@ async def run_scenario(cluster: ProcessCluster, scenario: Scenario, recorder: Js
     recorder.emit("scenario.started", scenario=_scenario_dict(scenario), worker_count=len(cluster.workers))
     while round_number == 0 or time.monotonic() < deadline:
         round_number += 1
+        overlap_gate = (
+            _SessionOverlapGate(scenario.concurrency)
+            if scenario.require_observable_overlap
+            else None
+        )
         tasks = [
-            _one_session(
-                cluster,
-                scenario,
-                f"capacity-{scenario.profile.value.replace('/', '-')}-{round_number}-{index}",
-                recorder,
-                rng.uniform(0, 0.02),
+            asyncio.create_task(
+                _one_session(
+                    cluster,
+                    scenario,
+                    f"capacity-{scenario.profile.value.replace('/', '-')}-{round_number}-{index}",
+                    recorder,
+                    rng.uniform(0, 0.02),
+                    overlap_gate,
+                ),
+                name=f"capacity-session-{round_number}-{index}",
             )
             for index in range(scenario.concurrency)
         ]
         stop_observer = asyncio.Event()
+        target_observed = asyncio.Event()
         observer = asyncio.create_task(
-            _observe_worker_load(cluster, stop_observer),
+            _observe_worker_load(
+                cluster,
+                stop_observer,
+                target_concurrency=scenario.concurrency,
+                target_observed=target_observed,
+            ),
             name="capacity-worker-load-observer",
         )
+        all_arrived = (
+            asyncio.create_task(
+                overlap_gate.all_arrived.wait(),
+                name="capacity-session-overlap",
+            )
+            if overlap_gate is not None
+            else None
+        )
         try:
+            if overlap_gate is not None and all_arrived is not None:
+                completed, _ = await asyncio.wait(
+                    {all_arrived, *tasks},
+                    timeout=2.0,
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+                if all_arrived in completed:
+                    try:
+                        await asyncio.wait_for(target_observed.wait(), timeout=1.0)
+                    except TimeoutError:
+                        pass
+                overlap_gate.release()
             round_results = list(await asyncio.gather(*tasks))
         finally:
+            if overlap_gate is not None:
+                overlap_gate.release()
             stop_observer.set()
-        observed, observed_total_peak = await observer
+            cleanup_tasks = [*tasks, observer]
+            if all_arrived is not None:
+                cleanup_tasks.append(all_arrived)
+            if sys.exception() is not None:
+                for task in cleanup_tasks:
+                    if not task.done():
+                        task.cancel()
+            elif all_arrived is not None and not all_arrived.done():
+                all_arrived.cancel()
+            await asyncio.gather(*cleanup_tasks, return_exceptions=True)
+        observed, observed_total_peak = observer.result()
         active_sessions_peak_total = max(active_sessions_peak_total, observed_total_peak)
         for worker_id, peak in observed.items():
             worker_peaks[worker_id] = max(worker_peaks.get(worker_id, 0), peak)
@@ -807,7 +885,14 @@ def main(argv: list[str] | None = None) -> int:
 
     scenarios = (
         [
-            Scenario(step, args.duration_seconds, args.seed + index, profile, args.worker_max_sessions)
+            Scenario(
+                step,
+                args.duration_seconds,
+                args.seed + index,
+                profile,
+                args.worker_max_sessions,
+                require_observable_overlap=True,
+            )
             for index, step in enumerate(args.steps)
         ]
         if args.mode == "capacity"
