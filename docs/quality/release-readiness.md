@@ -271,8 +271,15 @@ Candidate修复只允许UDP在两个freshness window内、queue无backlog/pendin
 验证结果：聚焦11项、Server `376 passed, 3 skipped`、Product `74 passed`、native/UDP host tests和ESP-IDF 5.5.2
 build/size均通过；app分区余量47%。只读验证release
 `rva-20260806T091641Z-bf98119-wt9272aa5c`完成一轮真实UDP probe、ASR、TTS和播放，无protocol error、stale或重连。
-本轮未自然命中forward-gap分支，因此只证明确定性行为和真机无明显劣化，不能替代重复长稳。该release由
-`bf98119`加worktree patch构成，不是正式Product release identity，正式门禁必须先形成clean commit并重新部署。
+本轮未自然命中forward-gap分支，因此只证明确定性行为和真机无明显劣化，不能替代重复长稳。该HIL release由
+`bf98119`加worktree patch构成，patch SHA-256为
+`9272aa5cb907ab5632de7c035cb15d62f1e346bfbc90b71a5856d7e7c601a0d7`。
+
+相同实现已形成clean Product commit `d5bace0e5246b9c92d5158cddc421c19a565078b`，并以Git archive部署为
+`rva-20260806T093500Z-d5bace0`；archive SHA-256为
+`ee892ffacaedcc3eb1242269951846b967a19a7e52c05b8b1ab5669bd450eaac`。clean release readiness为200，
+UDP、provider与coordination均ready，但未在该clean release上重复HIL。因此真机证据仍绑定内容等价的临时release，
+clean release只证明commit-addressable部署与启动就绪，不能冒充真机回归证据。
 
 ## 当前发布门禁
 
