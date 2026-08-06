@@ -1,7 +1,7 @@
 # Release readiness
 
-更新日期：2026-08-05
-状态：当前候选 host/弱网/30m 与 fresh bundle 已验证 / 新 bundle HIL 尚未执行
+更新日期：2026-08-06
+状态：当前候选 host/弱网/30m 与 fresh public bundle 双协议 HIL 已验证 / alpha 非生产就绪
 
 本文只记录当前 Product 候选和可复核的发布门禁。历史 artifact、临时地址、SSID、原始串口日志和旧协议结论不构成
 当前 release evidence；未执行的门禁保持 `not_run` 或 `incomplete`。
@@ -32,22 +32,23 @@ successor可以继承代码行为证据，但最终 artifact identity和构建�
 ## 当前候选身份
 
 - 分支：`codex/provisioning-weaknet-v0.2`
-- 当前实现 source：`02c8154`（包含 provisioning、capacity/churn、Desktop lifecycle 与 netem harness）
-- 状态：实现已push并从clean source生成fresh bundle；真机HIL完成前仍不是release-ready
+- 当前实现与 fresh bundle source：`b03f706c394fddedef2364e594e8fc5680473131`
+- 状态：已从 clean source 构建 public bundle，并完成真机 flash、配置 NVS 与双协议 HIL；仍受本文列出的 alpha 边界约束
 - 当前新鲜host门禁：root `74 passed`、Server `367 passed, 3 skipped`、Desktop Reference `124 passed`
 - provisioning tools：`34 passed`；官方ESP-IDF 5.5.2 generator生成`24576-byte` NVS image通过
-- fresh public bundle source：`e0ea539408cee2c785c596b76d8c626d63ccc4cf`
-- fresh public bundle SHA-256：`0358f3061f5158e76ec08b644806bc4db822cee29fa102ee2303379af02edf43`
-- fresh application SHA-256：`6d6755f4645db6ba49c07a9c43d9d7c26ccaa9e52d9c4bb51eca1e32b57d9622`
+- fresh public bundle SHA-256：`8cf5382eac72704b2b06de3d0a4b0d5b7a53191a4fc9deadaf2e46e7203c80e4`
+- fresh application SHA-256：`7b431f10a8a7c96053b76745d965fc61b0ca8ad670626d4de336bb1711e69f14`
 - fresh bundle build/manifest/checksum/CLI validate与五镜像flash dry-run：`build_passed / host_verified`
-- fresh bundle真机flash、provision、readback、NVS preserve/erase和双协议HIL：`not_run`
+- fresh bundle真机flash、provision/readback、NVS preserve/erase和双协议HIL：`device_verified`
 
 本节的host/远端结果绑定上述实现提交；bundle evidence绑定精确clean source与digest，不能替代真机HIL。
 
 ## 软件与构建门禁
 
-本轮候选新增公共 bundle provisioning CLI、容量/churn 与 netns/netem harness，并已从clean `e0ea539`构建新的
-fresh bundle；该bundle尚未完成HIL，因此不替换上节的`device_verified` artifact identity。当前 host 验证事实为：provisioning tools
+本轮候选新增公共 bundle provisioning CLI、容量/churn 与 netns/netem harness，并已从 clean `b03f706` 构建新的
+fresh bundle。项目显式启用 `CONFIG_ESP_WS_CLIENT_SEPARATE_TX_LOCK=y`；生成配置中的
+`CONFIG_ESP_WS_CLIENT_TX_LOCK_TIMEOUT_MS=2000`
+来自组件默认值，并非项目主动调大超时。独立 TX lock 使全双工 WSS 上行发送不再与下行接收/状态主锁竞争。当前 host 验证事实为：provisioning tools
 `34 passed`，并使用官方 ESP-IDF 5.5.2 NVS generator成功生成固定 `24576-byte` image；capacity harness已对 WSS与
 UDP执行 1/5并发阶梯并标记 `measured`，每个成功 session要求非零上行、固定下行帧数、唯一 playback闭环和必需
 事件，同时验证 Worker `active_sessions=0`、子进程/端口回收及 orphan task修复。第一条测试lease的释放由随后
@@ -68,8 +69,8 @@ aggregate为`evidence_scope=completion_and_bounded_recovery`、`paired_randomnes
 远端UDP short-session churn已连续运行`1800.038s`并完成`17855/17855`个严格媒体闭环，p50/p95/p99为
 `32.523/42.102/58.014ms`、最大`181.659ms`。远端WSS也连续运行`1800.050s`并完成`18013/18013`，
 p50/p95/p99为`31.849/41.710/49.143ms`、最大`144.454ms`。两轮最终active session均为0且进程/端口回收通过。
-2小时short-session churn与continuous-session soak均为`not_run`，后者runner尚未实现。使用新CLI进行真机
-flash/provision/readback/preserve/erase也为`not_run`。单个profile通过不能外推为另一profile或双profile门禁通过。
+2小时short-session churn与continuous-session soak均为`not_run`，后者runner尚未实现。新CLI的真机
+flash/provision/readback/preserve/erase已完成；这些设备交付证据不替代尚未运行的长时稳定性门禁。
 
 历史 GitHub Actions 已覆盖 `repository`、`server`、`desktop-reference`、Linux host E2E、Redis integration、native
 host contracts 和 ESP-IDF build/size。当前 `3f207a5` 本地完整门禁为 root `52 passed`、Server
@@ -82,12 +83,12 @@ source/config构建，大小 `0x21aa80`，4 MiB app partition余量
 `0x1e5580`（47%）；其 provenance、source revision、config digest与 artifact digest 已记录。该 private app不等于
 公开 release bundle。
 
-公共 bundle 使用锁定 ESP-IDF `v5.5.2` 和 tracked `sdkconfig.defaults` 构建，六个 Wi-Fi/bootstrap敏感字段均为空。
-application大小 `0x21a650`，4 MiB app partition余量 `0x1e59b0`（47%）；五个烧录镜像、分区 offset、固定字体来源、
-许可证和 SHA-256 均由 manifest/provenance绑定。provenance SHA-256为
-`eb3eb74223d7e534f0c5a3dbd2ee5eff276ade990bbbeb94c20f820542ecc1b8`。CycloneDX 1.5 release SBOM 从四个 lock input
-确定性生成，共 103 个组件，SHA-256为 `051b3576694b46da7dad0462777325f99e5595db629dd933429e1e8c9f3fded8`，
-`--check` 与 secret scan 均通过。bundle、SBOM和 provenance保持 ignored，等待正式 release流程上传，不进入 Git。
+当前 fresh 公共 bundle 使用锁定 ESP-IDF `v5.5.2` 和 tracked `sdkconfig.defaults` 构建，六个 Wi-Fi/bootstrap敏感字段均为空。
+application大小 `0x21a9c0`，4 MiB app partition余量 `0x1e5640`（47%）；五个烧录镜像、分区 offset、固定字体来源、
+许可证和 SHA-256 均由 manifest/provenance绑定。当前 build provenance SHA-256为
+`3f0ded37bc28219c56ac043829cccf1ac96751f75a9f78677400ba2ae3ad463f`。依赖 lock 未改变；既有 CycloneDX 1.5
+SBOM 是依赖清单证据，但未在本轮重新生成并核验为当前 bundle artifact，正式 release 前仍须从目标 source 重建并执行
+`--check`。bundle、SBOM和 provenance保持 ignored，等待正式 release流程上传，不进入 Git。
 
 ## 自动稳定性与故障注入
 
@@ -171,7 +172,7 @@ bootstrap；UDP 本地轮换使用 authenticated `refresh_after_ms` 的 monotoni
 切分和 ASR 准确率不属于本项目本轮门禁，只要求这些输入不得破坏 transport、session、playback generation、terminal
 或资源释放。声学、真实 netem 和固定延迟分位数不进入本次门禁。
 
-### Public bundle 真机门禁
+### 上一 Public bundle 真机门禁
 
 公共 bundle `e63d799c...c6f3be` 的五个分区通过 `COM11` 烧录并逐段 hash verified，未把 Wi-Fi、Director endpoint或
 token写入 firmware image。首次空 NVS启动按预期进入 provisioning UI；随后从 ignored local input生成临时 NVS image，
@@ -196,25 +197,56 @@ reboot loop。MIC会话触发由日志闭环，用户另行确认 `Hi ESP` 语�
 - `close_code=1000`、`close_reason=normal`、`session_closed reason=user_initiated`
 - Director exact release `200`；最终 Worker `active_sessions=0/5`，Director/Worker `NRestarts=0`
 
+### 当前 Fresh public bundle 真机门禁
+
+最初从 `e0ea539408cee2c785c596b76d8c626d63ccc4cf` 构建的 fresh bundle 已被 supersede：真机 WSS 全双工时，
+`esp_websocket_client` 下行接收持有主锁，上行 Opus send 等待约 250 ms 后报
+`Could not lock ws-client`，继而触发 `runtime failure category=uplink_send` 和 fresh reconnect。该 artifact 不能作为最终
+WSS 发布证据。`b03f706c394fddedef2364e594e8fc5680473131` 通过独立 TX lock 修复该竞争，并从 clean source 重新构建；
+当前 bundle SHA-256 为 `8cf5382eac72704b2b06de3d0a4b0d5b7a53191a4fc9deadaf2e46e7203c80e4`，application
+SHA-256 为 `7b431f10a8a7c96053b76745d965fc61b0ca8ad670626d4de336bb1711e69f14`。
+
+上游 `espressif/esp_websocket_client 1.7.0` 的 PING/PONG/CLOSE 内部路径仍把名称和说明为毫秒的 TX lock timeout
+直接传给 FreeRTOS semaphore API，实际等待时长受 tick rate 影响。这是依赖版本的残余单位风险；当前数据面修复不以
+调大该值掩盖竞争，后续升级组件时应复核并用故障注入覆盖控制帧路径。
+
+当前 bundle 的五个镜像均完成真机 flash 并逐段 hash verified。配置工具的 provision/readback 和 erase-config 路径已
+在本轮真机流程验证；修复版五镜像 reflash 保留 NVS，`rva_wifi:ssid`、`rva_wifi:password`、
+`voice_agent:ws_url`、`voice_agent:token_origin`、`voice_agent:token` 五个业务键前后值一致，NVS 页 CRC 均为 `OK`。
+
+当前 fresh bundle WSS 回归：
+
+- selected profile=`wss-opus/1`；上行 `928` 个 packet，下行 `266` 个 packet
+- 会话 normal close/release，最终 Worker `active_sessions=0`
+- 未再观察到 `Could not lock ws-client`、`runtime failure category=uplink_send` 或非预期 fresh reconnect
+
+当前 fresh bundle UDP 回归：
+
+- selected profile=`udp-opus-gcm/1`；authenticated probe 单次成功，`elapsed_ms=12`
+- 上行 `533` 个 packet、`1599` 个 decoded/runner PCM frame，下行 `135` 个 packet
+- 用户确认真实交互符合预期；服务端会话 normal close/release，最终 Worker `active_sessions=0`
+- 串口采集因 Windows USB 重枚举中止，未取得完整串口尾段；该缺口不写成串口通过，UDP 结论绑定用户体验与完整服务端
+  media/session evidence
+
 ## 当前发布门禁
 
 | Gate | 当前状态 | 当前证据与完成条件 |
 | --- | --- | --- |
-| Product commit + CI | `host_verified` | `3f207a5` 已 push；本地完整门禁与 GitHub Actions run `30875773937`通过；`6fddf82`仅为 evidence 文档 |
+| Product commit + CI | `host_verified / current CI not_run` | 当前 `b03f706` 本地 root 74项及仓库门禁通过；尚未登记该 source 的新 CI。历史 Server source `3f207a5` GitHub Actions run `30875773937`通过，不替代当前 source CI |
 | Server immutable archive | `public_path_verified` | `3f207a5` 只读 archive strict check、部署和 rollback保留通过 |
 | Linux Director/Worker readiness | `public_path_verified` | 当前 release ready，profiles、capacity、provider、coordination和 UDP socket正常 |
-| Native clean build + size | `build_passed / image_sized` | fresh `e0ea539` bundle release-eligible，SHA-256 `0358f306...edf43`，app余量47% |
-| Flash/boot/display/touch | `device_verified` | public五分区hash verified；app identity、显示、触摸、Qwen字体、AFE无异常 |
-| Wi-Fi/NVS/bootstrap | `device_verified` | 空NVS按预期进入provisioning；临时private NVS input未进入bundle/Git，公网bootstrap成功 |
-| WSS voice loop | `device_verified` | public bundle两轮，374/94包、1122 PCM frames、normal close/release、0 invalid/overload |
-| UDP admission/bootstrap | `device_verified` | public bundle完成AEAD probe、source pinning，elapsed 47 ms、invalid 0 |
-| UDP voice loop | `device_verified` | public bundle两轮双向Opus，462/82包、1386 PCM frames、normal close、0 invalid/overload |
+| Native clean build + size | `build_passed / image_sized` | fresh `b03f706` bundle SHA-256 `8cf5382e...c80e4`；application `0x21a9c0`，app余量47% |
+| Flash/boot/display/touch | `device_verified` | 当前 fresh public五分区hash verified；app identity、显示、触摸、Qwen字体、AFE无异常 |
+| Wi-Fi/NVS/bootstrap | `device_verified` | provision/readback与erase-config已验证；修复版reflash后五个业务NVS键保持一致，公网bootstrap成功 |
+| WSS voice loop | `device_verified` | 当前 fresh bundle 928/266包、normal close/release、active 0，无锁失败或非预期重连 |
+| UDP admission/bootstrap | `device_verified` | 当前 fresh bundle完成AEAD probe与source pinning，elapsed 12 ms |
+| UDP voice loop | `device_verified / serial_partial` | 当前 fresh bundle 533/135包、1599 PCM frames、normal close、active 0；用户体验和Server evidence通过，串口因USB重枚举中止 |
 | End-to-end latency | `not_run` | alpha known limitation；未承诺固定 p50/p95/p99 SLO |
 | Weak network | `host_verified / performance incomplete` | 90-cell为83 completed、2 bounded recovery、5预期UDP blocked，各组5/5；无seed且无物理/性能指标，不构成transport优劣或SLO |
 | Stability / capacity | `30m measured / incomplete` | WSS/UDP远端独立30分钟分别`18013/18013`与`17855/17855`；2小时、continuous-session和multi-Worker drain未完成 |
-| Public provisioning CLI HIL | `host_verified / device not_run` | fresh bundle validate与五镜像dry-run通过；真机flash/provision/readback/preserve/erase尚未执行 |
+| Public provisioning CLI HIL | `device_verified` | fresh bundle validate、五镜像flash、provision/readback、五键preserve与erase-config真机路径通过 |
 | AEC/acoustic | `out_of_scope` | 当前开源定位不以 NS/ASR/AEC 主观效果为 release gate |
-| Security/repository | `host_verified / production incomplete` | 当前 secret/repository scan通过；103组件 release SBOM已生成并校验；TLS、漏洞扫描和入口限流仍由部署方完成 |
+| Security/repository | `host_verified / production incomplete` | 当前 secret/repository scan通过；依赖locks未变且既有SBOM inventory可用，但当前bundle SBOM尚未重建核验；TLS、漏洞扫描和入口限流仍由部署方完成 |
 
 ## 证据规则
 
