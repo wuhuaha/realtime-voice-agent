@@ -10,7 +10,7 @@ dependencies = [
   "livekit-agents==1.6.8",
   "livekit-plugins-openai==1.6.8",
   "livekit-plugins-silero==1.6.8",
-  "pydantic-settings==2.10.1",
+  "pydantic-settings==2.14.2",
   "uvicorn[standard]==0.34.3",
   "voice-contracts",
   "websockets==15.0.1",
