@@ -44,9 +44,10 @@ Worker drain 只有场景实际启动至少两个 Worker 时执行，否则摘�
 使并发 10 的 cell 启动两个 Worker并验证 fresh route避开 draining Worker；并发 1/5 的单 Worker cell不提供 drain
 证据。结果是当前机器上的 `measured` session-churn证据，不是容量 SLO。
 
-30 分钟或 2 小时 short-session churn 必须显式使用 `churn --execute --duration-seconds 1800|7200`；当前两种时长均
-为 `not_run`。它重复建立和关闭短 session，不是保持同一 session连续存活。continuous-session soak runner尚未实现，
-因此该门禁为 `not_run/not_implemented`；真实provider故障和受控Redis outage未运行时也保持`not_run`。
+30 分钟或 2 小时 short-session churn 必须显式使用 `churn --execute --duration-seconds 1800|7200`。它重复建立和关闭
+短 session，不是保持同一 session连续存活。`v0.1.0-alpha.1` 已完成 WSS/UDP 各30分钟远端运行；2小时
+short-session churn仍为`not_run`。设备continuous-operation证据与本host harness分开记录；真实provider故障和
+受控Redis outage未运行时保持`not_run`。
 
 ```bash
 uv run python tools/capacity_soak.py churn --execute --profile wss-opus/1 \

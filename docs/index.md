@@ -16,6 +16,7 @@
 
 ## 协议与开发
 
+- [快速开始](getting-started.md)
 - [协议总览](protocol/overview.md)
 - [RVA Protocol 1.0](protocol/rva-protocol-v1.md)
 - [WSS Opus 1](protocol/wss-opus-v1.md)
@@ -30,6 +31,7 @@
 - [测试策略](quality/test-strategy.md)
 - [Release readiness](quality/release-readiness.md)
 - [v0.1.0-alpha.1 Release notes](quality/release-notes-v0.1.0-alpha.1.md)
+- [v0.1.0-alpha Release notes（历史版本）](quality/release-notes-v0.1.0-alpha.md)
 - [Known limitations](quality/known-limitations.md)
 - [需求追踪](quality/requirements-traceability.md)
 - [安全模型](security/security-model.md)

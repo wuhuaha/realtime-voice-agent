@@ -137,7 +137,7 @@
   <a class="skip" href="#content">跳到正文</a>
   <header class="masthead">
     <div class="masthead-inner">
-      <div class="document-line"><span class="document-mark">RVA / ENGINEERING MANUAL</span><span>2026-08-06 · v0.1 alpha candidate</span></div>
+      <div class="document-line"><span class="document-mark">RVA / ENGINEERING MANUAL</span><span>2026-08-07 · v0.1.0-alpha.1</span></div>
       <div class="hero">
         <div class="hero-copy">
           <span class="eyebrow">端侧、协议、服务端的一份共同地图</span>
@@ -232,7 +232,7 @@ python rva-device-provision.py erase-config --bundle . --port COMx</code></pre>
          <div class="split"><div class="panel"><h3>当前设备闭环</h3><p>当前绑定 artifact 的 <code>wss-opus/1</code> 与 <code>udp-opus-gcm/1</code> 均达到 <code>device_verified</code>：双向媒体、真实播放体验、normal close 和会话回收已有证据；UDP 串口尾段的采集边界单独记录在 release readiness。</p></div><div class="panel"><h3>公共交付工具</h3><p>无凭据 bundle 的 manifest/checksum 校验、固定分区边界、五镜像保留 NVS 烧录，以及官方 ESP-IDF generator 配置 NVS的 provision/readback、五键preserve和erase-config路径均已完成真机验证。</p></div></div>
          <div class="split"><div class="panel"><h3>Capacity / churn harness</h3><p>host harness 用可配置并发阶梯检查完整会话、playback facts、active session 归零与进程/端口回收。远端 WSS/UDP 独立 30 分钟 short-session churn 已分别完成 18013/18013 与 17855/17855；这不等于 2 小时或 continuous-session soak。</p></div><div class="panel"><h3>Weak-network harness</h3><p><code>isolated_loopback_netns</code> + <code>tc/netem</code> harness 以 profile-specific counter 证明规则和实际 drop。loss 只接受完整 <code>completed</code>，或严格证明 stopped、fresh reopen、旧媒体隔离与资源回收的 <code>bounded_recovery_verified</code>；non-loss 场景不得用恢复替代成功。无 seed 时逻辑 pair 不代表相同随机序列。</p></div></div>
          <div class="notice">旧 8-cell 小样本已被 90-cell 扩展运行取代。严格 bounded recovery 修复后的 fresh rerun 为 83 次完整 completed、2 次 bounded recovery、5 次预期 UDP blocked，各 scenario/profile 组均为 5/5。该结果是 host completion/recovery 证据，不是物理播放或 transport 性能优劣证明。</div>
-         <div class="notice notice-danger">当前候选source的双 profile 30 分钟结果不能外推到 2 小时或同一 session continuous soak。Fresh public bundle 的 ESP32-S3 flash/provision/readback/preserve/erase/WSS/UDP HIL 已完成，但这些结果不提升 TLS、声学、固定延迟 SLO 或长时稳定性为通过。最终门禁身份以 <a href="../quality/release-readiness.md">Release readiness</a> 为准。</div>
+         <div class="notice notice-danger">当前发布runtime的双 profile 30 分钟结果不能外推到 2 小时或同一 session continuous soak。Fresh public bundle 的 ESP32-S3 flash/provision/readback/preserve/erase/WSS/UDP HIL 已完成，但这些结果不提升 TLS、声学、固定延迟 SLO 或长时稳定性为通过。最终门禁身份以 <a href="../quality/release-readiness.md">Release readiness</a> 为准。</div>
       </section>
       <section id="compatibility"><div class="section-head"><span class="section-no">08 / COMPATIBILITY</span><h2>已退役兼容面不进入当前产品</h2></div>
         <p class="section-intro">Current Product endpoint 先经 Director bootstrap 获取 worker-bound grant，再连接选定 Worker 的 <code>/rva/v1/voice</code>；设备 wire 仅为 <code>rva/1</code> 与 <code>wss-opus/1</code> / <code>udp-opus-gcm/1</code>。</p>

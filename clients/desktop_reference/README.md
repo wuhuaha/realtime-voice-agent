@@ -139,9 +139,9 @@ aggregate明确标记`evidence_scope=completion_only`。正常场景必须媒体
 reacquire证明已释放；最终lease只验证release request被接受。该harness尚未采集media age、late/loss/PLC或物理
 speech-to-playout，因此不能据此宣称性能SLO、主观质量或WSS/UDP优劣。
 
-当前真实Linux尝试确认目标`tc`不支持seed，并暴露了TCP端口回收探针受`TIME_WAIT`影响的问题。代码已加入无seed
-fallback、capability字段和符合服务重启语义的端口探针，但完整矩阵尚未重新通过；当前状态仍是failed prerequisite /
-`not_run`，不得把harness存在或单元测试通过写成真实netem通过。
+`v0.1.0-alpha.1` 的真实 Linux 矩阵确认目标`tc`不支持seed，因此结果明确记录`paired_randomness=false`。修复后的
+90-cell矩阵全部满足预期：83次完整`completed`、2次严格`bounded_recovery_verified`和5次预期
+`udp_probe_timeout`。该结果只证明受控场景的完成性和有界恢复，不提供物理播放、media-age或transport性能优劣证据。
 
 ## 原生依赖与发布边界
 

@@ -12,7 +12,6 @@
 ## 2. 初始化与验证
 
 ```bash
-cp .env.example .env
 uv sync --locked --dev
 uv sync --directory server --locked --all-packages --dev
 uv sync --directory clients/desktop_reference --locked --extra test
@@ -49,10 +48,18 @@ uv run --directory clients/desktop_reference pytest -m "not e2e_host"
 
 ## 3. 启动 Server
 
+从仓库根目录复制并编辑配置。两个进程都必须从同一环境加载该文件；只把`.env`留在仓库根目录后再`cd server`
+不会被 Pydantic 自动发现：
+
 ```bash
-cd server
-uv run session-director
-uv run realtime-worker
+cp .env.example .env
+chmod 600 .env
+set -a; source .env; set +a
+```
+
+```bash
+uv run --directory server session-director
+uv run --directory server realtime-worker
 ```
 
 需要多 Worker、Redis 或固定网络端口时，使用 [`deployment/single-node/`](../../deployment/single-node/) 的 Docker Compose

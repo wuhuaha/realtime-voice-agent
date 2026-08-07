@@ -1,9 +1,9 @@
 # v0.1.0-alpha Release notes
 
-状态：release candidate / not release-ready
+状态：已发布 prerelease / 历史版本
 
-> 本文的设备与artifact摘要描述上一可恢复alpha baseline，不代表当前未提交工作快照已经release-ready。
-> 当前身份、门禁和未运行项以 [Release readiness](release-readiness.md) 为准。
+> 本文保留 `v0.1.0-alpha` 的历史版本说明。当前版本身份和门禁以
+> [Release readiness](release-readiness.md) 为准。
 
 `v0.1.0-alpha` 是 realtime-voice-agent 的首个开源技术预览。它聚焦低资源 endpoint 与 LiveKit Agents 之间的
 roomless 实时语音接入，不把具体闲聊业务、模型效果或完整 RTC 能力作为产品核心。
@@ -42,9 +42,8 @@ roomless 实时语音接入，不把具体闲聊业务、模型效果或完整 R
 ## 发布边界
 
 本版本不是 production-ready 声明。Linux/TLS/HA、UDP opt-in、弱网、长稳、延迟、声学和 provider 责任边界见
-[Known limitations](known-limitations.md)。公共 firmware bundle和 release SBOM候选已生成，但尚未创建正式 tag或
-GitHub Release；若 tag source不同于当前 bundle source，必须从 tag source重新构建。当前 private deployment image的
-真机证据不替代公共 bundle验证；最终release artifact仍以其内置manifest、provenance和GitHub Release digest为准。
+[Known limitations](known-limitations.md)。该历史版本已作为 GitHub prerelease 发布；当前下载和修复版本请使用
+[`v0.1.0-alpha.1`](https://github.com/wuhuaha/realtime-voice-agent/releases/tag/v0.1.0-alpha.1)。
 
 ## SBOM
 

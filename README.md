@@ -1,5 +1,9 @@
 # realtime-voice-agent
 
+[![CI](https://github.com/wuhuaha/realtime-voice-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/wuhuaha/realtime-voice-agent/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/wuhuaha/realtime-voice-agent?include_prereleases)](https://github.com/wuhuaha/realtime-voice-agent/releases)
+[![License](https://img.shields.io/github/license/wuhuaha/realtime-voice-agent)](LICENSE)
+
 面向低资源设备的实时语音 Agent 端云接入工程。当前 reference endpoints 是立创实战派 ESP32-S3 和 Python
 Desktop Reference Client；协议边界不绑定特定设备类型，浏览器、移动端和其他 MCU 可按同一 wire 适配。Endpoint
 通过项目定义的 `rva/1` 与 `wss-opus/1` / `udp-opus-gcm/1` 接入 roomless LiveKit `AgentSession`。服务端由
@@ -20,8 +24,24 @@ Session Director、可水平扩展的 Realtime Worker 和 provider adapters 组�
 历史 artifact 都不能单独替代当前源版本的真机、声学、弱网和长稳门禁。
 
 `v0.1.0-alpha.1` 是技术预览，不是 production-ready 声明。发布边界见
-[Known limitations](docs/quality/known-limitations.md)，候选内容见
+[Known limitations](docs/quality/known-limitations.md)，版本内容见
 [Release notes](docs/quality/release-notes-v0.1.0-alpha.1.md)。
+
+## 五分钟验证
+
+在 Linux、macOS 或 WSL 中安装 Python 3.12、Git 和 [`uv`](https://docs.astral.sh/uv/)，然后从仓库根目录执行：
+
+```bash
+uv sync --directory server --locked --all-packages --dev
+uv sync --directory clients/desktop_reference --locked --extra test
+uv run --directory clients/desktop_reference pytest \
+  tests/e2e/test_deterministic_host.py -m e2e_host -vv
+```
+
+该命令不需要 API key、Redis、声卡或开发板，会启动独立 Director/Worker，分别完成 WSS/UDP 的 bootstrap、Opus、
+control/media、playback facts 和资源回收。它验证协议与进程闭环，不代表真实 provider、硬件或公网质量。
+
+真实服务、Desktop 音频体验和 ESP32-S3 发布固件的完整入口见 [Getting started](docs/getting-started.md)。
 
 ## 目录
 
@@ -47,13 +67,17 @@ uv run python scripts/verify_repository.py
 uv run python scripts/check_secrets.py
 ```
 
-Server 运行入口只支持 Linux/container：
+Server 运行入口只支持 Linux/container。配置文件必须放在启动进程的工作目录或导出为环境变量；不要直接使用模板中的
+占位符：
 
 ```bash
-cd server
-uv sync --locked --all-packages --dev
-uv run session-director
-uv run realtime-worker
+cp .env.example .env
+# 编辑 .env 后：
+set -a; source .env; set +a
+uv sync --directory server --locked --all-packages --dev
+uv run --directory server session-director
+# 在另一个已加载同一 .env 的终端运行：
+uv run --directory server realtime-worker
 ```
 
 多实例部署使用 [`deployment/single-node/`](deployment/single-node/) 的 Docker Compose 资产；测试中的独立
@@ -62,7 +86,8 @@ Director/Worker 子进程由 `voice_testkit.subprocess_cluster` 管理，不作�
 Native firmware 入口为 `firmware/apps/voice_terminal/`。真实 provider、设备和网络凭据只写入 ignored
 `.env` / local configuration；tracked 模板只保存字段和安全占位符。
 
-文档从 [docs/index.md](docs/index.md) 开始阅读。Machine-readable `protocol/` 是 wire 的唯一权威。
+文档从 [docs/index.md](docs/index.md) 开始阅读。问题反馈见 [Contributing](CONTRIBUTING.md)，使用支持边界见
+[Support](SUPPORT.md)，安全问题请遵循 [Security policy](SECURITY.md)。Machine-readable `protocol/` 是 wire 的唯一权威。
 
 发布时可从锁文件生成不带时间戳的 CycloneDX 1.5 SBOM：
 
