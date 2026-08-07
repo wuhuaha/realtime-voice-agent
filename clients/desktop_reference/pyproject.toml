@@ -18,7 +18,7 @@ opus = [
 ]
 interactive = [
   "av==17.1.0",
-  "sounddevice==0.5.2",
+  "sounddevice==0.5.5",
 ]
 test = [
   "av==17.1.0",
