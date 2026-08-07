@@ -7,7 +7,7 @@ dependencies = [
   "cryptography==49.0.0",
   "fastapi==0.115.12",
   "httpx==0.28.1",
-  "livekit-agents==1.6.5",
+  "livekit-agents==1.6.8",
   "livekit-plugins-openai==1.6.5",
   "livekit-plugins-silero==1.6.5",
   "pydantic-settings==2.10.1",
