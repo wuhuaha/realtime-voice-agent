@@ -22,7 +22,7 @@ interactive = [
 ]
 test = [
   "av==17.1.0",
-  "jsonschema==4.25.1",
+  "jsonschema==4.26.0",
   "pytest>=8.3,<10",
   "pytest-asyncio==1.0.0",
   "ruff==0.12.5",
