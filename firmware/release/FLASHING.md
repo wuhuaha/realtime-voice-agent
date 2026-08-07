@@ -4,7 +4,8 @@ This bundle contains public firmware images with no Wi-Fi network, Director URL,
 The five firmware images deliberately exclude the NVS configuration partition.
 
 Validation status: the CLI host contracts have `34 passed`. Flash, provision, readback, NVS preservation/erase, and
-WSS/UDP HIL must still be run against each fresh release bundle; see `docs/quality/release-readiness.md` in the source tree.
+WSS/UDP HIL evidence is tracked in `docs/quality/release-readiness.md`. Rebuilding unchanged runtime source does not
+mechanically require another HIL run; endpoint, wire, media lifecycle, transport, or hardware behavior changes do.
 
 ## Prerequisites
 

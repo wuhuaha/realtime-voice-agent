@@ -73,9 +73,9 @@ bundle 内附带 `rva-device-provision.py` 和操作说明。分发或烧录前�
 [Flashing and provisioning](../../release/FLASHING.md)。当前 NVS 未加密，工具只能降低 argv、日志、Git 和临时文件
 泄漏风险，不能抵御物理 flash 读取。
 
-当前CLI host contracts为`34 passed`；当前工作快照的fresh public bundle与真机
-flash/provision/readback/preserve/erase/WSS/UDP HIL仍为`not_run`，精确状态见
-[Release readiness](../../../docs/quality/release-readiness.md)。
+当前CLI host contracts为`34 passed`；fresh public bundle的build、flash、provision/readback、preserve/erase与
+WSS/UDP HIL精确状态见[Release readiness](../../../docs/quality/release-readiness.md)。相同runtime source的重新打包
+不机械触发HIL；端侧、wire、媒体生命周期、transport或硬件行为变化时才执行对应真机门禁。
 
 默认生成公共构建，配置和缓存位于 ignored 的
 `firmware/apps/voice_terminal/build-local`。如需使用本地 ignored 的部署配置，必须显式传入同一工程下的

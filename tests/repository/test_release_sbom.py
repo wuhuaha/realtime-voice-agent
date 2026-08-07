@@ -21,7 +21,7 @@ def test_release_sbom_is_deterministic_and_covers_all_release_inputs() -> None:
     document = json.loads(first)
     assert document["bomFormat"] == "CycloneDX"
     assert document["specVersion"] == "1.5"
-    assert document["metadata"]["component"]["version"] == "0.1.0-alpha"
+    assert document["metadata"]["component"]["version"] == "0.1.0-alpha.1"
     assert len(document["metadata"]["properties"]) == len(SBOM.INPUTS)
 
     components = {item["bom-ref"]: item for item in document["components"]}

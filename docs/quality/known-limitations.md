@@ -1,6 +1,6 @@
 # Known limitations
 
-适用版本：`v0.1.0-alpha`
+适用版本：`v0.1.0-alpha.1`
 
 本版本用于验证低资源 endpoint 通过 RVA wire 接入 roomless LiveKit Agents 的工程边界，不是 production-ready、
 通用 RTC 或完整语音产品声明。精确门禁状态以 [Release readiness](release-readiness.md) 为准。
@@ -56,9 +56,10 @@
 - Release SBOM 是锁定组件清单，不是漏洞扫描结论。字体、Python native wheel、FFmpeg/PyAV、PortAudio 等依赖仍须由
   实际二进制发布方按目标平台复核许可证和分发义务。
 
-上述限制不影响上一可恢复 alpha baseline 对已登记 wire、资源有界生命周期和 WSS/UDP 真机闭环，
-以及 Linux 单节点部署基线的验证结论。上一公共无凭据 firmware bundle已完成可复现构建、size、provenance、临时
-NVS provisioning和WSS/UDP真机门禁；本轮新增的通用 `validate/flash/provision/erase-config` CLI 已通过 host tests，
-但尚未对新生成 bundle 执行真机 provisioning/readback/erase 回归。bundle不携带可直接联网的凭据，部署方仍须
-提供安全 provisioning。当前tooling/weaknet实现已形成本地提交，但仍须push并完成fresh bundle/HIL后才能获得新的发布身份。
-UDP继续保持显式 opt-in；90-cell host矩阵通过不替代真机弱网、物理播放或性能SLO。
+上述限制不影响已登记 wire、资源有界生命周期、WSS/UDP 真机闭环和 Linux 单节点部署基线的验证结论。公共无凭据
+firmware bundle已完成可复现构建、size、provenance、五镜像flash、临时NVS provisioning/readback、配置保留、
+erase-config和WSS/UDP真机门禁；bundle不携带可直接联网的凭据，部署方仍须提供安全provisioning。Server timeline修复
+已形成clean commit `d5bace0`，repository successor `47f6fee`的完整CI已通过，clean archive
+`rva-20260806T093500Z-d5bace0`已部署并通过readiness。真机回归绑定内容等价的临时release；未在clean archive上重复
+HIL，因此不能把clean readiness写成精确artifact的真机通过，也无需仅因身份整理重复要求设备交互。UDP继续保持显式
+opt-in；90-cell host矩阵通过不替代真机弱网、物理播放或性能SLO。

@@ -19,9 +19,9 @@ Session Director、可水平扩展的 Realtime Worker 和 provider adapters 组�
 发布状态和未运行项以 [Release readiness](docs/quality/release-readiness.md) 为准。任何 build、host test 或
 历史 artifact 都不能单独替代当前源版本的真机、声学、弱网和长稳门禁。
 
-`v0.1.0-alpha` 是技术预览，不是 production-ready 声明。发布边界见
+`v0.1.0-alpha.1` 是技术预览，不是 production-ready 声明。发布边界见
 [Known limitations](docs/quality/known-limitations.md)，候选内容见
-[Release notes](docs/quality/release-notes-v0.1.0-alpha.md)。
+[Release notes](docs/quality/release-notes-v0.1.0-alpha.1.md)。
 
 ## 目录
 

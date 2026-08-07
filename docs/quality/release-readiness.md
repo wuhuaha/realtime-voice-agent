@@ -1,10 +1,14 @@
 # Release readiness
 
-更新日期：2026-08-06
-状态：当前候选 host/弱网/30m 与 fresh public bundle 双协议 HIL 已验证 / alpha 非生产就绪
+更新日期：2026-08-07
+状态：`v0.1.0-alpha.1` 候选；host/弱网/30m 与 fresh public bundle 双协议 HIL 已验证 / 非生产就绪
 
 本文只记录当前 Product 候选和可复核的发布门禁。历史 artifact、临时地址、SSID、原始串口日志和旧协议结论不构成
 当前 release evidence；未执行的门禁保持 `not_run` 或 `incomplete`。
+
+已公开的 prerelease/tag `v0.1.0-alpha` 不可变：annotated tag object为`0bc19f5`，解引用后指向commit
+`6edf881`。本文后续候选统一称为`v0.1.0-alpha.1`，不得移动旧tag或覆盖旧release notes。正式创建alpha.1前仍须
+以最终tag source重建artifact并关闭本文对应门禁。
 
 ## 上一可恢复发布基线
 
@@ -31,20 +35,29 @@ successor可以继承代码行为证据，但最终 artifact identity和构建�
 
 ## 当前候选身份
 
-- 分支：`codex/provisioning-weaknet-v0.2`
-- 当前 Product source：`4950ad3eb37f753de5c6a13689f93312eda82713`
+- 目标发布分支：`main`；候选沿`codex/provisioning-weaknet-v0.2` fast-forward收口，不重写历史
+- 已验证CI/evidence baseline：`47f6feea35b1ad5776e547fb4794f12a78e03429`（docs-only evidence successor）
+- 当前 Server runtime source：`d5bace0e5246b9c92d5158cddc421c19a565078b`
+- 当前 Firmware runtime source：`b03f706c394fddedef2364e594e8fc5680473131`
+- 当前 CI source：`47f6feea35b1ad5776e547fb4794f12a78e03429`（包含`d5bace0` Server runtime）
 - fresh bundle source：`b03f706c394fddedef2364e594e8fc5680473131`
-- 状态：已从 clean source 构建 public bundle，并完成真机 flash、配置 NVS 与双协议 HIL；仍受本文列出的 alpha 边界约束
-- 当前新鲜host门禁：root `74 passed`、Server `369 passed, 3 skipped`、Desktop Reference `124 passed`
-- 当前 GitHub Actions：[run 31068975637](https://github.com/wuhuaha/realtime-voice-agent/actions/runs/31068975637) 全部成功
+- 状态：已从 clean Firmware source 构建 public bundle并完成真机双协议HIL；Server `d5bace0` 已形成clean archive
+  并通过readiness，但该精确clean release尚未重复真机HIL
+- 当前 Server candidate本地门禁：聚焦`11 passed`、Server `376 passed, 3 skipped`、Product `74 passed`、
+  native/UDP host tests和ESP-IDF 5.5.2 build/size通过；Desktop Reference沿用未改代码的`124 passed`
+- 当前 GitHub Actions：[run 31089931952](https://github.com/wuhuaha/realtime-voice-agent/actions/runs/31089931952)
+  绑定`47f6fee`且7个job全部成功，覆盖repository、Server、Desktop Reference、双协议host E2E、Redis、native host
+  contracts和ESP-IDF build/size
 - provisioning tools：`34 passed`；官方ESP-IDF 5.5.2 generator生成`24576-byte` NVS image通过
 - fresh public bundle SHA-256：`8cf5382eac72704b2b06de3d0a4b0d5b7a53191a4fc9deadaf2e46e7203c80e4`
 - fresh application SHA-256：`7b431f10a8a7c96053b76745d965fc61b0ca8ad670626d4de336bb1711e69f14`
 - fresh bundle build/manifest/checksum/CLI validate与五镜像flash dry-run：`build_passed / host_verified`
 - fresh bundle真机flash、provision/readback、NVS preserve/erase和双协议HIL：`device_verified`
 
-当前 Product source 在 fresh bundle source 后只增加 HIL 证据和 host capacity harness修复；没有改变 Firmware或Server
-runtime。host/CI结果绑定当前 Product source；bundle evidence继续绑定精确clean source与digest，不能替代真机HIL。
+Firmware在fresh bundle source后没有代码变化，因此bundle与双协议HIL继续绑定`b03f706`及其digest。Server增加
+`d5bace0` UDP timeline bounded recovery；其本地完整门禁、`47f6fee`完整CI和内容等价patch HIL已记录，但clean
+`d5bace0` release只完成archive部署与readiness，尚未重复HIL。baseline后的候选只增加发布文档和metadata。四类身份不得合并为
+一个模糊的“当前 Product source”，也不得让CI、内容等价HIL或readiness相互替代。
 
 ## 软件与构建门禁
 
@@ -86,17 +99,19 @@ host contracts 和 ESP-IDF build/size。当前 `3f207a5` 本地完整门禁为 r
 secret scan 与 `git diff --check` 均通过。3 个 Server skip 是未配置 Redis subprocess URL，4 个 Desktop deselect 是
 Linux-only deterministic host E2E。Server source `3f207a5` 的 GitHub Actions
 [run 30875773937](https://github.com/wuhuaha/realtime-voice-agent/actions/runs/30875773937) 已成功；后续
-`6fddf82` 只包含 evidence 文档，不改变 Server/Firmware source。当前 Product source `4950ad3` 的
-[run 31068975637](https://github.com/wuhuaha/realtime-voice-agent/actions/runs/31068975637) 已全部成功，包含 Linux
-Server capacity、双协议 Desktop E2E、Redis、native host contracts和ESP-IDF build/size。Private deployment app 从 clean
-source/config构建，大小 `0x21aa80`，4 MiB app partition余量
+`6fddf82` 只包含 evidence 文档，不改变 Server/Firmware source。CI/evidence baseline `47f6fee` 的
+[run 31089931952](https://github.com/wuhuaha/realtime-voice-agent/actions/runs/31089931952) 已全部成功，包含 Linux
+Server capacity、双协议 Desktop E2E、Redis、native host contracts和ESP-IDF build/size；该run包含`d5bace0`
+Server timeline修复，构成当前Server source的CI证据。Private deployment app 从 clean source/config构建，大小
+`0x21aa80`，4 MiB app partition余量
 `0x1e5580`（47%）；其 provenance、source revision、config digest与 artifact digest 已记录。该 private app不等于
 公开 release bundle。
 
 当前 fresh 公共 bundle 使用锁定 ESP-IDF `v5.5.2` 和 tracked `sdkconfig.defaults` 构建，六个 Wi-Fi/bootstrap敏感字段均为空。
 application大小 `0x21a9c0`，4 MiB app partition余量 `0x1e5640`（47%）；五个烧录镜像、分区 offset、固定字体来源、
 许可证和 SHA-256 均由 manifest/provenance绑定。当前 build provenance SHA-256为
-`3f0ded37bc28219c56ac043829cccf1ac96751f75a9f78677400ba2ae3ad463f`。依赖 lock 未改变；已从当前 Product source
+`3f0ded37bc28219c56ac043829cccf1ac96751f75a9f78677400ba2ae3ad463f`。依赖 lock 未改变；已从先前host/CI source
+`4950ad3`
 重新生成 CycloneDX 1.5 SBOM并执行`--check`，共103个component，SHA-256为
 `051b3576694b46da7dad0462777325f99e5595db629dd933429e1e8c9f3fded8`。SBOM是锁定依赖清单，不是漏洞扫描或
 许可证复核结论。bundle、SBOM和 provenance保持 ignored，等待正式 release流程上传，不进入 Git。
@@ -121,19 +136,22 @@ Worker readiness 15 秒超时，未进入 session/media；随后连续 73 个 ca
 
 ## Linux 公网部署
 
-当前只读 release 为 `rva-20260804T034936Z-3f207a5`，Worker incarnation 为
-`worker-ol-rva-20260804T034936Z-3f207a5`。Director 和 Worker 均由 Linux `systemd --user` 运行；最终观测结果：
+当前 clean验证release为`rva-20260806T093500Z-d5bace0`，由`d5bace0` Git archive部署，archive SHA-256为
+`ee892ffacaedcc3eb1242269951846b967a19a7e52c05b8b1ab5669bd450eaac`。Director 和 Worker 均由 Linux
+`systemd --user`运行；最终观测结果：
 
 - Director：`ready`，coordination=`redis`
 - Worker：`ready`，`draining=false`，`healthy=true`，`active_sessions=0/5`
 - provider network、coordination、RVA WSS 和 RVA UDP socket：ready
 - advertised profiles：`wss-opus/1`、`udp-opus-gcm/1`
 
-Release archive strict check通过，release tree只读，上一 release保留。后续 replacement必须分配唯一
-`worker_id`，不得用重复 identity原地 restart。
+Release archive strict check通过，release tree只读，上一 release保留。clean release的readiness为200，UDP、provider
+和coordination均ready；未在这个精确archive上重复HIL。后续replacement必须分配唯一`worker_id`，不得用重复identity
+原地restart。
 
-同一部署上执行确定性 bootstrap smoke：WSS-only 与 WSS+UDP 两种请求均命中上述 Worker，返回预期 profiles，
-随后 exact route release 成功。该 smoke 证明公网 admission/bootstrap，不替代真机 UDP media。
+上一可恢复release `rva-20260804T034936Z-3f207a5`曾执行确定性bootstrap smoke：WSS-only与WSS+UDP两种请求均命中
+对应Worker，返回预期profiles，随后exact route release成功。该历史smoke证明当时公网admission/bootstrap，不构成
+clean `d5bace0` archive的重复bootstrap或真机UDP media证据。
 
 历史已登记部署曾使用 Desktop Reference Client、服务器 loopback WSS 和本机离线生成的中文 PCM 执行一次
 real-provider canary：119 个上行 frame、137 个下行 playback frame、1 次完整 playback fact；FunASR final、DeepSeek LLM、
@@ -285,9 +303,9 @@ clean release只证明commit-addressable部署与启动就绪，不能冒充真�
 
 | Gate | 当前状态 | 当前证据与完成条件 |
 | --- | --- | --- |
-| Product commit + CI | `host_verified` | 当前 `4950ad3` 本地root 74项、Server 369项通过；GitHub Actions run `31068975637`全部成功 |
-| Server immutable archive | `public_path_verified` | `3f207a5` 只读 archive strict check、部署和 rollback保留通过 |
-| Linux Director/Worker readiness | `public_path_verified` | 当前 release ready，profiles、capacity、provider、coordination和 UDP socket正常 |
+| Product commit + CI | `host_verified` | `47f6fee`包含`d5bace0` runtime；本地root 74项、Server 376项通过；GitHub Actions run `31089931952`的7个job全部成功 |
+| Server immutable archive | `public_path_verified` | `d5bace0`只读archive `rva-20260806T093500Z-d5bace0` strict check、部署和rollback保留通过 |
+| Linux Director/Worker readiness | `public_path_verified` | clean `d5bace0` release readiness 200，UDP、provider和coordination ready；未在该精确archive重复HIL |
 | Native clean build + size | `build_passed / image_sized` | fresh `b03f706` bundle SHA-256 `8cf5382e...c80e4`；application `0x21a9c0`，app余量47% |
 | Flash/boot/display/touch | `device_verified` | 当前 fresh public五分区hash verified；app identity、显示、触摸、Qwen字体、AFE无异常 |
 | Wi-Fi/NVS/bootstrap | `device_verified` | provision/readback与erase-config已验证；修复版reflash后五个业务NVS键保持一致，公网bootstrap成功 |

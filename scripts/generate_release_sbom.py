@@ -224,9 +224,9 @@ def build_sbom(root: Path = ROOT) -> dict[str, Any]:
         "metadata": {
             "component": {
                 "type": "application",
-                "bom-ref": "application:realtime-voice-agent@0.1.0-alpha",
+                "bom-ref": "application:realtime-voice-agent@0.1.0-alpha.1",
                 "name": "realtime-voice-agent",
-                "version": "0.1.0-alpha",
+                "version": "0.1.0-alpha.1",
             },
             "properties": input_properties,
         },
@@ -239,7 +239,7 @@ def serialize(sbom: dict[str, Any]) -> str:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Generate the deterministic v0.1 alpha release SBOM")
+    parser = argparse.ArgumentParser(description="Generate the deterministic v0.1.0-alpha.1 release SBOM")
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--check", action="store_true", help="fail if output differs from current lock inputs")
     args = parser.parse_args()
