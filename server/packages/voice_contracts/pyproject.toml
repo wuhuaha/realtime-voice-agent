@@ -2,7 +2,7 @@
 name = "voice-contracts"
 version = "0.1.0"
 requires-python = ">=3.12,<3.13"
-dependencies = ["pydantic==2.11.7"]
+dependencies = ["pydantic==2.13.4"]
 
 [build-system]
 requires = ["hatchling==1.27.0"]
