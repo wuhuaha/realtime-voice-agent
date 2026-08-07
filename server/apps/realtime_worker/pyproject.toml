@@ -11,7 +11,7 @@ dependencies = [
   "livekit-plugins-openai==1.6.5",
   "livekit-plugins-silero==1.6.5",
   "pydantic-settings==2.10.1",
-  "uvicorn[standard]==0.34.3",
+  "uvicorn[standard]==0.52.1",
   "voice-contracts",
   "websockets==15.0.1",
 ]
