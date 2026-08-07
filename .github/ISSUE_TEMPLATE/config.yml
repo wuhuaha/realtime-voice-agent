@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Support and troubleshooting
+    url: https://github.com/wuhuaha/realtime-voice-agent/blob/main/SUPPORT.md
+    about: 先检查支持边界、快速开始和故障排查
+  - name: Security report
+    url: https://github.com/wuhuaha/realtime-voice-agent/security/advisories/new
+    about: 私密报告漏洞或凭据泄漏，不要创建公开 Issue

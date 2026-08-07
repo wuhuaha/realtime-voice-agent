@@ -1,0 +1,32 @@
+name: Feature request
+description: 提议与低资源实时语音接入定位一致的新能力
+title: "[Feature] "
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: 需要解决的用户或工程问题，不要只描述实现方案
+    validations:
+      required: true
+  - type: textarea
+    id: scope
+    attributes:
+      label: Proposed scope
+      description: 涉及的 endpoint、Server、wire 或部署边界
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives and trade-offs
+    validations:
+      required: true
+  - type: textarea
+    id: validation
+    attributes:
+      label: Acceptance evidence
+      description: 建议如何验证行为、资源和兼容边界
+    validations:
+      required: true

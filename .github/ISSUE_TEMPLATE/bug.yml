@@ -1,0 +1,63 @@
+name: Bug report
+description: 报告可复现的协议、Server、Desktop 或 Firmware 缺陷
+title: "[Bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: 请先移除凭据、私有地址、原始音频和 provider 原始响应。
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Tag 或完整 commit SHA
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Protocol
+        - Session Director
+        - Realtime Worker
+        - Desktop Reference Client
+        - ESP32-S3 Firmware
+        - Deployment or documentation
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: Environment
+      description: OS、Python/ESP-IDF、endpoint、WSS/UDP 等必要信息
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Reproduction
+      description: 最小复现步骤和输入
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior and sanitized evidence
+    validations:
+      required: true
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checks
+      options:
+        - label: 我已确认该问题不属于 Known limitations。
+          required: true
+        - label: 我已移除 secret、Wi-Fi、私有地址和敏感音频。
+          required: true

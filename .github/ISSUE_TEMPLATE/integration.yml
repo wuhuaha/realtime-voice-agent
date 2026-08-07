@@ -1,0 +1,37 @@
+name: Protocol or provider integration
+description: 提议新的 endpoint、media profile 或 provider adapter
+title: "[Integration] "
+labels: ["integration"]
+body:
+  - type: dropdown
+    id: integration_type
+    attributes:
+      label: Integration type
+      options:
+        - Endpoint
+        - Media profile
+        - ASR provider
+        - LLM provider
+        - TTS provider
+    validations:
+      required: true
+  - type: textarea
+    id: use_case
+    attributes:
+      label: Use case and constraints
+      description: 目标设备、资源、网络、许可和部署约束
+    validations:
+      required: true
+  - type: textarea
+    id: contract
+    attributes:
+      label: Contract impact
+      description: 是否改变 current wire、schema、lifecycle、security 或 provider port
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Evidence and validation plan
+    validations:
+      required: true

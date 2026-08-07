@@ -3,6 +3,9 @@
 感谢贡献。Product 是当前协议、Server、ESP-IDF endpoint、正式测试和发布资产的唯一 authoring source；研究、失败路线、
 原始评测和大型 artifact 请放在 Research 或受控存储，不要复制到 Product。
 
+参与即表示同意遵守 [Code of Conduct](CODE_OF_CONDUCT.md)。一般使用问题先阅读 [Support](SUPPORT.md)；安全问题按
+[Security policy](SECURITY.md) 私密报告。
+
 ## 开始前
 
 - 先阅读 [README](README.md)、[协议总览](docs/protocol/overview.md)、[架构文档](docs/architecture/system.md) 和
