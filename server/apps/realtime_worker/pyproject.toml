@@ -3,7 +3,7 @@ name = "realtime-worker"
 version = "0.1.0"
 requires-python = ">=3.12,<3.13"
 dependencies = [
-  "av==17.1.0",
+  "av==18.0.0",
   "cryptography==49.0.0",
   "fastapi==0.115.12",
   "httpx==0.28.1",
