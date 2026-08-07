@@ -4,12 +4,12 @@ version = "0.1.0"
 requires-python = ">=3.12,<3.13"
 dependencies = [
   "av==17.1.0",
-  "cryptography==49.0.0",
-  "fastapi==0.115.12",
+  "cryptography==50.0.0",
+  "fastapi==0.141.1",
   "httpx==0.28.1",
-  "livekit-agents==1.6.5",
-  "livekit-plugins-openai==1.6.5",
-  "livekit-plugins-silero==1.6.5",
+  "livekit-agents==1.6.8",
+  "livekit-plugins-openai==1.6.8",
+  "livekit-plugins-silero==1.6.8",
   "pydantic-settings==2.10.1",
   "uvicorn[standard]==0.34.3",
   "voice-contracts",
