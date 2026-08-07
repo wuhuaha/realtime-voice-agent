@@ -10,7 +10,7 @@ dependencies = [
 [dependency-groups]
 dev = [
   "jsonschema==4.25.1",
-  "pytest==8.4.1",
+  "pytest==9.1.1",
   "ruff==0.12.5",
 ]
 
