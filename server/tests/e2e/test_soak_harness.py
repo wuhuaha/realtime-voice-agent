@@ -21,12 +21,37 @@ def test_scenario_worker_count_uses_configured_session_capacity() -> None:
     assert capacity_soak.Scenario(5, 1.0, 1, profile).worker_count == 1
     assert capacity_soak.Scenario(10, 1.0, 1, profile).worker_count == 2
     assert capacity_soak.Scenario(5, 1.0, 1, profile, worker_max_sessions=2).worker_count == 3
+    assert (
+        capacity_soak.Scenario(
+            100,
+            1.0,
+            1,
+            profile,
+            worker_max_sessions=100,
+            worker_count_override=1,
+        ).worker_count
+        == 1
+    )
     with pytest.raises(ValueError, match="concurrency"):
         capacity_soak.Scenario(0, 1.0, 1, profile)
     with pytest.raises(ValueError, match="duration"):
         capacity_soak.Scenario(1, 0.0, 1, profile)
     with pytest.raises(ValueError, match="worker_max_sessions"):
         capacity_soak.Scenario(1, 1.0, 1, profile, worker_max_sessions=0)
+    with pytest.raises(ValueError, match="worker_count_override"):
+        capacity_soak.Scenario(1, 1.0, 1, profile, worker_count_override=0)
+
+
+def test_steady_options_reject_invalid_resource_workload_values() -> None:
+    assert capacity_soak.SteadyOptions(1, 2, 3, "load-a").device_prefix == "load-a"
+    with pytest.raises(ValueError, match="warmup_seconds"):
+        capacity_soak.SteadyOptions(0, 2, 3)
+    with pytest.raises(ValueError, match="measurement_seconds"):
+        capacity_soak.SteadyOptions(1, float("nan"), 3)
+    with pytest.raises(ValueError, match="ramp_per_second"):
+        capacity_soak.SteadyOptions(1, 2, 0)
+    with pytest.raises(ValueError, match="device_prefix"):
+        capacity_soak.SteadyOptions(1, 2, 3, "")
 
 
 def test_jsonl_recorder_writes_structured_records(tmp_path: Path) -> None:

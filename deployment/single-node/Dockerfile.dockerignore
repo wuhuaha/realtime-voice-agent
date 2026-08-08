@@ -6,3 +6,6 @@
 !server/apps/**
 !server/packages/
 !server/packages/**
+!deployment/
+!deployment/single-node/
+!deployment/single-node/preflight.py

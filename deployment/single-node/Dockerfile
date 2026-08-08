@@ -1,8 +1,11 @@
 # syntax=docker/dockerfile:1.7
 
-FROM ghcr.io/astral-sh/uv:0.10.6-python3.12-bookworm-slim AS builder
+FROM docker.io/astral/uv:python3.12-bookworm-slim@sha256:e5b65587bce7de595f299855d7385fe7fca39b8a74baa261ba1b7147afa78e58 AS builder
 
-ENV UV_COMPILE_BYTECODE=1 \
+ARG UV_DEFAULT_INDEX=https://pypi.org/simple
+
+ENV UV_DEFAULT_INDEX=${UV_DEFAULT_INDEX} \
+    UV_COMPILE_BYTECODE=1 \
     UV_LINK_MODE=copy
 WORKDIR /opt/rva/server
 

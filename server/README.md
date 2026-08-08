@@ -55,6 +55,12 @@ uv run python tools/capacity_soak.py churn --execute --profile wss-opus/1 \
   --raw ../artifacts/churn-30m-wss.jsonl --summary ../artifacts/churn-30m-wss.json
 ```
 
+面向多进程 client、固定 Worker 数和 Docker/cgroup 资源隔离的 provider-free 容量实验使用
+`tools/capacity_sharded.py`、`tools/capacity_cluster.py` 及 Research 中的实验编排。正式 ol 基线已验证 WSS/UDP
+100 并发在单 Worker `2 vCPU / 1 GiB` 下的 steady 与5分钟short-session churn；有限容量阶梯也已形成 bounded
+measured 区间，但不代表精确最大值。结果、资源建议和严格边界见 [Server capacity](../docs/quality/server-capacity.md)。这些工具不会调用
+ASR、LLM、TTS或LiveKit Agent runtime，不能用于推导完整语音Agent容量。
+
 Redis integration 默认不访问本机服务。对专用测试实例显式运行：
 
 ```bash

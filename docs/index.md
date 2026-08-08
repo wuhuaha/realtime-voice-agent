@@ -29,6 +29,7 @@
 ## 质量与安全
 
 - [测试策略](quality/test-strategy.md)
+- [Provider-free Server capacity](quality/server-capacity.md)
 - [Release readiness](quality/release-readiness.md)
 - [v0.1.0-alpha.1 Release notes](quality/release-notes-v0.1.0-alpha.1.md)
 - [v0.1.0-alpha Release notes（历史版本）](quality/release-notes-v0.1.0-alpha.md)

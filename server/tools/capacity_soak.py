@@ -5,6 +5,7 @@ import asyncio
 import json
 import math
 import random
+import struct
 import sys
 import time
 import uuid
@@ -25,9 +26,16 @@ for source_root in (
         sys.path.insert(0, str(source_root))
 
 from rva_desktop.app import DesktopApp  # noqa: E402
-from rva_desktop.audio.fixture import FixturePcmSource, RecordingAudioSink  # noqa: E402
+from rva_desktop.audio.fixture import FixturePcmSource, NullAudioSink, RecordingAudioSink  # noqa: E402
 from rva_desktop.audio.opus import PyAvOpusCodec  # noqa: E402
-from rva_desktop.audio.ports import WIRE_BYTES_PER_FRAME  # noqa: E402
+from rva_desktop.audio.ports import (  # noqa: E402
+    WIRE_BYTES_PER_FRAME,
+    WIRE_FORMAT,
+    WIRE_FRAME_DURATION_MS,
+    WIRE_SAMPLES_PER_FRAME,
+    AudioFormat,
+    PcmFrame,
+)
 from rva_desktop.config import ClientConfig, MediaProfile  # noqa: E402
 from rva_desktop.session.client import DesktopSession  # noqa: E402
 from voice_testkit.subprocess_cluster import (  # noqa: E402
@@ -57,6 +65,7 @@ class Scenario:
     profile: MediaProfile
     worker_max_sessions: int = 5
     require_observable_overlap: bool = False
+    worker_count_override: int | None = None
 
     def __post_init__(self) -> None:
         if self.concurrency < 1:
@@ -65,10 +74,31 @@ class Scenario:
             raise ValueError("duration_seconds must be finite and positive")
         if self.worker_max_sessions < 1:
             raise ValueError("worker_max_sessions must be positive")
+        if self.worker_count_override is not None and self.worker_count_override < 1:
+            raise ValueError("worker_count_override must be positive")
 
     @property
     def worker_count(self) -> int:
-        return math.ceil(self.concurrency / self.worker_max_sessions)
+        return self.worker_count_override or math.ceil(self.concurrency / self.worker_max_sessions)
+
+
+@dataclass(frozen=True, slots=True)
+class SteadyOptions:
+    warmup_seconds: float
+    measurement_seconds: float
+    ramp_per_second: float
+    device_prefix: str = "steady"
+
+    def __post_init__(self) -> None:
+        for name, value in (
+            ("warmup_seconds", self.warmup_seconds),
+            ("measurement_seconds", self.measurement_seconds),
+            ("ramp_per_second", self.ramp_per_second),
+        ):
+            if not math.isfinite(value) or value <= 0:
+                raise ValueError(f"{name} must be finite and positive")
+        if not self.device_prefix or len(self.device_prefix) > 48:
+            raise ValueError("device_prefix must contain 1..48 characters")
 
 
 @dataclass(frozen=True, slots=True)
@@ -80,6 +110,118 @@ class SessionResult:
     completed_playbacks: int
     route_reacquired_and_release_request_accepted: bool
     error_type: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class SteadySessionResult:
+    device_id: str
+    connect_ms: float | None
+    elapsed_ms: float
+    uplink_frames: int
+    playback_frames: int
+    completed_playbacks: int
+    source_late_frames: int
+    route_reacquired_and_release_request_accepted: bool = False
+    error_type: str | None = None
+
+
+class _SteadyPcmSource:
+    """Infinite real-time source used only by the provider-free capacity harness."""
+
+    def __init__(self) -> None:
+        self._frame = _speech_like_pcm()
+        self._index = 0
+        self._started_at: float | None = None
+        self._started = False
+        self._closed = False
+        self.late_frames = 0
+
+    @property
+    def format(self) -> AudioFormat:
+        return WIRE_FORMAT
+
+    async def start(self) -> None:
+        if self._closed:
+            raise RuntimeError("audio source is closed")
+        self._started = True
+
+    async def read_frame(self) -> PcmFrame | None:
+        if not self._started:
+            raise RuntimeError("audio source is not started")
+        if self._closed:
+            return None
+        if self._started_at is None:
+            self._started_at = time.monotonic()
+        deadline = self._started_at + self._index * (WIRE_FRAME_DURATION_MS / 1_000)
+        remaining = deadline - time.monotonic()
+        if remaining > 0:
+            await asyncio.sleep(remaining)
+        captured_at = time.monotonic()
+        if captured_at - deadline > WIRE_FRAME_DURATION_MS / 1_000:
+            self.late_frames += 1
+        sequence = self._index
+        self._index += 1
+        return PcmFrame(
+            data=self._frame,
+            sequence=sequence,
+            timestamp_samples=sequence * WIRE_SAMPLES_PER_FRAME,
+            captured_at=captured_at,
+        )
+
+    async def close(self) -> None:
+        self._closed = True
+
+
+class _PreencodedBenchmarkCodec:
+    """Keep client CPU out of the Server benchmark while preserving valid Opus ingress."""
+
+    def __init__(self, payload: bytes) -> None:
+        self._payload = payload
+
+    def encode_60ms(self, pcm16le: bytes) -> bytes:
+        if len(pcm16le) != WIRE_BYTES_PER_FRAME:
+            raise ValueError("benchmark codec received an invalid PCM frame")
+        return self._payload
+
+    def decode_60ms(self, payload: bytes) -> bytes:
+        if not payload:
+            raise ValueError("benchmark codec received an empty Opus payload")
+        return b"\x00" * WIRE_BYTES_PER_FRAME
+
+    def conceal_60ms(self) -> bytes:
+        return b"\x00" * WIRE_BYTES_PER_FRAME
+
+    def close(self) -> None:
+        return None
+
+
+class _OpenedGate:
+    def __init__(self, expected: int) -> None:
+        self.expected = expected
+        self.count = 0
+        self.all_opened = asyncio.Event()
+
+    def arrive(self) -> None:
+        self.count += 1
+        if self.count >= self.expected:
+            self.all_opened.set()
+
+
+def _speech_like_pcm() -> bytes:
+    samples = (
+        round(2_200 * math.sin(2 * math.pi * 220 * index / 16_000))
+        + round(700 * math.sin(2 * math.pi * 660 * index / 16_000))
+        for index in range(WIRE_SAMPLES_PER_FRAME)
+    )
+    return struct.pack(f"<{WIRE_SAMPLES_PER_FRAME}h", *samples)
+
+
+def _benchmark_opus_payload() -> bytes:
+    codec = PyAvOpusCodec()
+    try:
+        return codec.encode_60ms(_speech_like_pcm())
+    finally:
+        codec.close()
 
 
 class JsonlRecorder:
@@ -262,33 +404,24 @@ async def _observe_worker_load(
 ) -> tuple[dict[str, int], int]:
     peaks: dict[str, int] = {}
     total_peak = 0
-    async with httpx.AsyncClient(timeout=2) as client:
-        while not stop.is_set():
-            responses = await asyncio.gather(
-                *(
-                    client.get(f"http://127.0.0.1:{worker.http_port}/health/ready")
-                    for worker in cluster.workers
-                ),
-                return_exceptions=True,
-            )
-            sample_total = 0
-            for worker, response in zip(cluster.workers, responses, strict=True):
-                try:
-                    if isinstance(response, BaseException):
-                        continue
-                    if response.status_code in {200, 503}:
-                        active = response.json()["active_sessions"]
-                        peaks[worker.worker_id] = max(peaks.get(worker.worker_id, 0), active)
-                        sample_total += active
-                except (httpx.HTTPError, KeyError, TypeError, ValueError):
-                    pass
-            total_peak = max(total_peak, sample_total)
-            if total_peak >= target_concurrency:
-                target_observed.set()
-            try:
-                await asyncio.wait_for(stop.wait(), timeout=0.05)
-            except TimeoutError:
-                pass
+    while not stop.is_set():
+        try:
+            workers = await _workers(cluster.director_url)
+        except (httpx.HTTPError, TimeoutError, TypeError, ValueError):
+            workers = []
+        sample_total = 0
+        for worker in workers:
+            active = worker["active_sessions"]
+            worker_id = worker["worker_id"]
+            peaks[worker_id] = max(peaks.get(worker_id, 0), active)
+            sample_total += active
+        total_peak = max(total_peak, sample_total)
+        if total_peak >= target_concurrency:
+            target_observed.set()
+        try:
+            await asyncio.wait_for(stop.wait(), timeout=0.05)
+        except TimeoutError:
+            pass
     return peaks, total_peak
 
 
@@ -564,6 +697,308 @@ async def _one_session(
         return SessionResult(device_id, elapsed_ms, 0, 0, 0, False, type(exc).__name__)
 
 
+async def _one_steady_session(
+    cluster: ProcessCluster,
+    scenario: Scenario,
+    options: SteadyOptions,
+    device_id: str,
+    recorder: JsonlRecorder,
+    startup_delay: float,
+    stop: asyncio.Event,
+    opened_gate: _OpenedGate,
+    opus_payload: bytes,
+) -> SteadySessionResult:
+    await asyncio.sleep(startup_delay)
+    started = time.monotonic()
+    connect_ms: float | None = None
+    opened_reported = False
+    event_counts: dict[str, int] = {}
+
+    async def on_event(event: Any) -> None:
+        nonlocal connect_ms, opened_reported
+        event_counts[event.kind] = event_counts.get(event.kind, 0) + 1
+        if event.kind == "session.opened" and not opened_reported:
+            opened_reported = True
+            connect_ms = (time.monotonic() - started) * 1_000
+            opened_gate.arrive()
+
+    session = DesktopSession(
+        ClientConfig(
+            director_url=cluster.director_url,
+            bootstrap_token=BOOTSTRAP_TOKEN,
+            device_id=device_id,
+            tenant_id="capacity-soak",
+            supported_profiles=(scenario.profile,),
+            preferred_profile=scenario.profile,
+            connect_timeout_seconds=15,
+            control_timeout_seconds=15,
+            media_max_age_seconds=2.0,
+            allow_insecure_loopback=True,
+        )
+    )
+    source = _SteadyPcmSource()
+    app = DesktopApp(
+        session,
+        source=source,
+        sink=NullAudioSink(),
+        codec=_PreencodedBenchmarkCodec(opus_payload),
+        on_event=on_event,
+    )
+    timeout = startup_delay + options.warmup_seconds + options.measurement_seconds + 45
+    try:
+        result = await asyncio.wait_for(app.run(stop_event=stop), timeout=timeout)
+        elapsed_ms = (time.monotonic() - started) * 1_000
+        minimum_uplink_frames = max(
+            3,
+            math.floor(
+                (options.warmup_seconds + options.measurement_seconds)
+                * 1_000
+                / WIRE_FRAME_DURATION_MS
+                * 0.995
+            ),
+        )
+        error_type: str | None = None
+        if connect_ms is None:
+            error_type = "session_not_opened"
+        elif result.uplink_frames < minimum_uplink_frames:
+            error_type = "uplink_cadence_incomplete"
+        elif result.playback_frames != EXPECTED_PLAYBACK_FRAMES or result.completed_playbacks != 1:
+            error_type = "initial_playback_incomplete"
+        elif (
+            event_counts.get("session.opened") != 1
+            or event_counts.get("response.begin") != 1
+            or event_counts.get("response.end") != 1
+            or event_counts.get("media.audio") != EXPECTED_PLAYBACK_FRAMES
+        ):
+            error_type = "event_closure_incomplete"
+        recorder.emit(
+            "steady.session.completed" if error_type is None else "steady.session.failed",
+            device_id=device_id,
+            profile=scenario.profile.value,
+            connect_ms=round(connect_ms, 3) if connect_ms is not None else None,
+            elapsed_ms=round(elapsed_ms, 3),
+            uplink_frames=result.uplink_frames,
+            playback_frames=result.playback_frames,
+            completed_playbacks=result.completed_playbacks,
+            source_late_frames=source.late_frames,
+            event_counts=event_counts,
+            error_type=error_type,
+        )
+        return SteadySessionResult(
+            device_id=device_id,
+            connect_ms=connect_ms,
+            elapsed_ms=elapsed_ms,
+            uplink_frames=result.uplink_frames,
+            playback_frames=result.playback_frames,
+            completed_playbacks=result.completed_playbacks,
+            source_late_frames=source.late_frames,
+            error_type=error_type,
+        )
+    except Exception as exc:
+        elapsed_ms = (time.monotonic() - started) * 1_000
+        recorder.emit(
+            "steady.session.failed",
+            device_id=device_id,
+            profile=scenario.profile.value,
+            connect_ms=round(connect_ms, 3) if connect_ms is not None else None,
+            elapsed_ms=round(elapsed_ms, 3),
+            event_counts=event_counts,
+            error_type=type(exc).__name__,
+        )
+        return SteadySessionResult(
+            device_id=device_id,
+            connect_ms=connect_ms,
+            elapsed_ms=elapsed_ms,
+            uplink_frames=0,
+            playback_frames=0,
+            completed_playbacks=0,
+            source_late_frames=source.late_frames,
+            error_type=type(exc).__name__,
+        )
+
+
+async def _verify_steady_routes(
+    director_url: str,
+    scenario: Scenario,
+    results: list[SteadySessionResult],
+    recorder: JsonlRecorder,
+) -> list[SteadySessionResult]:
+    semaphore = asyncio.Semaphore(20)
+
+    async def verify(result: SteadySessionResult) -> SteadySessionResult:
+        if result.error_type is not None:
+            return result
+        try:
+            async with semaphore:
+                verified = await _verify_route_reacquired_and_release_request_accepted(
+                    director_url,
+                    scenario,
+                    result.device_id,
+                )
+        except Exception:
+            verified = False
+        recorder.emit(
+            (
+                "route_reacquired_and_release_request_accepted.verified"
+                if verified
+                else "route_reacquired_and_release_request_accepted.not_verified"
+            ),
+            device_id=result.device_id,
+            profile=scenario.profile.value,
+            session_succeeded=result.error_type is None,
+        )
+        return replace(result, route_reacquired_and_release_request_accepted=verified)
+
+    return list(await asyncio.gather(*(verify(result) for result in results)))
+
+
+async def run_steady_scenario(
+    cluster: ProcessCluster,
+    scenario: Scenario,
+    options: SteadyOptions,
+    recorder: JsonlRecorder,
+) -> dict[str, Any]:
+    scenario_started = time.monotonic()
+    stop = asyncio.Event()
+    opened_gate = _OpenedGate(scenario.concurrency)
+    opus_payload = _benchmark_opus_payload()
+    recorder.emit(
+        "steady.scenario.started",
+        scenario=_scenario_dict(scenario),
+        options=asdict(options),
+        worker_count=len(cluster.workers),
+        opus_payload_bytes=len(opus_payload),
+    )
+    observer_stop = asyncio.Event()
+    target_observed = asyncio.Event()
+    observer = asyncio.create_task(
+        _observe_worker_load(
+            cluster,
+            observer_stop,
+            target_concurrency=scenario.concurrency,
+            target_observed=target_observed,
+        ),
+        name="steady-worker-load-observer",
+    )
+    tasks = [
+        asyncio.create_task(
+            _one_steady_session(
+                cluster,
+                scenario,
+                options,
+                f"{options.device_prefix}-{scenario.profile.value.replace('/', '-')}-{index}",
+                recorder,
+                index / options.ramp_per_second,
+                stop,
+                opened_gate,
+                opus_payload,
+            ),
+            name=f"steady-session-{index}",
+        )
+        for index in range(scenario.concurrency)
+    ]
+    open_timeout = scenario.concurrency / options.ramp_per_second + 45
+    all_opened = False
+    try:
+        await asyncio.wait_for(opened_gate.all_opened.wait(), timeout=open_timeout)
+        all_opened = True
+        await asyncio.sleep(options.warmup_seconds + options.measurement_seconds)
+    except TimeoutError:
+        recorder.emit(
+            "steady.open_timeout",
+            opened=opened_gate.count,
+            expected=scenario.concurrency,
+            timeout_seconds=round(open_timeout, 3),
+        )
+    finally:
+        stop.set()
+    results = list(await asyncio.gather(*tasks))
+    observer_stop.set()
+    await asyncio.gather(observer, return_exceptions=True)
+    worker_peaks, active_sessions_peak_total = observer.result()
+    workers = await _wait_workers_idle(cluster.director_url, timeout=30)
+    verified = await _verify_steady_routes(cluster.director_url, scenario, results, recorder)
+
+    attempted = len(verified)
+    successful = [result for result in verified if result.error_type is None]
+    initial_playback = [
+        result
+        for result in verified
+        if result.playback_frames == EXPECTED_PLAYBACK_FRAMES and result.completed_playbacks == 1
+    ]
+    verified_routes = [result for result in successful if result.route_reacquired_and_release_request_accepted]
+    sent_frames = sum(result.uplink_frames for result in verified)
+    late_frames = sum(result.source_late_frames for result in verified)
+    connect_values = [result.connect_ms for result in verified if result.connect_ms is not None]
+    capacity_excess = workers_over_capacity(worker_peaks, worker_max_sessions=scenario.worker_max_sessions)
+    session_rate = len(successful) / attempted if attempted else 0.0
+    playback_rate = len(initial_playback) / attempted if attempted else 0.0
+    route_rate = len(verified_routes) / attempted if attempted else 0.0
+    cadence_late_rate = late_frames / sent_frames if sent_frames else 1.0
+    generator_valid = cadence_late_rate <= 0.01
+    target_seen = active_sessions_peak_total >= scenario.concurrency
+    status = (
+        "measured"
+        if all_opened
+        and session_rate >= 0.99
+        and playback_rate >= 0.99
+        and route_rate >= 0.99
+        and generator_valid
+        and target_seen
+        and not capacity_excess
+        else "failed"
+    )
+    failure_types = sorted({result.error_type for result in verified if result.error_type})
+    if not all_opened:
+        failure_types.append("all_sessions_not_opened")
+    if not generator_valid:
+        failure_types.append("client_generator_cadence_invalid")
+    if not target_seen:
+        failure_types.append("target_concurrency_not_observed")
+    if route_rate < 0.99:
+        failure_types.append("route_reacquire_below_threshold")
+    if capacity_excess:
+        failure_types.append("worker_capacity_exceeded")
+    summary = {
+        "status": status,
+        "evidence_scope": "steady_provider_free_uplink_and_initial_downlink",
+        "server_media_processing": {
+            "status": "requires_server_close_log_aggregation",
+            "reason": "client send counters cannot prove every packet crossed the Server decode boundary",
+        },
+        "scenario": _scenario_dict(scenario),
+        "options": asdict(options),
+        "elapsed_seconds": round(time.monotonic() - scenario_started, 3),
+        "sessions_attempted": attempted,
+        "sessions_succeeded": len(successful),
+        "sessions_failed": attempted - len(successful),
+        "session_survival_rate": round(session_rate, 6),
+        "initial_playback_rate": round(playback_rate, 6),
+        "route_reacquire_rate": round(route_rate, 6),
+        "connect_latency_ms": {
+            "p50": _percentile(connect_values, 0.50),
+            "p95": _percentile(connect_values, 0.95),
+            "p99": _percentile(connect_values, 0.99),
+            "max": round(max(connect_values), 3) if connect_values else None,
+        },
+        "frames": {
+            "client_uplink_sent": sent_frames,
+            "initial_playback": sum(result.playback_frames for result in verified),
+            "client_source_late": late_frames,
+            "client_source_late_rate": round(cadence_late_rate, 8),
+        },
+        "client_generator_valid": generator_valid,
+        "worker_active_sessions_final": {worker["worker_id"]: worker["active_sessions"] for worker in workers},
+        "worker_active_sessions_peak": worker_peaks,
+        "active_sessions_peak_total": active_sessions_peak_total,
+        "target_concurrency_observed": target_seen,
+        "workers_over_capacity": capacity_excess,
+        "failure_types": sorted(set(failure_types)),
+    }
+    recorder.emit("steady.scenario.finished", summary=summary)
+    return summary
+
+
 async def run_scenario(cluster: ProcessCluster, scenario: Scenario, recorder: JsonlRecorder) -> dict[str, Any]:
     rng = random.Random(scenario.seed)
     scenario_started = time.monotonic()
@@ -762,6 +1197,7 @@ def run_local_scenario(
             redis_url=redis_url,
             redis_prefix=prefix,
             python_executable=server_python(),
+            route_lease_ttl_seconds=5,
         ) as cluster:
             cluster_entered = True
 
@@ -790,6 +1226,71 @@ def run_local_scenario(
     # The context manager raises unless all child processes exit and every reserved
     # TCP/UDP port can be rebound after reaping.
     summary["process_and_port_reclamation"] = "measured"
+    return summary
+
+
+def run_local_steady_scenario(
+    scenario: Scenario,
+    options: SteadyOptions,
+    recorder: JsonlRecorder,
+    *,
+    temp_root: Path,
+    redis_url: str | None = None,
+) -> dict[str, Any]:
+    prefix = f"rva-capacity-{uuid.uuid4().hex}" if redis_url else None
+    cluster_entered = False
+    execution_completed = False
+    try:
+        with running_process_cluster(
+            temp_root,
+            worker_count=scenario.worker_count,
+            worker_max_sessions=scenario.worker_max_sessions,
+            udp_enabled=scenario.profile is MediaProfile.UDP_OPUS_GCM_V1,
+            redis_url=redis_url,
+            redis_prefix=prefix,
+            python_executable=server_python(),
+            route_lease_ttl_seconds=max(
+                60,
+                min(300, options.warmup_seconds + options.measurement_seconds + 60),
+            ),
+        ) as cluster:
+            cluster_entered = True
+            try:
+                summary = asyncio.run(run_steady_scenario(cluster, scenario, options, recorder))
+            except Exception as exc:
+                raise HarnessInfrastructureError("steady_scenario_execution", exc) from exc
+            execution_completed = True
+    except HarnessInfrastructureError:
+        raise
+    except Exception as exc:
+        stage = "process_reclamation" if cluster_entered else "cluster_startup"
+        if cluster_entered and not execution_completed:
+            stage = "process_reclamation"
+        raise HarnessInfrastructureError(stage, exc) from exc
+    summary["process_and_port_reclamation"] = "measured"
+    summary["fault_scenarios"] = []
+    return summary
+
+
+def run_external_scenario(
+    scenario: Scenario,
+    recorder: JsonlRecorder,
+    *,
+    director_url: str,
+    steady_options: SteadyOptions | None = None,
+) -> dict[str, Any]:
+    cluster = ProcessCluster(director_url.rstrip("/"), 0, ())
+    try:
+        if steady_options is not None:
+            summary = asyncio.run(run_steady_scenario(cluster, scenario, steady_options, recorder))
+        else:
+            summary = asyncio.run(run_scenario(cluster, scenario, recorder))
+    except HarnessInfrastructureError:
+        raise
+    except Exception as exc:
+        raise HarnessInfrastructureError("external_scenario_execution", exc) from exc
+    summary["process_and_port_reclamation"] = "external_orchestrator_required"
+    summary["fault_scenarios"] = []
     return summary
 
 
@@ -846,18 +1347,24 @@ def not_run_faults() -> list[dict[str, str]]:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Run deterministic RVA capacity and session-churn workloads.")
-    parser.add_argument("mode", choices=("capacity", "churn"))
+    parser = argparse.ArgumentParser(description="Run deterministic RVA capacity, steady, and session-churn workloads.")
+    parser.add_argument("mode", choices=("capacity", "steady", "churn"))
     parser.add_argument("--profile", choices=("wss-opus/1", "udp-opus-gcm/1"), default="wss-opus/1")
     parser.add_argument("--steps", type=parse_steps, default=DEFAULT_STEPS)
     parser.add_argument("--concurrency", type=int, default=5)
     parser.add_argument("--worker-max-sessions", type=int, default=5)
+    parser.add_argument("--worker-count", type=int)
     parser.add_argument("--duration-seconds", type=float, default=10.0)
+    parser.add_argument("--warmup-seconds", type=float, default=30.0)
+    parser.add_argument("--measurement-seconds", type=float, default=150.0)
+    parser.add_argument("--ramp-per-second", type=float, default=50.0)
+    parser.add_argument("--device-prefix", default="steady")
     parser.add_argument("--seed", type=int, default=20260805)
     parser.add_argument("--raw", type=Path, required=True)
     parser.add_argument("--summary", type=Path, required=True)
     parser.add_argument("--temp-root", type=Path, default=PRODUCT_ROOT / ".artifacts" / "capacity-soak")
     parser.add_argument("--redis-url")
+    parser.add_argument("--director-url", help="Use an already running deterministic benchmark cluster.")
     parser.add_argument("--execute", action="store_true", help="Required for 30 minute and 2 hour churn runs.")
     return parser
 
@@ -865,11 +1372,11 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     profile = MediaProfile(args.profile)
-    if args.mode == "churn" and (args.duration_seconds not in LONG_CHURN_DURATIONS or not args.execute):
+    if args.mode == "churn" and not args.execute:
         summary = {
             "status": "not_run",
             "evidence_scope": "session_churn",
-            "reason": "churn requires --execute and --duration-seconds 1800 or 7200",
+            "reason": "churn requires --execute; 30 minute and 2 hour evidence uses 1800 or 7200 seconds",
             "requested_duration_seconds": args.duration_seconds,
             "continuous_session_soak": {
                 "status": "not_run",
@@ -883,34 +1390,80 @@ def main(argv: list[str] | None = None) -> int:
         args.summary.write_text(json.dumps(summary, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
         return 2
 
+    if args.worker_count is not None and args.worker_count < 1:
+        raise ValueError("worker_count must be positive")
+    steady_options = (
+        SteadyOptions(
+            args.warmup_seconds,
+            args.measurement_seconds,
+            args.ramp_per_second,
+            args.device_prefix,
+        )
+        if args.mode == "steady"
+        else None
+    )
     scenarios = (
         [
             Scenario(
                 step,
-                args.duration_seconds,
+                (
+                    args.warmup_seconds + args.measurement_seconds
+                    if args.mode == "steady"
+                    else args.duration_seconds
+                ),
                 args.seed + index,
                 profile,
                 args.worker_max_sessions,
-                require_observable_overlap=True,
+                require_observable_overlap=args.mode == "capacity",
+                worker_count_override=args.worker_count,
             )
             for index, step in enumerate(args.steps)
         ]
-        if args.mode == "capacity"
-        else [Scenario(args.concurrency, args.duration_seconds, args.seed, profile, args.worker_max_sessions)]
+        if args.mode in {"capacity", "steady"}
+        else [
+            Scenario(
+                args.concurrency,
+                args.duration_seconds,
+                args.seed,
+                profile,
+                args.worker_max_sessions,
+                worker_count_override=args.worker_count,
+            )
+        ]
     )
-    args.temp_root.mkdir(parents=True, exist_ok=True)
+    if args.director_url and args.redis_url:
+        raise ValueError("--redis-url cannot be combined with --director-url")
+    if not args.director_url:
+        args.temp_root.mkdir(parents=True, exist_ok=True)
     summaries: list[dict[str, Any]] = []
     with JsonlRecorder(args.raw) as recorder:
         for index, scenario in enumerate(scenarios):
-            scenario_root = args.temp_root / f"{args.mode}-{index}-{uuid.uuid4().hex}"
-            scenario_root.mkdir(parents=True)
             try:
-                result = run_local_scenario(
-                    scenario,
-                    recorder,
-                    temp_root=scenario_root,
-                    redis_url=args.redis_url,
-                )
+                if args.director_url:
+                    result = run_external_scenario(
+                        scenario,
+                        recorder,
+                        director_url=args.director_url,
+                        steady_options=steady_options,
+                    )
+                else:
+                    scenario_root = args.temp_root / f"{args.mode}-{index}-{uuid.uuid4().hex}"
+                    scenario_root.mkdir(parents=True)
+                    if steady_options is not None:
+                        result = run_local_steady_scenario(
+                            scenario,
+                            steady_options,
+                            recorder,
+                            temp_root=scenario_root,
+                            redis_url=args.redis_url,
+                        )
+                    else:
+                        result = run_local_scenario(
+                            scenario,
+                            recorder,
+                            temp_root=scenario_root,
+                            redis_url=args.redis_url,
+                        )
             except HarnessInfrastructureError as failure:
                 result = infrastructure_failure_summary(scenario, failure)
                 recorder.emit("scenario.infrastructure_failed", summary=result)
@@ -923,16 +1476,24 @@ def main(argv: list[str] | None = None) -> int:
             if any(item["status"] == "inconclusive" for item in summaries)
             else "measured"
         ),
-        "evidence_scope": "session_churn",
+        "evidence_scope": (
+            "steady_provider_free_uplink_and_initial_downlink"
+            if args.mode == "steady"
+            else "session_churn"
+        ),
         "continuous_session_soak": {
-            "status": "not_run",
-            "reason": "this runner repeats short sessions rather than keeping one session continuously open",
+            "status": "measured" if args.mode == "steady" else "not_run",
+            "reason": (
+                "steady mode held the same sessions for the configured warmup and measurement window"
+                if args.mode == "steady"
+                else "this runner repeats short sessions rather than keeping one session continuously open"
+            ),
         },
         "mode": args.mode,
         "seed": args.seed,
         "results": summaries,
         "fault_scenarios": [
-            *(fault for result in summaries for fault in result["fault_scenarios"]),
+            *(fault for result in summaries for fault in result.get("fault_scenarios", [])),
             *not_run_faults(),
         ],
     }

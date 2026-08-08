@@ -178,11 +178,14 @@ def running_process_cluster(
     bootstrap_token: str = BOOTSTRAP_TOKEN,
     grant_signing_key: str = GRANT_SIGNING_KEY,
     lab_token: str = LAB_TOKEN,
+    route_lease_ttl_seconds: float = 5,
 ) -> Iterator[ProcessCluster]:
     if worker_count < 1:
         raise ValueError("worker_count must be positive")
     if worker_max_sessions < 1:
         raise ValueError("worker_max_sessions must be positive")
+    if route_lease_ttl_seconds <= 0:
+        raise ValueError("route_lease_ttl_seconds must be positive")
     if redis_url is not None and not redis_prefix:
         raise ValueError("redis_prefix is required with redis_url")
 
@@ -209,7 +212,7 @@ def running_process_cluster(
         "VOICE_LAB_TOKEN": lab_token,
         "VOICE_HEARTBEAT_INTERVAL_SECONDS": "1",
         "VOICE_WORKER_MAX_SESSIONS": str(worker_max_sessions),
-        "VOICE_ROUTE_LEASE_TTL_SECONDS": "5",
+        "VOICE_ROUTE_LEASE_TTL_SECONDS": str(route_lease_ttl_seconds),
         "VOICE_RUNNER": "deterministic",
         # Host E2E validates protocol/lifecycle behavior; latency budgets are measured separately.
         "VOICE_RVA_UPLINK_MAX_AGE_SECONDS": "2.0",

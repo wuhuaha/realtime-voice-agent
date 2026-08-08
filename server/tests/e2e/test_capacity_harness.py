@@ -188,6 +188,53 @@ def test_short_capacity_round_trip_releases_all_sessions(
     assert [event["event"] for event in events] == expected_events
 
 
+@pytest.mark.e2e_host
+@pytest.mark.parametrize("profile", ["wss-opus/1", "udp-opus-gcm/1"])
+def test_steady_round_trip_holds_media_and_releases_all_sessions(tmp_path: Path, profile: str) -> None:
+    raw = tmp_path / "raw.jsonl"
+    summary = tmp_path / "summary.json"
+    cluster_root = tmp_path / "cluster"
+    exit_code = capacity_soak.main(
+        [
+            "steady",
+            "--steps",
+            "1",
+            "--profile",
+            profile,
+            "--worker-count",
+            "1",
+            "--worker-max-sessions",
+            "2",
+            "--warmup-seconds",
+            "0.5",
+            "--measurement-seconds",
+            "2",
+            "--ramp-per-second",
+            "10",
+            "--raw",
+            str(raw),
+            "--summary",
+            str(summary),
+            "--temp-root",
+            str(cluster_root),
+        ]
+    )
+    assert exit_code == 0, _capacity_failure_detail(summary, raw, cluster_root)
+    report = json.loads(summary.read_text(encoding="utf-8"))
+    result = report["results"][0]
+    assert result["status"] == "measured"
+    assert result["sessions_succeeded"] == 1
+    assert result["session_survival_rate"] == 1
+    assert result["initial_playback_rate"] == 1
+    assert result["route_reacquire_rate"] == 1
+    assert result["client_generator_valid"] is True
+    assert result["frames"]["client_uplink_sent"] >= 40
+    assert result["frames"]["initial_playback"] == 4
+    assert result["active_sessions_peak_total"] == 1
+    assert set(result["worker_active_sessions_final"].values()) == {0}
+    assert result["process_and_port_reclamation"] == "measured"
+
+
 @pytest.mark.parametrize(
     ("uplink", "playback", "completed"),
     [(0, 4, 1), (1, 3, 1), (1, 4, 0), (1, 4, 2)],
