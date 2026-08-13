@@ -17,9 +17,12 @@
 ## Product 与 Research 边界
 
 - 本仓是 production source、current wire、正式测试、部署和发布资产的唯一 authoring source。
-- Research 实验修改必须发生在本仓 Git worktree branch；禁止通过复制文件在两个仓库同时维护产品实现。
+- Research 是仅限维护者访问的私有研究工作台，不是公共贡献入口；不得要求外部贡献者访问它。
+- 外部的研究建议、实验提案和集成需求统一通过本仓 Issue/PR 提交；维护者负责脱敏后进行内部路由。
+- Research 中涉及产品实现的实验修改必须发生在本仓 Git worktree branch；禁止通过复制文件在两个仓库同时维护产品实现。
 - 本仓 CI、build、runtime和deployment不得读取 `voice-agent-research`、`realtime-voice-agent-research` 或其相对路径。
-- 候选被接受后，只把结论版ADR/schema/test提升到本仓；失败讨论、原始评测和大型artifact保留在Research/外部存储。
+- 候选被接受后，先检查来源与许可证，再只把经过脱敏且可公开复核的结论版 ADR/schema/test 提升到本仓；私有讨论、
+  原始评测和大型 artifact 不得进入公开仓。
 - 跨仓 manifest只用于证据关联，不能成为应用配置、协议输入或运行时依赖。
 
 ## 安全

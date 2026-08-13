@@ -3,6 +3,11 @@ description: 提议与低资源实时语音接入定位一致的新能力
 title: "[Feature] "
 labels: ["enhancement"]
 body:
+  - type: markdown
+    attributes:
+      value: |
+        Product 是所有公开建议的统一入口。研究性想法也请直接在此提交；无需访问维护者私有研究工作台。
+        请移除凭据、个人信息、私有地址、原始音频和其他不宜公开的内容，维护者会在需要时进行内部路由。
   - type: textarea
     id: problem
     attributes:
@@ -27,6 +32,6 @@ body:
     id: validation
     attributes:
       label: Acceptance evidence
-      description: 建议如何验证行为、资源和兼容边界
+      description: 建议如何用可公开、可复现且已脱敏的材料验证行为、资源和兼容边界
     validations:
       required: true

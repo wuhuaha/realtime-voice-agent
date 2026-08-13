@@ -47,17 +47,16 @@ GitHub Release 中的 `SHA256SUMS-v0.1.0-alpha.1.txt` 覆盖 bundle、provenance
 相同 runtime。仅有文档、tag identity 和重新打包变化时不机械重复 HIL；端侧、wire、媒体状态机、transport 或硬件行为
 变化时必须执行针对性真机回归。
 
-## 发布后实验
+## 发布后容量证据
 
-基于后续 Product commit `f53997b137c5fcbd97568c516e6c1a658679a78c` 与精确实验快照的 provider-free
-容量矩阵，已验证 WSS/UDP 100 并发在单 Worker `2 vCPU / 1 GiB` 下的 steady 与 5 分钟 churn，并在
-`2 vCPU / 2 GiB` 下通过 130 并发 10 分钟余量验证。该结果不属于 `v0.1.0-alpha.1` tag 的发布门禁；实验镜像
-身份、资源数据和有限容量阶梯见 [Server capacity](server-capacity.md)；更高容量仍未测量。
+当前公开仓提供 provider-free 容量工具，但没有从公开可恢复 commit 运行并带有公开脱敏证据的容量基线。早期内部
+观察依赖未提交 harness 快照和未公开 artifact，不作为 `measured` 结果、配置建议或本版本发布门禁。重新建立公开基线的
+要求见 [Server capacity](server-capacity.md)。
 
 ## 未关闭门禁
 
-- Provider-free 10/100 并发已有资源基线，但本版本仍不承诺真实 Agent 的端到端 p50/p95/p99 latency、最大并发或
-  容量 SLO；详见 [Server capacity](server-capacity.md)。
+- Provider-free 接入层和真实 Agent 均没有公开可复现的容量基线；本版本不承诺端到端 p50/p95/p99 latency、最大并发或
+  容量 SLO，详见 [Server capacity](server-capacity.md)。
 - 真机弱网、WSS 两小时、两小时 short-session churn 和 24 小时稳定性未形成发布证据。
 - TLS termination、WAF、入口限流、Redis HA、多主机故障转移和 secret lifecycle 不由单机 Compose 提供。
 - AEC、NS、VAD、远场、double-talk、中文 ASR 准确率和主观音质不属于本次协议接入技术预览的发布结论。

@@ -3,6 +3,11 @@ description: 提议新的 endpoint、media profile 或 provider adapter
 title: "[Integration] "
 labels: ["integration"]
 body:
+  - type: markdown
+    attributes:
+      value: |
+        Product 是所有公开集成建议的统一入口。无需访问维护者私有研究工作台。
+        请勿提交 provider 密钥、私有 endpoint、个人数据、原始音频或其他敏感材料；维护者会在需要时进行内部路由。
   - type: dropdown
     id: integration_type
     attributes:
@@ -33,5 +38,6 @@ body:
     id: evidence
     attributes:
       label: Evidence and validation plan
+      description: 仅提供可公开、可复现且已脱敏的证据或验证方案
     validations:
       required: true

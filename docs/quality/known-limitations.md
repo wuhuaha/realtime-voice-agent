@@ -35,21 +35,16 @@
   只有完整`completed`，或同时证明playback stopped、fresh reopen、
   旧媒体隔离和资源清理的`bounded_recovery_verified`才可接受；non-loss场景不得用恢复替代成功。目标`tc`不支持seed，
   `paired_randomness=false`；逻辑pair不能解释为相同随机序列，也不能据此声称WSS/UDP性能优劣。
-- 后续 Product commit `f53997b137c5fcbd97568c516e6c1a658679a78c` 与精确实验快照已验证 provider-free
-  WSS/UDP 10、100 并发资源矩阵：100 并发在单 Worker `2 vCPU / 1 GiB` 的 steady
-  和5分钟short-session churn均通过，`2 vCPU / 2 GiB` 下130并发10分钟余量验证通过。该实验绕过ASR、LLM、
-  TTS和LiveKit Agent runtime；WSS使用loopback WebSocket且不含公网TLS/反向代理，UDP也不覆盖公网NAT或弱网。
-  单Worker和四Worker扩展目前只有有限阶梯的 bounded measured ceiling，更高容量仍未知，不得将这些结果扩大为真实Agent容量SLO。完整口径见
-  [Server capacity](server-capacity.md)。该后续实验不反向成为 `v0.1.0-alpha.1` tag 的发布门禁。当前发布runtime的
-  远端独立30分钟
+- 当前公开仓提供 provider-free 容量工具和确定性 harness 测试，但没有从公开可恢复 commit 运行并带有公开脱敏证据的
+  容量基线。早期内部观察依赖未提交 harness 快照和未公开 artifact，不作为 `measured` 结果、资源建议或
+  `v0.1.0-alpha.1` 发布门禁；完整口径见 [Server capacity](server-capacity.md)。当前发布 runtime 的远端独立 30 分钟
   short-session churn为WSS `18013/18013`、UDP `17855/17855`，最终active session均为0且进程/端口回收通过。
   UDP真机已完成约2小时18分钟continuous-operation soak，覆盖计划内freshness换钥、终点交互和normal close；开始约
   6分钟处出现两次timestamp拒绝、两次stale-media熔断和一次handshake timeout，均通过fresh reopen有界恢复，随后约
   132分钟仅发生计划内refresh。后续修复已用确定性测试复现timestamp/stale边界，并实现仅UDP、queue无backlog、
   最大两个freshness window、10秒最多两次的有界reanchor/recovery；完整Server/firmware host门禁和一轮真机无劣化回归
   通过，但尚未以clean Product commit重复长稳并自然命中该分支。因此原结果仍不是“单session零重连”声明。
-  WSS 2小时、2小时short-session churn、24小时和包含真实provider的容量仍为`not_run`；provider-free结果也不
-  提供完整语音Agent容量SLO。
+  WSS 2小时、2小时short-session churn、24小时、provider-free 容量和包含真实 provider 的容量仍为 `not_run`。
 - AEC、NS、VAD、远场拾音、double-talk 和 ASR 中文准确率没有形成跨环境声学指标；当前真机证据只证明端云链路，
   不代表特定噪声环境中的识别或主观音质。
 - `VOICE_WORKER_MAX_SESSIONS=5` 是默认安全启动值，不等于测量上限。容量实验显式提高 admission；目标部署仍须按

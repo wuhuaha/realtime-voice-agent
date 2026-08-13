@@ -71,6 +71,52 @@ FONT_THIRD_PARTY_FILES = (
     "third_party/licenses/Noto-Sans-CJK-OFL-1.1.txt",
     "third_party/licenses/xiaozhi-fonts-MIT.txt",
 )
+PUBLIC_RESEARCH_GOVERNANCE_MARKERS = {
+    ".github/ISSUE_TEMPLATE/feature.yml": (
+        "Product 是所有公开建议的统一入口",
+        "可公开、可复现且已脱敏",
+    ),
+    ".github/ISSUE_TEMPLATE/integration.yml": (
+        "Product 是所有公开集成建议的统一入口",
+        "可公开、可复现且已脱敏",
+    ),
+    "AGENTS.md": (
+        "不得要求外部贡献者访问",
+        "来源与许可证",
+    ),
+    "CONTRIBUTING.md": (
+        "来源与许可证明确",
+        "不得引用私有仓库",
+    ),
+    "docs/decisions/0004-research-production-boundary.md": (
+        "来源/许可证",
+        "不得以访问私有 Research 为成立前提",
+    ),
+    "docs/quality/server-capacity.md": (
+        "不得用私有 artifact",
+    ),
+}
+PUBLIC_CAPACITY_STATUS_MARKERS = {
+    "docs/quality/server-capacity.md": "状态：`not_run / no public reproducible baseline`",
+    "docs/quality/release-readiness.md": "没有从公开可恢复 commit 运行并带有公开脱敏证据的容量基线",
+    "docs/quality/known-limitations.md": "不作为 `measured` 结果、资源建议或",
+    "server/README.md": "公开可复现的容量基线、资源建议或容量 SLO",
+}
+LEGACY_PUBLIC_CAPACITY_FINGERPRINTS = (
+    "f53997b137c5fcbd97568c516e6c1a658679a78c",
+    "rva-capacity-exact:f53997b-b636abf",
+    "sha256:ca94ef44fd5c35c18fc9589e4f6fbcea0bd4e962dab629a254653ba06ee5f89d",
+    "c971e047cabc04dd57941491ecdb3c9ec7641987635b4a7fbd7063a04fb5543c",
+    "/srv/voice/benchmarks/rva-capacity/",
+    "状态：`measured / bounded capacity baseline`",
+    "WSS `wss-opus/1` 和 UDP `udp-opus-gcm/1` 均已验证 10、100 个活跃 session",
+    "100 并发在单 Worker、`2 vCPU / 1 GiB` 下通过 5 分钟 steady 和 5 分钟 short-session churn",
+    "`2 vCPU / 2 GiB` 下的 130 并发 10 分钟余量验证也通过",
+    "provider-free 实验最低配置 | 推荐配置 | Worker 数 | `max_sessions` | `nofile` | 带宽建议",
+    "`pids_limit`，10 并发实验最低建议不低于 `4,500`",
+    "有限容量阶梯已完成：WSS 单 Worker 为 200 通过、300 未通过",
+    "`tools/capacity_sharded.py`、`tools/capacity_cluster.py` 及 Research 中的实验编排",
+)
 
 
 def repository_files(root: Path) -> tuple[str, ...]:
@@ -243,6 +289,49 @@ def validate_research_boundary(root: Path, paths: tuple[str, ...]) -> list[str]:
     return errors
 
 
+def validate_public_research_governance(
+    root: Path, paths: tuple[str, ...] | None = None
+) -> list[str]:
+    errors: list[str] = []
+    for relative, markers in PUBLIC_RESEARCH_GOVERNANCE_MARKERS.items():
+        path = root / relative
+        if not path.is_file():
+            errors.append(f"public Research governance file missing: {relative}")
+            continue
+        content = path.read_text(encoding="utf-8")
+        for marker in markers:
+            if marker not in content:
+                errors.append(f"public Research governance marker missing: {relative}: {marker}")
+    for relative, marker in PUBLIC_CAPACITY_STATUS_MARKERS.items():
+        path = root / relative
+        if not path.is_file():
+            errors.append(f"public capacity governance file missing: {relative}")
+            continue
+        content = " ".join(path.read_text(encoding="utf-8").split())
+        if marker not in content:
+            errors.append(f"public capacity status marker missing: {relative}: {marker}")
+
+    scan_paths = paths
+    if scan_paths is None:
+        scan_paths = tuple(
+            sorted({*PUBLIC_RESEARCH_GOVERNANCE_MARKERS, *PUBLIC_CAPACITY_STATUS_MARKERS})
+        )
+    for relative in scan_paths:
+        normalized = relative.replace("\\", "/")
+        if not normalized.lower().endswith(".md"):
+            continue
+        path = root / relative
+        if not path.is_file():
+            continue
+        content = " ".join(path.read_text(encoding="utf-8").split())
+        for fingerprint in LEGACY_PUBLIC_CAPACITY_FINGERPRINTS:
+            if fingerprint in content:
+                errors.append(
+                    f"legacy public capacity evidence is tracked: {normalized}: {fingerprint}"
+                )
+    return errors
+
+
 def validate_protocol(root: Path) -> list[str]:
     errors: list[str] = []
     registry = yaml.safe_load((root / "protocol" / "registry.yaml").read_text(encoding="utf-8"))
@@ -320,6 +409,7 @@ def main() -> int:
         *validate_firmware_composition(root),
         *validate_font_supply_chain(root),
         *validate_research_boundary(root, paths),
+        *validate_public_research_governance(root, paths),
     ]
     if errors:
         for error in errors:

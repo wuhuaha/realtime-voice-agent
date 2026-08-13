@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -11,6 +12,19 @@ SPEC = importlib.util.spec_from_file_location(
 assert SPEC is not None and SPEC.loader is not None
 VERIFY = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(VERIFY)
+
+
+def copy_public_governance_files(destination: Path) -> tuple[str, ...]:
+    relatives = {
+        *VERIFY.PUBLIC_RESEARCH_GOVERNANCE_MARKERS,
+        *VERIFY.PUBLIC_CAPACITY_STATUS_MARKERS,
+    }
+    for relative in relatives:
+        source = ROOT / relative
+        target = destination / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, target)
+    return tuple(sorted(relatives))
 
 
 def write_boundary_decision(root: Path) -> None:
@@ -67,6 +81,88 @@ def test_repository_firmware_composition_is_explicit() -> None:
 
 def test_repository_font_supply_chain_is_complete() -> None:
     assert VERIFY.validate_font_supply_chain(ROOT) == []
+
+
+def test_public_research_governance_is_explicit() -> None:
+    assert VERIFY.validate_public_research_governance(ROOT, VERIFY.repository_files(ROOT)) == []
+
+
+def test_public_research_governance_rejects_missing_marker(tmp_path: Path) -> None:
+    paths = copy_public_governance_files(tmp_path)
+
+    relative = "docs/quality/server-capacity.md"
+    path = tmp_path / relative
+    marker = "不得用私有 artifact"
+    path.write_text(path.read_text(encoding="utf-8").replace(marker, "historical baseline"), encoding="utf-8")
+
+    assert VERIFY.validate_public_research_governance(tmp_path, paths) == [
+        f"public Research governance marker missing: {relative}: {marker}"
+    ]
+
+
+def test_public_capacity_governance_requires_status_in_each_authoritative_document(
+    tmp_path: Path,
+) -> None:
+    for index, (relative, marker) in enumerate(VERIFY.PUBLIC_CAPACITY_STATUS_MARKERS.items()):
+        case_root = tmp_path / str(index)
+        paths = copy_public_governance_files(case_root)
+        path = case_root / relative
+        content = path.read_text(encoding="utf-8")
+        path.write_text(content.replace(marker, "status removed"), encoding="utf-8")
+
+        assert VERIFY.validate_public_research_governance(case_root, paths) == [
+            f"public capacity status marker missing: {relative}: {marker}"
+        ]
+
+
+def test_public_capacity_governance_rejects_each_legacy_evidence_fingerprint(
+    tmp_path: Path,
+) -> None:
+    for index, fingerprint in enumerate(VERIFY.LEGACY_PUBLIC_CAPACITY_FINGERPRINTS):
+        case_root = tmp_path / str(index)
+        paths = (*copy_public_governance_files(case_root), "docs/moved-capacity-claim.md")
+        path = case_root / "docs" / "moved-capacity-claim.md"
+        path.write_text(f"# Legacy evidence\n\n{fingerprint}\n", encoding="utf-8")
+
+        assert VERIFY.validate_public_research_governance(case_root, paths) == [
+            f"legacy public capacity evidence is tracked: docs/moved-capacity-claim.md: {fingerprint}"
+        ]
+
+
+def test_public_capacity_governance_rejects_original_archive_identity(tmp_path: Path) -> None:
+    paths = (*copy_public_governance_files(tmp_path), "docs/moved-capacity-claim.md")
+    digest = "c971e047cabc04dd57941491ecdb3c9ec7641987635b4a7fbd7063a04fb5543c"
+    path = tmp_path / "docs" / "moved-capacity-claim.md"
+    path.write_text(f"归档包 SHA-256 `{digest}`\n", encoding="utf-8")
+
+    assert VERIFY.validate_public_research_governance(tmp_path, paths) == [
+        f"legacy public capacity evidence is tracked: docs/moved-capacity-claim.md: {digest}"
+    ]
+
+
+def test_public_capacity_governance_allows_explicit_negative_statements(tmp_path: Path) -> None:
+    paths = (*copy_public_governance_files(tmp_path), "docs/capacity-open-questions.md")
+    path = tmp_path / "docs" / "capacity-open-questions.md"
+    path.write_text(
+        "\n".join(
+            (
+                "# Open questions",
+                "",
+                "尚未测试 130 并发。",
+                "130 并发尚未通过。",
+                "100 并发尚未验证通过。",
+                "不得依赖 Research 中的实验编排。",
+                "不得依赖私有 Research 证据作为必要输入。",
+                "无需以内部 benchmark 记录为准。",
+                "尚未形成有限容量阶梯。",
+                "100 并发不建议采用 2 vCPU / 1 GiB，且尚未通过。",
+                "2 vCPU / 2 GiB 下的 130 并发不推荐且未验证通过。",
+            )
+        ),
+        encoding="utf-8",
+    )
+
+    assert VERIFY.validate_public_research_governance(tmp_path, paths) == []
 
 
 def test_font_supply_chain_requires_notice_and_both_licenses(tmp_path: Path) -> None:
