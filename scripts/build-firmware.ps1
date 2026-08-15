@@ -69,12 +69,11 @@ $sourceVerifier = Require-File (Join-Path $repoRoot "firmware/tools/verify-sourc
 $fontBuilder = Require-File (Join-Path $projectRoot "tools/build_font_assets.py") "font asset builder"
 $buildStateStart = Get-GitBuildState $repoRoot
 
-# The source checkout is kept outside the Product Git tree. RVA_IDF_PATH is the
-# portable override; the sibling workspace path is the known local checkout.
+# The source checkout is kept outside the Product Git tree. Require an explicit
+# environment setting so stale workspace copies cannot silently become active.
 $idfCandidates = @()
 if ($env:RVA_IDF_PATH) { $idfCandidates += $env:RVA_IDF_PATH }
 if ($env:IDF_PATH) { $idfCandidates += $env:IDF_PATH }
-$idfCandidates += (Join-Path $repoRoot "../local/toolchains/esp-idf-v5.5.2")
 $idfPath = $null
 foreach ($candidate in $idfCandidates) {
     if ($candidate -and (Test-Path -LiteralPath $candidate -PathType Container)) {
@@ -92,7 +91,6 @@ if (-not $idfPath) {
 $toolsCandidates = @()
 if ($env:RVA_IDF_TOOLS_PATH) { $toolsCandidates += $env:RVA_IDF_TOOLS_PATH }
 if ($env:IDF_TOOLS_PATH) { $toolsCandidates += $env:IDF_TOOLS_PATH }
-$toolsCandidates += "D:\Espressif"
 $toolsCandidates += (Join-Path $env:USERPROFILE ".espressif")
 $toolsRoot = $null
 $pythonPath = $null

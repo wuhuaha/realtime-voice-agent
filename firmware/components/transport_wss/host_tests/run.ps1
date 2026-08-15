@@ -10,9 +10,8 @@ if ($null -eq $cpp -or $null -eq $cc) {
 }
 
 $idfCandidates = @()
+if ($env:RVA_IDF_PATH) { $idfCandidates += $env:RVA_IDF_PATH }
 if ($env:IDF_PATH) { $idfCandidates += $env:IDF_PATH }
-$idfCandidates += @(Get-ChildItem "D:\Espressif\frameworks" -Directory -ErrorAction SilentlyContinue |
-    Sort-Object Name -Descending | ForEach-Object FullName)
 $cJsonSource = $null
 foreach ($candidate in $idfCandidates) {
     $source = Join-Path $candidate "components/json/cJSON/cJSON.c"
@@ -21,7 +20,9 @@ foreach ($candidate in $idfCandidates) {
         break
     }
 }
-if ($null -eq $cJsonSource) { throw "ESP-IDF cJSON source was not found" }
+if ($null -eq $cJsonSource) {
+    throw "ESP-IDF cJSON source was not found. Set RVA_IDF_PATH or IDF_PATH."
+}
 $cJsonInclude = Split-Path -Parent $cJsonSource
 
 $temporaryDirectory = Join-Path ([IO.Path]::GetTempPath()) ("rva-wss-contract-" + [guid]::NewGuid().ToString("N"))

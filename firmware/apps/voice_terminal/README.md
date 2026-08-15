@@ -88,8 +88,9 @@ pwsh -File .\scripts\build-firmware.ps1 `
 ```
 
 不要先运行系统安装的 `idf.py`，也不要依赖 `export.ps1`：后者会检查所有芯片工具，缺少与 ESP32-S3 无关的
-`riscv32-esp-elf` 时会整体失败。脚本通过 `RVA_IDF_PATH` 和 `RVA_IDF_TOOLS_PATH` 支持在其他机器上指定
-同版本的外部安装；缺失工具会在构建开始前明确报错。
+`riscv32-esp-elf` 时会整体失败。脚本要求通过 `RVA_IDF_PATH` 和 `RVA_IDF_TOOLS_PATH`（或标准
+`IDF_PATH`、`IDF_TOOLS_PATH`）显式指定仓库外的锁定安装；缺失或 revision 不匹配会在构建开始前明确报错。
+不要在 Product/workspace 内保存 ESP-IDF checkout。
 
 ```powershell
 # Linux/WSL 或已手动准备好同一工具链时，也可直接运行 idf.py；Windows
